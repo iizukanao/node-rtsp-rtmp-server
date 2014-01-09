@@ -4,3 +4,5 @@
 - This server is supposed to receive audio/video packets via UNIX domain sockets.
 - RTSP stream is viewable with Android's VideoView and VLC media player.
 - RTMP stream is viewable with Flowplayer.
+
+(Documentation is in progress)
