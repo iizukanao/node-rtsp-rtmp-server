@@ -1,4 +1,4 @@
-## RTSP, RTMP, and HTTP server implementation in Node.js
+## RTSP, RTMP, and HTTP server in Node.js
 
 - Supports RTMP, RTMPE, RTMPT, RTMPTE protocols.
 - This server is supposed to receive audio/video packets via UNIX domain sockets.
