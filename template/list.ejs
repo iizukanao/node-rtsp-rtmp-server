@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>List of files</title>
+</head>
+<body>
+<div id="page">
+  <h2>List of files</h2>
+  <% if (files.length > 0) { -%>
+    <ol>
+    <% for (var i=0, l=files.length; i<l; i++) { -%>
+      <li>
+        <%= files[i] %>
+      </li>
+    <% } -%>
+    </ol>
+  <% } -%>
+</div>
+</body>
+</html>
