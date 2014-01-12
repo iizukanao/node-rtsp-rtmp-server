@@ -1,4 +1,4 @@
-## RTSP, RTMP, and HTTP server in Node.js
+### RTSP, RTMP, and HTTP server in Node.js
 
 - Acts as RTSP, RTMP/RTMPE/RTMPT/RTMPTE, and HTTP server.
 - This server is supposed to receive audio/video packets via UNIX domain sockets.
@@ -7,12 +7,12 @@
 
 (Documentation is in progress)
 
-## Installation
+### Installation
 
     $ git clone https://github.com/iizukanao/node-rtsp-rtmp-server.git
     $ cd node-rtsp-rtmp-server
     $ npm install -d
 
-## Starting server
+### Starting server
 
     $ coffee server.coffee
