@@ -15,4 +15,11 @@
 
 ### Starting server
 
+    $ cd node-rtsp-rtmp-server
     $ coffee server.coffee
+
+or:
+
+    $ cd node-rtsp-rtmp-server
+    $ coffee -c .
+    $ node server.js
