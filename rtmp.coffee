@@ -3,8 +3,6 @@ crypto        = require 'crypto'
 Sequent       = require 'sequent'
 RTMPHandshake = require './rtmp_handshake'
 
-MESSAGE_LENGTH_CHUNK_THRESHOLD = 1300
-
 # enum
 SESSION_STATE_NEW = 1
 SESSION_STATE_HANDSHAKE_ONGOING = 2
