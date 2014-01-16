@@ -1665,7 +1665,7 @@ class RTMPTSession
         return
       if not @timeoutTimer?
         return
-      if Date.now() - @lastTimeoutScheduledTime < SESSION_TIMEOUT
+      if Date.now() - @lastTimeoutScheduledTime < RTMPT_SESSION_TIMEOUT
         return
       console.log "RTMPT session timeout: #{@id}"
       @close()
