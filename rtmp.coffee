@@ -8,29 +8,39 @@ SESSION_STATE_NEW = 1
 SESSION_STATE_HANDSHAKE_ONGOING = 2
 SESSION_STATE_HANDSHAKE_DONE = 3
 
+# name of the stream
 STREAM_APP_NAME = 'live'
 
 # media information
-AUDIO_DATA_RATE = 32  # kbps
+AUDIO_SAMPLE_RATE = 22050  # Hz
+AUDIO_DATA_RATE = 32   # kbps
+VIDEO_DATA_RATE = 500  # kbps
 VIDEO_FRAME_RATE = 30
 GOP_SIZE = 60
-AUDIO_SAMPLE_RATE = 22050
-WIDTH = 480
-HEIGHT = 360
-VIDEO_DATA_RATE = 500  # kbps
+WIDTH = 480   # px
+HEIGHT = 360  # px
 
 VIDEO_CODEC_ID = 7   # H.264
 AUDIO_CODEC_ID = 10  # AAC
 
 PLAY_CHUNK_SIZE = 4096
 
-# How many RTMP messages are queued before sending
+# number ot RTMP messages to be queued before being sent
 QUEUE_RTMP_MESSAGES = 5
 
+# maximum timestamp value + 1
 TIMESTAMP_ROUNDOFF = 4294967296  # 32 bits
 
+# when this period of time has passed after the last ping,
+# the client is regarded as gone
 PING_TIMEOUT = 5000  # ms
+
+# when this period of time has passed after the last RTMP message,
+# the session will be abandoned
 SESSION_TIMEOUT = 60000  # ms
+
+# when this period of time has passed after the last RTMPT message,
+# the session will be abandoned
 RTMPT_SESSION_TIMEOUT = 60000  # ms
 
 sessionsCount = 0
