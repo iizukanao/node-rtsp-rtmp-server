@@ -42,6 +42,31 @@ EPOCH = 2208988800
 # Constant for calculating NTP fractional second
 NTP_SCALE_FRAC = 4294.967295
 
+# Delete UNIX domain sockets
+deleteReceiverSocketsSync = ->
+  if fs.existsSync config.videoReceiverPath
+    try
+      fs.unlinkSync config.videoReceiverPath
+    catch e
+      console.error "unlink error: #{e}"
+  if fs.existsSync config.videoControlPath
+    try
+      fs.unlinkSync config.videoControlPath
+    catch e
+      console.error "unlink error: #{e}"
+  if fs.existsSync config.audioReceiverPath
+    try
+      fs.unlinkSync config.audioReceiverPath
+    catch e
+      console.error "unlink error: #{e}"
+  if fs.existsSync config.audioControlPath
+    try
+      fs.unlinkSync config.audioControlPath
+    catch e
+      console.error "unlink error: #{e}"
+
+deleteReceiverSocketsSync()
+
 # Create RTMP server
 rtmpServer = new RTMPServer
 rtmpServer.start ->
@@ -315,9 +340,6 @@ videoReceiveServer = net.createServer (c) ->
         else
           break
 
-if fs.existsSync config.videoReceiverPath
-  console.log "unlink #{config.videoReceiverPath}"
-  fs.unlinkSync config.videoReceiverPath
 videoReceiveServer.listen config.videoReceiverPath, ->
   fs.chmodSync config.videoReceiverPath, '777'
   console.log "videoReceiveServer is listening"
@@ -342,9 +364,7 @@ videoControlServer = net.createServer (c) ->
       console.log "timeForVideoRTPZero: #{timeForVideoRTPZero}"
       spropParameterSets = ''
       rtmpServer.startStream timeForVideoRTPZero
-if fs.existsSync config.videoControlPath
-  console.log "unlink #{config.videoControlPath}"
-  fs.unlinkSync config.videoControlPath
+
 videoControlServer.listen config.videoControlPath, ->
   fs.chmodSync config.videoControlPath, '777'
   console.log "videoControlServer is listening"
@@ -375,9 +395,6 @@ audioReceiveServer = net.createServer (c) ->
         else
           break
 
-if fs.existsSync config.audioReceiverPath
-  console.log "unlink #{config.audioReceiverPath}"
-  fs.unlinkSync config.audioReceiverPath
 audioReceiveServer.listen config.audioReceiverPath, ->
   fs.chmodSync config.audioReceiverPath, '777'
   console.log "audioReceiveServer is listening"
@@ -401,9 +418,7 @@ audioControlServer = net.createServer (c) ->
       timeForVideoRTPZero = timeForAudioRTPZero
       console.log "timeForAudioRTPZero: #{timeForAudioRTPZero}"
       rtmpServer.startStream timeForAudioRTPZero
-if fs.existsSync config.audioControlPath
-  console.log "unlink #{config.audioControlPath}"
-  fs.unlinkSync config.audioControlPath
+
 audioControlServer.listen config.audioControlPath, ->
   fs.chmodSync config.audioControlPath, '777'
   console.log "audioControlServer is listening"
@@ -601,7 +616,12 @@ onClientConnect = (c) ->
       handleOnData c, data
 
 process.on 'SIGINT', ->
+  deleteReceiverSocketsSync()
   process.kill process.pid, 'SIGTERM'
+
+process.on 'uncaughtException', (err) ->
+  deleteReceiverSocketsSync()
+  throw err
 
 server = net.createServer (c) ->
   onClientConnect c
