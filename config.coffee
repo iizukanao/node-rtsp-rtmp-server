@@ -39,6 +39,7 @@ module.exports =
   # RTMP stream name
   rtmpApplicationName: 'live'
 
+
   ##########################
   ## Advanced configurations
   ##########################
