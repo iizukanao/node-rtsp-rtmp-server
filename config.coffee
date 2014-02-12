@@ -10,8 +10,8 @@ module.exports =
   serverName: 'node-rtsp-rtmp-server/0.1.0'
 
   # Video frame size
-  width : 480
-  height: 360
+  width : 1280
+  height: 720
 
   # How many frames per second
   videoFrameRate: 30
