@@ -48,29 +48,29 @@ deleteReceiverSocketsSync = ->
     try
       fs.unlinkSync config.videoReceiverPath
     catch e
-      console.error "unlink error: #{e}"
+      console.error "unlink: #{e}"
   if fs.existsSync config.videoControlPath
     try
       fs.unlinkSync config.videoControlPath
     catch e
-      console.error "unlink error: #{e}"
+      console.error "unlink: #{e}"
   if fs.existsSync config.audioReceiverPath
     try
       fs.unlinkSync config.audioReceiverPath
     catch e
-      console.error "unlink error: #{e}"
+      console.error "unlink: #{e}"
   if fs.existsSync config.audioControlPath
     try
       fs.unlinkSync config.audioControlPath
     catch e
-      console.error "unlink error: #{e}"
+      console.error "unlink: #{e}"
 
 deleteReceiverSocketsSync()
 
 # Create RTMP server
 rtmpServer = new RTMPServer
 rtmpServer.start ->
-  console.log "RTMP server is started"
+  # RTMP server is ready
 
 httpHandler = new HTTPHandler
 
@@ -342,7 +342,6 @@ videoReceiveServer = net.createServer (c) ->
 
 videoReceiveServer.listen config.videoReceiverPath, ->
   fs.chmodSync config.videoReceiverPath, '777'
-  console.log "videoReceiveServer is listening"
 
 videoControlServer = net.createServer (c) ->
   console.log "new videoControl connection"
@@ -367,7 +366,6 @@ videoControlServer = net.createServer (c) ->
 
 videoControlServer.listen config.videoControlPath, ->
   fs.chmodSync config.videoControlPath, '777'
-  console.log "videoControlServer is listening"
 
 audioReceiveServer = net.createServer (c) ->
   console.log "new audioReceiveServer connection"
@@ -397,7 +395,6 @@ audioReceiveServer = net.createServer (c) ->
 
 audioReceiveServer.listen config.audioReceiverPath, ->
   fs.chmodSync config.audioReceiverPath, '777'
-  console.log "audioReceiveServer is listening"
 
 audioControlServer = net.createServer (c) ->
   console.log "new audioControl connection"
@@ -421,7 +418,6 @@ audioControlServer = net.createServer (c) ->
 
 audioControlServer.listen config.audioControlPath, ->
   fs.chmodSync config.audioControlPath, '777'
-  console.log "audioControlServer is listening"
 
 # Generate random 32 bit unsigned integer.
 # Return value is intended to be used as an SSRC identifier.
@@ -632,7 +628,7 @@ server.on 'error', (err) ->
 
 console.log "Starting server on port #{config.serverPort}"
 server.listen config.serverPort, '0.0.0.0', 511, ->
-  console.log "Server bound on port #{config.serverPort}"
+  console.log "Server is started"
 
 videoSequenceNumber = 0
 audioSequenceNumber = 0
