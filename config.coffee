@@ -31,6 +31,7 @@ module.exports =
   audioReceiverPath: '/tmp/node_rtsp_rtmp_audioReceiver'
   audioControlPath : '/tmp/node_rtsp_rtmp_audioControl'
 
+  # Server ports for RTP and RTCP
   audioRTPServerPort : 7042  # even
   audioRTCPServerPort: 7043  # odd and contiguous
   videoRTPServerPort : 7044  # even
@@ -75,5 +76,5 @@ module.exports =
   rtmpMessageQueueSize: 5
 
   debug:
-    # Drop all incoming data
+    # If true, all incoming data are ignored
     dropAllData: false
