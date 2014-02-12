@@ -13,13 +13,19 @@
     $ cd node-rtsp-rtmp-server
     $ npm install -d
 
+### Configuration
+
+Edit config.coffee.
+
 ### Starting server
 
     $ cd node-rtsp-rtmp-server
-    $ coffee server.coffee
+    $ sudo coffee server.coffee
 
-or:
+or use Node.js directly:
 
     $ cd node-rtsp-rtmp-server
     $ coffee -c .
-    $ node server.js
+    $ sudo node server.js
+
+If `serverPort` is above 1023 in config.coffee, you can omit `sudo`.
