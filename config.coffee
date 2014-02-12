@@ -20,7 +20,7 @@ module.exports =
   audioSampleRate: 48000
 
   # Video bitrate in Kbps
-  videoBitrateKbps: 1000
+  videoBitrateKbps: 2000
 
   # Audio bitrate in Kbps
   audioBitrateKbps: 40
