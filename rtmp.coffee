@@ -3,37 +3,15 @@ crypto        = require 'crypto'
 Sequent       = require 'sequent'
 RTMPHandshake = require './rtmp_handshake'
 
-MESSAGE_LENGTH_CHUNK_THRESHOLD = 1300
+codecUtils    = require './codec_utils'
+config        = require './config'
 
 # enum
 SESSION_STATE_NEW = 1
 SESSION_STATE_HANDSHAKE_ONGOING = 2
 SESSION_STATE_HANDSHAKE_DONE = 3
 
-STREAM_APP_NAME = 'live'
-
-# media information
-AUDIO_DATA_RATE = 32  # kbps
-VIDEO_FRAME_RATE = 30
-GOP_SIZE = 60
-AUDIO_SAMPLE_RATE = 22050
-WIDTH = 480
-HEIGHT = 360
-VIDEO_DATA_RATE = 500  # kbps
-
-VIDEO_CODEC_ID = 7   # H.264
-AUDIO_CODEC_ID = 10  # AAC
-
-PLAY_CHUNK_SIZE = 4096
-
-# How many RTMP messages are queued before sending
-QUEUE_RTMP_MESSAGES = 5
-
 TIMESTAMP_ROUNDOFF = 4294967296  # 32 bits
-
-PING_TIMEOUT = 5000  # ms
-SESSION_TIMEOUT = 60000  # ms
-RTMPT_SESSION_TIMEOUT = 60000  # ms
 
 sessionsCount = 0
 sessions = {}
@@ -125,7 +103,7 @@ sendVideoMessage = (params) ->
       if session.isFirstVideoMessage
         emptyVideoMessage = session.createVideoMessage
           body: new Buffer [
-            (5 << 4) | VIDEO_CODEC_ID,
+            (5 << 4) | config.videoCodecId,
             0x00
           ]
           timestamp: 0
@@ -197,71 +175,6 @@ createVideoMessage = (params) ->
     messageStreamID: 1
     body: params.body
   , params.chunkSize
-
-onReceiveAudioPacket = (buf, timestamp) ->
-  timestamp = convertPTSToMilliseconds timestamp
-  lastTimestamp = timestamp
-
-  if sessionsCount + rtmptSessionsCount is 0
-    return
-
-  headerBytes = new Buffer [
-      # AUDIODATA tag: appeared in Adobe's Video File Format Spec v10.1 E.4.2.1 AUDIODATA
-      (AUDIO_CODEC_ID << 4) \ # SoundFormat (4 bits): 10=AAC
-      | (2 << 2) \ # SoundRate (2 bits): 2=22kHz
-      | (1 << 1) \ # SoundSize (1 bit): 1=16-bit samples
-      | 0          # SoundType (1 bit): 0=Mono sound
-      , 1  # AACPacketType (1 bit): 1=AAC raw
-  ]
-  buf = Buffer.concat [headerBytes, buf], buf.length + 2
-
-  queueAudioMessage
-    body: buf
-    timestamp: timestamp
-
-  return
-
-onReceiveVideoPacket = (buf, timestamp) ->
-  timestamp = convertPTSToMilliseconds timestamp
-  lastTimestamp = timestamp
-
-  nalUnitType = buf[0] & 0x1f
-  if nalUnitType in [7, 8] # codec config
-    retainCodecConfigPacket buf
-    return
-
-  if sessionsCount + rtmptSessionsCount is 0
-    return
-
-  isKeyFrame = nalUnitType is 5
-  if nalUnitType is 5  # IDR picture (keyframe)
-    firstByte = (1 << 4) | VIDEO_CODEC_ID
-  else  # non-IDR picture (I frame)
-    firstByte = (2 << 4) | VIDEO_CODEC_ID
-  payloadLen = buf.length
-  headerBytes = new Buffer [
-    # VIDEODATA tag
-    firstByte,
-    0x01,  # picture data
-    0,     # composition time
-    0,     # composition time
-    0,     # composition time
-
-    # The length of this data is specified in
-    # configuration data that has already been sent
-    (payloadLen >>> 24) & 0xff,
-    (payloadLen >>> 16) & 0xff,
-    (payloadLen >>> 8) & 0xff,
-    payloadLen & 0xff,
-  ]
-  buf = Buffer.concat [headerBytes, buf], payloadLen + 9
-
-  queueVideoMessage
-    body: buf
-    timestamp: timestamp
-    isKeyFrame: isKeyFrame
-
-  return
 
 parseUserControlMessage = (buf) ->
   eventType = (buf[0] << 8) + buf[1]
@@ -473,7 +386,7 @@ queuedRTMPMessages = []
 counter = 0
 
 flushRTMPMessages = ->
-  if queuedRTMPMessages.length < QUEUE_RTMP_MESSAGES
+  if queuedRTMPMessages.length < config.rtmpMessageQueueSize
     return
 
   mostRecentAVType = queuedRTMPMessages[queuedRTMPMessages.length-1].avType
@@ -765,21 +678,21 @@ class RTMPSession
         return
       if not @timeoutTimer?
         return
-      if Date.now() - @lastTimeoutScheduledTime < SESSION_TIMEOUT
+      if Date.now() - @lastTimeoutScheduledTime < config.rtmpSessionTimeoutMs
         return
       console.log "RTMP session timeout: #{@clientid}"
       @teardown()
-    , SESSION_TIMEOUT
+    , config.rtmpSessionTimeoutMs
 
   schedulePing: ->
     @lastPingScheduledTime = Date.now()
     if @pingTimer?
       clearTimeout @pingTimer
     @pingTimer = setTimeout =>
-      if Date.now() - @lastPingScheduledTime < PING_TIMEOUT
+      if Date.now() - @lastPingScheduledTime < config.rtmpPingTimeoutMs
         console.log "ping timeout canceled"
       @ping()
-    , PING_TIMEOUT
+    , config.rtmpPingTimeoutMs
 
   ping: ->
     pingRequest = createRTMPMessage
@@ -954,7 +867,7 @@ class RTMPSession
   respondConnect: (commandMessage, callback) ->
     app = commandMessage.objects[0].value.app
     app = app.replace /\/$/, ''  # JW Player adds / at the end
-    if app isnt STREAM_APP_NAME
+    if app isnt config.rtmpApplicationName
       console.warn "Invalid app name: #{app}"
       @rejectConnect commandMessage, callback
       return
@@ -1176,7 +1089,7 @@ class RTMPSession
     callback null, _result
 
   respondPlay: (commandMessage, callback) ->
-    @chunkSize = PLAY_CHUNK_SIZE
+    @chunkSize = config.rtmpPlayChunkSize
 
     # 5.4.1.  Set Chunk Size (1)
     setChunkSize = createRTMPMessage
@@ -1215,8 +1128,8 @@ class RTMPSession
         createAMF0Object({
           level: 'status'
           code: 'NetStream.Play.Reset'
-          description: "Playing and resetting #{STREAM_APP_NAME}."
-          details: STREAM_APP_NAME
+          description: "Playing and resetting #{config.rtmpApplicationName}."
+          details: config.rtmpApplicationName
           clientid: @clientid
         })
       ]
@@ -1233,8 +1146,8 @@ class RTMPSession
         createAMF0Object({
           level: 'status'
           code: 'NetStream.Play.Start'
-          description: "Started playing #{STREAM_APP_NAME}."
-          details: STREAM_APP_NAME
+          description: "Started playing #{config.rtmpApplicationName}."
+          details: config.rtmpApplicationName
           clientid: @clientid
         })
       ]
@@ -1259,23 +1172,22 @@ class RTMPSession
         createAMF0Data('onMetaData'),
         createAMF0Data({
           cuePoints: []
-          audiodatarate: AUDIO_DATA_RATE
+          audiodatarate: config.audioBitrateKbps
           hasVideo: true
           stereo: false
           canSeekToEnd: false
-          framerate: VIDEO_FRAME_RATE
-          audiosamplerate: AUDIO_SAMPLE_RATE
+          framerate: config.videoFrameRate
+          audiosamplerate: config.audioSampleRate
           videocodecid: 'avc1'  # H.264
-          videokeyframe_frequency: GOP_SIZE
           hasAudio: true
           audiodelay: 0
-          height: HEIGHT
+          height: config.height
           hasMetadata: true
           audiocodecid: 'mp4a'  # AAC
           audiochannels: 1
-          videodatarate: VIDEO_DATA_RATE
+          videodatarate: config.videoBitrateKbps
           hasCuePoints: false
-          width: WIDTH
+          width: config.width
           aacaot: 2  # AAC audio object type: 2=AAC-LC
           avclevel: 30  # Level 3.0
           avcprofile: 66  # Baseline profile
@@ -1334,7 +1246,7 @@ class RTMPSession
     # audio
     buf = new Buffer [
       # AUDIODATA tag: appeared in Adobe's Video File Format Spec v10.1 E.4.2.1 AUDIODATA
-      (AUDIO_CODEC_ID << 4) \ # SoundFormat (4 bits): 10=AAC
+      (config.audioCodecId << 4) \ # SoundFormat (4 bits): 10=AAC
       | (2 << 2) \ # SoundRate (2 bits): 2=22kHz
       | (1 << 1) \ # SoundSize (1 bit): 1=16-bit samples
       | 0          # SoundType (1 bit): 0=Mono sound
@@ -1342,7 +1254,8 @@ class RTMPSession
 
       # AAC AudioSpecificConfig: described in ISO 14496-3 1.6.2.1 AudioSpecificConfig
       , (2 << 3) \ # audioObjectType (5 bits): 2=AAC LC (Table 1.1)
-      | (7 >> 1) # samplingFrequencyIndex (4 bits): 7=22050 (Table 1.16)
+      # samplingFrequencyIndex (4 bits): (Table 1.16)
+      | (codecUtils.getSamplingFreqIndex(config.audioSampleRate) >> 1)
       , ((7 & 0x01) << 7) \ # samplingFrequencyIndex (cont 1 bit)
       | (1 << 3) \ # channelConfiguration (4 bits): 1=mono
       | (0 << 2) \ # frameLengthFlag (1 bit): 0=1024
@@ -1504,18 +1417,9 @@ class RTMPSession
       callback new Error "Unknown session state"
 
 class RTMPServer
-  teardownRTMPTClient: (socket) ->
-    if socket.rtmptClientID?
-      console.log "teardownRTMPTClient: #{socket.rtmptClientID}"
-      tsession = rtmptSessions[socket.rtmptClientID]
-      if tsession?
-        tsession.rtmpSession?.teardown()
-        delete rtmptSessions[socket.rtmptClientID]
-        rtmptSessionsCount--
-
   constructor: ->
     @port = 1935
-    @server = net.createServer (c) ->
+    @server = net.createServer (c) =>
       console.log "[rtmp] new client"
       c.clientId = ++clientMaxId
       sess = new RTMPSession c
@@ -1551,11 +1455,79 @@ class RTMPServer
   stop: (callback) ->
     @server.close callback
 
+  teardownRTMPTClient: (socket) ->
+    if socket.rtmptClientID?
+      console.log "teardownRTMPTClient: #{socket.rtmptClientID}"
+      tsession = rtmptSessions[socket.rtmptClientID]
+      if tsession?
+        tsession.rtmpSession?.teardown()
+        delete rtmptSessions[socket.rtmptClientID]
+        rtmptSessionsCount--
+
   sendVideoPacket: (nalUnit, timestamp) ->
-    onReceiveVideoPacket nalUnit, timestamp
+    timestamp = convertPTSToMilliseconds timestamp
+    lastTimestamp = timestamp
+
+    nalUnitType = nalUnit[0] & 0x1f
+    if nalUnitType in [7, 8] # codec config
+      retainCodecConfigPacket nalUnit
+      return
+
+    if sessionsCount + rtmptSessionsCount is 0
+      return
+
+    isKeyFrame = nalUnitType is 5
+    if nalUnitType is 5  # IDR picture (keyframe)
+      firstByte = (1 << 4) | config.videoCodecId
+    else  # non-IDR picture (I frame)
+      firstByte = (2 << 4) | config.videoCodecId
+    payloadLen = nalUnit.length
+    headerBytes = new Buffer [
+      # VIDEODATA tag
+      firstByte,
+      0x01,  # picture data
+      0,     # composition time
+      0,     # composition time
+      0,     # composition time
+
+      # The length of this data is specified in
+      # configuration data that has already been sent
+      (payloadLen >>> 24) & 0xff,
+      (payloadLen >>> 16) & 0xff,
+      (payloadLen >>> 8) & 0xff,
+      payloadLen & 0xff,
+    ]
+    buf = Buffer.concat [headerBytes, nalUnit], payloadLen + 9
+
+    queueVideoMessage
+      body: buf
+      timestamp: timestamp
+      isKeyFrame: isKeyFrame
+
+    return
 
   sendAudioPacket: (rawDataBlock, timestamp) ->
-    onReceiveAudioPacket rawDataBlock, timestamp
+    timestamp = convertPTSToMilliseconds timestamp
+    lastTimestamp = timestamp
+
+    if sessionsCount + rtmptSessionsCount is 0
+      return
+
+    headerBytes = new Buffer [
+        # AUDIODATA tag: appeared in Adobe's Video File Format Spec v10.1 E.4.2.1 AUDIODATA
+        (config.audioCodecId << 4) \ # SoundFormat (4 bits): 10=AAC
+        | (2 << 2) \ # SoundRate (2 bits): 2=22kHz
+        | (1 << 1) \ # SoundSize (1 bit): 1=16-bit samples
+        | 0          # SoundType (1 bit): 0=Mono sound
+        , 1  # AACPacketType (1 bit): 1=AAC raw
+    ]
+    buf = Buffer.concat [headerBytes, rawDataBlock], rawDataBlock.length + 2
+
+    queueAudioMessage
+      body: buf
+      timestamp: timestamp
+
+    return
 
   startStream: (timeForVideoRTPZero) ->
     console.log "RTMP server startStream"
@@ -1667,11 +1639,11 @@ class RTMPTSession
         return
       if not @timeoutTimer?
         return
-      if Date.now() - @lastTimeoutScheduledTime < SESSION_TIMEOUT
+      if Date.now() - @lastTimeoutScheduledTime < config.rtmptSessionTimeoutMs
         return
       console.log "RTMPT session timeout: #{@id}"
       @close()
-    , RTMPT_SESSION_TIMEOUT
+    , config.rtmptSessionTimeoutMs
 
   close: ->
     if @isClosed

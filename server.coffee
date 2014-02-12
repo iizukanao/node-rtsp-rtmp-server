@@ -1,41 +1,31 @@
-# RTSP and RTMP/RTMPE/RTMPT/RTMPTE server implementation.
-# Also combined with HTTP server as this server is supposed
-# to be run on port 80.
-
-net    = require 'net'
-dgram  = require 'dgram'
-fs     = require 'fs'
-os     = require 'os'
-crypto = require 'crypto'
-url    = require 'url'
-path   = require 'path'
-spawn  = require('child_process').spawn
-
-SERVER_PORT = 8000
-
-# Server name to be embedded in response header
-SERVER_NAME = "node-rtsp-rtmp-server/0.0.1"
-
-# 720p
-WIDTH = 480
-HEIGHT = 360
-FRAMERATE = 30
-
-AUDIO_SAMPLE_RATE = 22050
-AUDIO_PERIOD_SIZE = 1024
-
-AUDIO_CLOCK_RATE = 90000
-
-DEBUG_DROP_ALL_PACKETS = false
-
-ENABLE_START_PLAYING_FROM_KEYFRAME = false
-
-SINGLE_NAL_UNIT_MAX_SIZE = 1358
+# RTSP and RTMP/RTMPE/RTMPT/RTMPTE server implementation mainly for
+# Raspberry Pi. Also serves HTTP contents as this server is meant to
+# be run on port 80.
 
 # TODO: clear old sessioncookies
-SESSION_COOKIE_TIMEOUT = 600000  # 10 minutes
-RTCP_SENDER_REPORT_INTERVAL = 5000  # milliseconds
-KEEPALIVE_TIMEOUT = 30000
+
+net         = require 'net'
+dgram       = require 'dgram'
+fs          = require 'fs'
+os          = require 'os'
+crypto      = require 'crypto'
+url         = require 'url'
+path        = require 'path'
+spawn       = require('child_process').spawn
+
+codecUtils  = require './codec_utils'
+config      = require './config'
+RTMPServer  = require './rtmp'
+HTTPHandler = require './http'
+
+# Audio clock rate in Hz
+AUDIO_CLOCK_RATE = 90000
+
+# Start playing from keyframe
+ENABLE_START_PLAYING_FROM_KEYFRAME = false
+
+# Maximum single NAL unit size
+SINGLE_NAL_UNIT_MAX_SIZE = 1358
 
 DAY_NAMES = [
   'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'
@@ -46,18 +36,17 @@ MONTH_NAMES = [
   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
 ]
 
-# UNIX sockets used for receiving audio and video packets
-VIDEO_RECEIVER_PATH = '/tmp/node_rtsp_rtmp_videoReceiver'
-VIDEO_CONTROL_PATH = '/tmp/node_rtsp_rtmp_videoControl'
-AUDIO_RECEIVER_PATH = '/tmp/node_rtsp_rtmp_audioReceiver'
-AUDIO_CONTROL_PATH = '/tmp/node_rtsp_rtmp_audioControl'
+# Number of seconds from 1900-01-01 to 1970-01-01
+EPOCH = 2208988800
 
-RTMPServer = require './rtmp'
+# Constant for calculating NTP fractional second
+NTP_SCALE_FRAC = 4294.967295
+
+# Create RTMP server
 rtmpServer = new RTMPServer
 rtmpServer.start ->
   console.log "RTMP server is started"
 
-HTTPHandler = require './http'
 httpHandler = new HTTPHandler
 
 # profile-level-id is defined in RFC 6184.
@@ -78,7 +67,7 @@ httpHandler = new HTTPHandler
 #     reserved_zero_2bits : both 0
 #   3) level_idc = 30 (Level 3.0)
 PROFILE_LEVEL_ID = '42C01E'  # Baseline Profile, Level 3.0
-# PROFILE_LEVEL_ID will be retrieved from SPS packet (NAL unit type 7) from byte 1 to 3
+# PROFILE_LEVEL_ID will be replaced with incoming SPS packet (NAL unit type 7), from byte 1 to 3
 
 spropParameterSets = ''  # will be populated later
 
@@ -97,11 +86,6 @@ addSpropParam = (buf) ->
 clientsCount = 0
 clients = {}
 httpSessions = {}
-
-serverAudioRTPPort  = 7042  # even
-serverAudioRTCPPort = 7043  # odd and contiguous
-serverVideoRTPPort  = 7044  # even
-serverVideoRTCPPort = 7045  # odd and contiguous
 
 zeropad = (columns, num) ->
   num += ''
@@ -132,9 +116,6 @@ getLocalIP = ->
 
 getExternalIP = ->
   "127.0.0.1" # TODO: Fetch this from UPnP or something
-
-EPOCH = 2208988800
-NTP_SCALE_FRAC = 4294.967295
 
 timeForVideoRTPZero = null
 timeForAudioRTPZero = null
@@ -262,7 +243,7 @@ sendSenderReports = (client) ->
 
   client.timeoutID = setTimeout ->
     sendSenderReports client
-  , RTCP_SENDER_REPORT_INTERVAL
+  , config.rtcpSenderReportIntervalMs
 
 startSendingRTCP = (client) ->
   stopSendingRTCP client
@@ -314,7 +295,7 @@ videoReceiveServer = net.createServer (c) ->
   c.on 'close', ->
     console.log "videoReceiveServer connection closed"
   c.on 'data', (data) ->
-    if DEBUG_DROP_ALL_PACKETS
+    if config.debug.dropAllData
       return
     if buf?
       buf = Buffer.concat [buf, data], buf.length + data.length
@@ -334,11 +315,11 @@ videoReceiveServer = net.createServer (c) ->
         else
           break
 
-if fs.existsSync VIDEO_RECEIVER_PATH
-  console.log "unlink #{VIDEO_RECEIVER_PATH}"
-  fs.unlinkSync VIDEO_RECEIVER_PATH
-videoReceiveServer.listen VIDEO_RECEIVER_PATH, ->
-  fs.chmodSync VIDEO_RECEIVER_PATH, '777'
+if fs.existsSync config.videoReceiverPath
+  console.log "unlink #{config.videoReceiverPath}"
+  fs.unlinkSync config.videoReceiverPath
+videoReceiveServer.listen config.videoReceiverPath, ->
+  fs.chmodSync config.videoReceiverPath, '777'
   console.log "videoReceiveServer is listening"
 
 videoControlServer = net.createServer (c) ->
@@ -361,11 +342,11 @@ videoControlServer = net.createServer (c) ->
       console.log "timeForVideoRTPZero: #{timeForVideoRTPZero}"
       spropParameterSets = ''
       rtmpServer.startStream timeForVideoRTPZero
-if fs.existsSync VIDEO_CONTROL_PATH
-  console.log "unlink #{VIDEO_CONTROL_PATH}"
-  fs.unlinkSync VIDEO_CONTROL_PATH
-videoControlServer.listen VIDEO_CONTROL_PATH, ->
-  fs.chmodSync VIDEO_CONTROL_PATH, '777'
+if fs.existsSync config.videoControlPath
+  console.log "unlink #{config.videoControlPath}"
+  fs.unlinkSync config.videoControlPath
+videoControlServer.listen config.videoControlPath, ->
+  fs.chmodSync config.videoControlPath, '777'
   console.log "videoControlServer is listening"
 
 audioReceiveServer = net.createServer (c) ->
@@ -374,7 +355,7 @@ audioReceiveServer = net.createServer (c) ->
   c.on 'close', ->
     console.log "audioReceiveServer connection closed"
   c.on 'data', (data) ->
-    if DEBUG_DROP_ALL_PACKETS
+    if config.debug.dropAllData
       return
     if buf?
       buf = Buffer.concat [buf, data], buf.length + data.length
@@ -394,11 +375,11 @@ audioReceiveServer = net.createServer (c) ->
         else
           break
 
-if fs.existsSync AUDIO_RECEIVER_PATH
-  console.log "unlink #{AUDIO_RECEIVER_PATH}"
-  fs.unlinkSync AUDIO_RECEIVER_PATH
-audioReceiveServer.listen AUDIO_RECEIVER_PATH, ->
-  fs.chmodSync AUDIO_RECEIVER_PATH, '777'
+if fs.existsSync config.audioReceiverPath
+  console.log "unlink #{config.audioReceiverPath}"
+  fs.unlinkSync config.audioReceiverPath
+audioReceiveServer.listen config.audioReceiverPath, ->
+  fs.chmodSync config.audioReceiverPath, '777'
   console.log "audioReceiveServer is listening"
 
 audioControlServer = net.createServer (c) ->
@@ -420,11 +401,11 @@ audioControlServer = net.createServer (c) ->
       timeForVideoRTPZero = timeForAudioRTPZero
       console.log "timeForAudioRTPZero: #{timeForAudioRTPZero}"
       rtmpServer.startStream timeForAudioRTPZero
-if fs.existsSync AUDIO_CONTROL_PATH
-  console.log "unlink #{AUDIO_CONTROL_PATH}"
-  fs.unlinkSync AUDIO_CONTROL_PATH
-audioControlServer.listen AUDIO_CONTROL_PATH, ->
-  fs.chmodSync AUDIO_CONTROL_PATH, '777'
+if fs.existsSync config.audioControlPath
+  console.log "unlink #{config.audioControlPath}"
+  fs.unlinkSync config.audioControlPath
+audioControlServer.listen config.audioControlPath, ->
+  fs.chmodSync config.audioControlPath, '777'
   console.log "audioControlServer is listening"
 
 # Generate random 32 bit unsigned integer.
@@ -501,7 +482,7 @@ clearTimeout = (socket) ->
 
 scheduleTimeout = (socket) ->
   clearTimeout socket
-  socket.scheduledTimeoutTime = Date.now() + KEEPALIVE_TIMEOUT
+  socket.scheduledTimeoutTime = Date.now() + config.keepaliveTimeoutMs
   socket.timeoutTimer = setTimeout ->
     if not clients[socket.clientID]?
       return
@@ -509,7 +490,7 @@ scheduleTimeout = (socket) ->
       return
     console.log "keepalive timeout: #{socket.clientID}"
     teardownClient socket.clientID
-  , KEEPALIVE_TIMEOUT
+  , config.keepaliveTimeoutMs
 
 handleOnData = (c, data) ->
   id_str = c.clientID
@@ -629,9 +610,9 @@ server.on 'error', (err) ->
   console.error "Server error: #{err.message}"
   throw err
 
-console.log "Starting server on port #{SERVER_PORT}"
-server.listen SERVER_PORT, '0.0.0.0', 511, ->
-  console.log "Server bound on port #{SERVER_PORT}"
+console.log "Starting server on port #{config.serverPort}"
+server.listen config.serverPort, '0.0.0.0', 511, ->
+  console.log "Server bound on port #{config.serverPort}"
 
 videoSequenceNumber = 0
 audioSequenceNumber = 0
@@ -639,8 +620,9 @@ TIMESTAMP_ROUNDOFF = 4294967296  # 32 bits
 
 lastVideoRTPTimestamp = null
 lastAudioRTPTimestamp = null
-videoRTPTimestampInterval = Math.round 90000 / FRAMERATE
-audioRTPTimestampInterval = Math.round AUDIO_CLOCK_RATE / (AUDIO_SAMPLE_RATE / AUDIO_PERIOD_SIZE)
+videoRTPTimestampInterval = Math.round(90000 / config.videoFrameRate)
+audioRTPTimestampInterval = Math.round(AUDIO_CLOCK_RATE /
+                            (config.audioSampleRate / config.audioPeriodSize))
 
 getNextVideoSequenceNumber = ->
   num = videoSequenceNumber + 1
@@ -667,14 +649,14 @@ getNextAudioRTPTimestamp = ->
     0
 
 videoRTPSocket = dgram.createSocket 'udp4'
-videoRTPSocket.bind serverVideoRTPPort
+videoRTPSocket.bind config.videoRTPServerPort
 videoRTCPSocket = dgram.createSocket 'udp4'
-videoRTCPSocket.bind serverVideoRTCPPort
+videoRTCPSocket.bind config.videoRTCPServerPort
 
 audioRTPSocket = dgram.createSocket 'udp4'
-audioRTPSocket.bind serverAudioRTPPort
+audioRTPSocket.bind config.audioRTPServerPort
 audioRTCPSocket = dgram.createSocket 'udp4'
-audioRTCPSocket.bind serverAudioRTCPPort
+audioRTCPSocket.bind config.audioRTCPServerPort
 
 sendVideoPacketWithFragment = (nalUnit, timestamp) ->
   ts = timestamp % TIMESTAMP_ROUNDOFF
@@ -1092,7 +1074,7 @@ respond = (socket, req, callback) ->
         socket.isAuthenticated = true
         res = """
         HTTP/1.0 200 OK
-        Server: #{SERVER_NAME}
+        Server: #{config.serverName}
         Connection: close
         Date: #{getDateHeader()}
         Cache-Control: no-store
@@ -1130,14 +1112,15 @@ respond = (socket, req, callback) ->
       #   2: Interleaved Mode (for STAP-B, MTAP16, MTAP24, FU-A, FU-B)
       # see Section 6.2 of http://tools.ietf.org/html/rfc6184
       #
-      # config: for MPEG-4 Audio streams, use hexstring of AudioSpecificConfig()
-      # see Table 1.16 of AudioSpecificConfig definition in "ISO/IEC 14496-3 Part 3: Audio"
-      config = \
+      # configspec: for MPEG-4 Audio streams, use hexstring of AudioSpecificConfig()
+      # see Table 1.13 of AudioSpecificConfig definition in "ISO/IEC 14496-3 Part 3: Audio"
+      configspec = \
         2 << 11 \ # audioObjectType(5 bits) 2 == AAC LC
-        | 7 << 7 \ # samplingFrequencyIndex(4 bits) 0x7 == 22050, 0x4 == 44100, 0x3 == 48000
+        # samplingFrequencyIndex(4 bits)
+        | codecUtils.getSamplingFreqIndex(config.audioSampleRate) << 7 \
         | 1 << 3   # channelConfiguration(4 bits) 1 == 1 channel
         # other GASpecificConfig(3 bits) are all zeroes
-      config = config.toString 16  # get the hexstring
+      configspec = configspec.toString 16  # get the hexstring
       # rtpmap:96 mpeg4-generic/<clock rate>/<channels>
 
       # SDP parameters are defined in RFC 4566.
@@ -1153,14 +1136,14 @@ respond = (socket, req, callback) ->
       a=control:*
       m=audio 0 RTP/AVP 96
       a=rtpmap:96 mpeg4-generic/#{AUDIO_CLOCK_RATE}/1
-      a=fmtp:96 profile-level-id=1;mode=AAC-hbr;sizeLength=13;indexLength=3;indexDeltaLength=3;config=#{config}
+      a=fmtp:96 profile-level-id=1;mode=AAC-hbr;sizeLength=13;indexLength=3;indexDeltaLength=3;config=#{configspec}
       a=control:trackID=1
       m=video 0 RTP/AVP 97
       a=rtpmap:97 H264/90000
       a=fmtp:97 packetization-mode=1;profile-level-id=#{PROFILE_LEVEL_ID};sprop-parameter-sets=#{spropParameterSets}
-      a=cliprect:0,0,#{HEIGHT},#{WIDTH}
-      a=framesize:97 #{WIDTH}-#{HEIGHT}
-      a=framerate:#{FRAMERATE.toFixed 1}
+      a=cliprect:0,0,#{config.height},#{config.width}
+      a=framesize:97 #{config.width}-#{config.height}
+      a=framerate:#{config.videoFrameRate.toFixed 1}
       a=control:trackID=2
 
       """.replace /\n/g, "\r\n"
@@ -1179,7 +1162,7 @@ respond = (socket, req, callback) ->
       Date: #{dateHeader}
       Expires: #{dateHeader}
       Session: #{client.sessionID};timeout=60
-      Server: #{SERVER_NAME}
+      Server: #{config.serverName}
       Cache-Control: no-cache
 
 
@@ -1206,7 +1189,7 @@ respond = (socket, req, callback) ->
         ssrc = client.getClient.audioSSRC
       else
         ssrc = client.audioSSRC
-      serverPort = "#{serverAudioRTPPort}-#{serverAudioRTCPPort}"
+      serverPort = "#{config.audioRTPServerPort}-#{config.audioRTCPServerPort}"
       if (match = /client_port=(\d+)-(\d+)/.exec req.headers.transport)?
         client.clientAudioRTPPort = parseInt match[1]
         client.clientAudioRTCPPort = parseInt match[2]
@@ -1216,7 +1199,7 @@ respond = (socket, req, callback) ->
         ssrc = client.getClient.videoSSRC
       else
         ssrc = client.videoSSRC
-      serverPort = "#{serverVideoRTPPort}-#{serverVideoRTCPPort}"
+      serverPort = "#{config.videoRTPServerPort}-#{config.videoRTCPServerPort}"
       if (match = /client_port=(\d+)-(\d+)/.exec req.headers.transport)?
         client.clientVideoRTPPort = parseInt match[1]
         client.clientVideoRTCPPort = parseInt match[2]
@@ -1289,7 +1272,7 @@ respond = (socket, req, callback) ->
     Transport: #{transportHeader}
     Session: #{client.sessionID};timeout=60
     CSeq: #{req.headers.cseq}
-    Server: #{SERVER_NAME}
+    Server: #{config.serverName}
     Cache-Control: no-cache
 
 
@@ -1322,7 +1305,7 @@ respond = (socket, req, callback) ->
     Session: #{client.sessionID};timeout=60
     CSeq: #{req.headers.cseq}
     RTP-Info: url=#{baseUrl}/trackID=1;seq=#{getNextAudioSequenceNumber()};rtptime=#{getNextAudioRTPTimestamp()},url=#{baseUrl}/trackID=2;seq=#{getNextVideoSequenceNumber()};rtptime=#{getNextVideoRTPTimestamp()}
-    Server: #{SERVER_NAME}
+    Server: #{config.serverName}
     Cache-Control: no-cache
 
 
