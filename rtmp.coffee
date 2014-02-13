@@ -1173,24 +1173,24 @@ class RTMPSession
         createAMF0Data({
           cuePoints: []
           audiodatarate: config.audioBitrateKbps
-          hasVideo: true
-          stereo: false
+          hasVideo: config.flv.hasVideo
+          stereo: config.flv.stereo
           canSeekToEnd: false
           framerate: config.videoFrameRate
           audiosamplerate: config.audioSampleRate
-          videocodecid: 'avc1'  # H.264
+          videocodecid: config.flv.videocodecid
           hasAudio: true
           audiodelay: 0
           height: config.height
           hasMetadata: true
-          audiocodecid: 'mp4a'  # AAC
-          audiochannels: 1
+          audiocodecid: config.flv.audiocodecid
+          audiochannels: config.flv.audiochannels
           videodatarate: config.videoBitrateKbps
           hasCuePoints: false
           width: config.width
-          aacaot: 2  # AAC audio object type: 2=AAC-LC
-          avclevel: 30  # Level 3.0
-          avcprofile: 66  # Baseline profile
+          aacaot: config.flv.aacaot
+          avclevel: config.flv.avclevel
+          avcprofile: config.flv.avcprofile
         })
       ]
     , @chunkSize

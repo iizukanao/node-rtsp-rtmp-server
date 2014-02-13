@@ -25,6 +25,31 @@ module.exports =
   # Audio bitrate in Kbps
   audioBitrateKbps: 40
 
+  flv:
+    # Has video?
+    hasVideo: true
+
+    # Is audio stereo?
+    stereo: false
+
+    # Video codec ID
+    videocodecid: 'avc1'  # H.264
+
+    # Audio codec ID
+    audiocodecid: 'mp4a'  # AAC
+
+    # Number of audio channels
+    audiochannels: 1
+
+    # MPEG-4 audio object type
+    aacaot: 2  # AAC LC
+
+    # AVC level
+    avclevel: 31  # Level 3.1
+
+    # AVC profile_idc
+    avcprofile: 66  # Baseline profile
+
   # UNIX domain sockets used for receiving audio and video frames
   videoReceiverPath: '/tmp/node_rtsp_rtmp_videoReceiver'
   videoControlPath : '/tmp/node_rtsp_rtmp_videoControl'
