@@ -90,8 +90,8 @@ httpHandler = new HTTPHandler
 #     constraint_set4_flag: Must be 0 (ignored by decoders in this case); Main=0? (frame_mbs_only_flag)
 #     constraint_set5_flag: Must be 0 (ignored by decoders in this case); Main=1 (B frames are not present)
 #     reserved_zero_2bits : both 0
-#   3) level_idc = 30 (Level 3.0)
-PROFILE_LEVEL_ID = '42C01E'  # Baseline Profile, Level 3.0
+#   3) level_idc = 31 (Level 3.1)
+PROFILE_LEVEL_ID = '42C01F'  # Baseline Profile, Level 3.1
 # PROFILE_LEVEL_ID will be replaced with incoming SPS packet (NAL unit type 7), from byte 1 to 3
 
 spropParameterSets = ''  # will be populated later
