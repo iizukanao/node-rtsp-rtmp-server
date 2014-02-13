@@ -40,6 +40,9 @@ module.exports =
   # RTMP stream name
   rtmpApplicationName: 'live'
 
+  # Enable RTMPT and RTMPTE
+  enableRTMPT: true
+
 
   ##########################
   ## Advanced configurations

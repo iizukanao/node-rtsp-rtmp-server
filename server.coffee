@@ -1034,7 +1034,7 @@ respond = (socket, req, callback) ->
     callback null, res
   else if req.method is 'POST' and req.protocol.indexOf('HTTP') isnt -1
     pathname = url.parse(req.uri).pathname
-    if ENABLE_RTMPT and /^\/(?:fcs|open|idle|send|close)\//.test pathname
+    if config.enableRTMPT and /^\/(?:fcs|open|idle|send|close)\//.test pathname
       rtmpServer.handleRTMPTRequest req, (err, output, resultOpts) ->
         if err
           console.error "[rtmpt] Error: #{err}"
