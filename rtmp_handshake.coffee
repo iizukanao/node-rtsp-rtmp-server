@@ -1,3 +1,5 @@
+# RTMP handshake
+
 crypto = require 'crypto'
 
 MESSAGE_FORMAT_1 = 1
@@ -5,7 +7,7 @@ MESSAGE_FORMAT_2 = 2
 MESSAGE_FORMAT_UNKNOWN = -1
 
 RTMP_SIG_SIZE = 1536
-SHA256DL = 32
+SHA256DL = 32  # SHA256 digest length (bytes)
 
 KEY_LENGTH = 128
 
@@ -20,7 +22,7 @@ RandomCrud = new Buffer [
 GenuineFMSConst = "Genuine Adobe Flash Media Server 001"
 GenuineFMSConstCrud = Buffer.concat [new Buffer(GenuineFMSConst, "utf8"), RandomCrud]
 
-GenuineFPConst  = "Genuine Adobe Flash Player 001" # 30 bytes long
+GenuineFPConst  = "Genuine Adobe Flash Player 001"
 GenuineFPConstCrud = Buffer.concat [new Buffer(GenuineFPConst, "utf8"), RandomCrud]
 
 GetClientGenuineConstDigestOffset = (buf) ->
@@ -124,6 +126,7 @@ generateS2 = (messageFormat, clientsig, callback) ->
     callback null, s2Bytes,
       clientPublicKey: key
 
+# Generate S0/S1/S2 combined message
 generateS0S1S2 = (clientsig, callback) ->
   clientType = clientsig[0]
   console.log "client type: #{clientType}"
@@ -138,9 +141,9 @@ generateS0S1S2 = (clientsig, callback) ->
   generateS1 messageFormat, dh, (err, s1Bytes) ->
     generateS2 messageFormat, clientsig, (err, s2Bytes, keys) ->
       allBytes = Buffer.concat [
-        new Buffer([ clientType ]),  # version
-        s1Bytes,
-        s2Bytes
+        new Buffer([ clientType ]),  # version (S0)
+        s1Bytes,  # S1
+        s2Bytes   # S2
       ], 3073
       keys.dh = dh
       callback null, allBytes, keys
