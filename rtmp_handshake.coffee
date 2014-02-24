@@ -2,8 +2,8 @@
 
 crypto = require 'crypto'
 
-MESSAGE_FORMAT_1 = 1
-MESSAGE_FORMAT_2 = 2
+MESSAGE_FORMAT_1       =  1
+MESSAGE_FORMAT_2       =  2
 MESSAGE_FORMAT_UNKNOWN = -1
 
 RTMP_SIG_SIZE = 1536
@@ -135,7 +135,7 @@ generateS0S1S2 = (clientsig, callback) ->
   dh = DHKeyGenerate KEY_LENGTH * 8
 
   messageFormat = detectClientMessageFormat clientsig
-  if messageFormat is -1
+  if messageFormat is MESSAGE_FORMAT_UNKNOWN
     console.warn "[rtmp:handshake] warning: unknown message format, assuming format 1"
     messageFormat = 1
   generateS1 messageFormat, dh, (err, s1Bytes) ->
