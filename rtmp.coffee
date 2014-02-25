@@ -36,10 +36,6 @@ lastTimestamp = null
 # Buffer for retaining codec config NAL units
 codecConfigPackets = []
 
-calcHmac = (data, key) ->
-  hmac = crypto.createHmac 'sha256', key
-  hmac.update data
-  return hmac.digest()
 # NAL unit type 7: Sequence parameter set
 spsPacket = null
 
@@ -987,8 +983,8 @@ class RTMPSession
       @clientPublicKey  = keys.clientPublicKey
       @dh = keys.dh
       @sharedSecret = @dh.computeSecret @clientPublicKey
-      @keyOut = calcHmac(@dh.getPublicKey(), @sharedSecret)[0..15]
-      @keyIn = calcHmac(@clientPublicKey, @sharedSecret)[0..15]
+      @keyOut = codecUtils.calcHmac(@dh.getPublicKey(), @sharedSecret)[0..15]
+      @keyIn = codecUtils.calcHmac(@clientPublicKey, @sharedSecret)[0..15]
 
       @cipherOut = crypto.createCipheriv 'rc4', @keyOut, ''
       @cipherIn  = crypto.createCipheriv 'rc4', @keyIn, ''

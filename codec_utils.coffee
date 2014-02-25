@@ -1,4 +1,12 @@
+crypto = require 'crypto'
+
 module.exports =
+  # Calculate the digest of data and return a buffer
+  calcHmac: (data, key) ->
+    hmac = crypto.createHmac 'sha256', key
+    hmac.update data
+    return hmac.digest()
+
   # ISO 14496-3 - Table 1.16
   getSamplingFreqIndex: (sampleRate) ->
     switch sampleRate
