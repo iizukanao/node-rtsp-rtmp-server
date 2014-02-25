@@ -1,3 +1,5 @@
+# RTMP server
+
 net           = require 'net'
 crypto        = require 'crypto'
 Sequent       = require 'sequent'
@@ -7,29 +9,42 @@ codecUtils    = require './codec_utils'
 config        = require './config'
 
 # enum
-SESSION_STATE_NEW = 1
+SESSION_STATE_NEW               = 1
 SESSION_STATE_HANDSHAKE_ONGOING = 2
-SESSION_STATE_HANDSHAKE_DONE = 3
+SESSION_STATE_HANDSHAKE_DONE    = 3
 
 TIMESTAMP_ROUNDOFF = 4294967296  # 32 bits
 
+# Number of active sessions
 sessionsCount = 0
+
+# Active sessions
 sessions = {}
+
+# Number of active RTMPT sessions
 rtmptSessionsCount = 0
+
+# Active RTMPT sessions
 rtmptSessions = {}
 
+# The newest client ID
 clientMaxId = 0
 
+# The latest timestamp of video or audio data
 lastTimestamp = null
 
+# Buffer for retaining codec config NAL units
 codecConfigPackets = []
-spsPacket = null  # NAL unit type 7: Sequence parameter set
-ppsPacket = null  # NAL unit type 8: Picture parameter set
 
 calcHmac = (data, key) ->
   hmac = crypto.createHmac 'sha256', key
   hmac.update data
   return hmac.digest()
+# NAL unit type 7: Sequence parameter set
+spsPacket = null
+
+# NAL unit type 8: Picture parameter set
+ppsPacket = null
 
 # Generate a new client ID without collision
 generateNewClientID = ->
