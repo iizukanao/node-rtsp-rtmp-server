@@ -3,8 +3,8 @@
 net           = require 'net'
 crypto        = require 'crypto'
 Sequent       = require 'sequent'
-RTMPHandshake = require './rtmp_handshake'
 
+RTMPHandshake = require './rtmp_handshake'
 codecUtils    = require './codec_utils'
 config        = require './config'
 
