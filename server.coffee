@@ -260,9 +260,6 @@ stopSendingRTCP = (client) ->
     client.timeoutID = null
 
 sendSenderReports = (client) ->
-  if not client.timeoutID?
-    return
-
   sendAudioSenderReport client
   sendVideoSenderReport client
 
