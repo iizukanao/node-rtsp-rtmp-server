@@ -50,8 +50,9 @@ publicAPI =
       # AU Header
       # AU-size(13) by SDP
       # AU-Index(3) or AU-Index-Delta(3)
-      # AU-Index is used for the first access unit, and the value must be 0
-      # AU-Index-Delta is used for the consecutive When interleaving is not applied, AU-Index-Delta is 0
+      # AU-Index is used for the first access unit, and the value must be 0.
+      # AU-Index-Delta is used for the consecutive access units.
+      # When interleaving is not applied, AU-Index-Delta is 0.
       opts.accessUnitLength >> 5,
       (opts.accessUnitLength & 0b11111) << 3,
       # There is no Auxiliary Section for AAC-hbr
