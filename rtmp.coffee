@@ -33,9 +33,6 @@ clientMaxId = 0
 # The latest timestamp of video or audio data
 lastTimestamp = null
 
-# Buffer for retaining codec config NAL units
-codecConfigPackets = []
-
 # NAL unit type 7: Sequence parameter set
 spsPacket = null
 
@@ -59,15 +56,7 @@ generateClientID = ->
   return clientID
 
 retainCodecConfigPacket = (buf) ->
-  if codecConfigPackets.length >= 2
-    console.error "Error: no more codec config is needed"
-    return
-  codecConfigPackets.push buf
   nalUnitType = buf[0] & 0x1f
-  console.log "[rtmp] Retained codec config for NAL unit type #{nalUnitType}"
-  for b in buf
-    process.stdout.write b.toString(16) + " "
-  console.log()
   if nalUnitType is 7
     spsPacket = buf
   else if nalUnitType is 8
@@ -1542,7 +1531,8 @@ class RTMPServer
 
   startStream: (timeForVideoRTPZero) ->
     console.log "RTMP server startStream"
-    codecConfigPackets = []
+    spsPacket = null
+    ppsPacket = null
 
   handleRTMPTRequest: (req, callback) ->
     # /fcs/ident2 will be handled in another place
