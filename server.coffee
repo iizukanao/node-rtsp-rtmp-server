@@ -259,7 +259,12 @@ stopSendingRTCP = (client) ->
     clearTimeout client.timeoutID
     client.timeoutID = null
 
+# Send RTCP sender report packets for audio and video streams
 sendSenderReports = (client) ->
+  if not clients[client.socket.clientID]? # socket is already closed
+    stopSendingRTCP client
+    return
+
   sendAudioSenderReport client
   sendVideoSenderReport client
 
