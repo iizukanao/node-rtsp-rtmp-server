@@ -875,8 +875,7 @@ onReceiveAudioPacket = (adtsFrame, pts) ->
     console.log "audio object type is changed to #{config.audioObjectType}"
     updateConfig()
 
-#  rawDataBlock = adtsFrame[7..]
-  rawDataBlock = adtsFrame
+  rawDataBlock = adtsFrame[7..]
   rtmpServer.sendAudioPacket rawDataBlock, pts
 
   if ++audioSequenceNumber > 65535
