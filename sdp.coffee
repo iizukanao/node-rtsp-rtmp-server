@@ -1,9 +1,9 @@
 # SDP spec:
 #   RFC 4566  https://tools.ietf.org/html/rfc4566
 
-codec_utils = require './codec_utils'
+aac = require './aac'
 
-publicAPI =
+api =
   # opts:
   #   username (string): Username or '-'
   #   sessionID (string): Session ID (numeric string)
@@ -19,6 +19,7 @@ publicAPI =
   #   audioClockRate (number): clock rate for audio
   #   audioChannels (number): number of audio channels
   #   audioSampleRate (number): audio sample rate
+  #   audioObjectType (number): audio object type
   #   videoPayloadType (number): payload type for video
   #   videoEncodingName (string): encoding name for video
   #   videoClockRate (number): clock rate for video
@@ -37,28 +38,28 @@ publicAPI =
       if not opts?[prop]?
         throw new Error "createSDP: property #{prop} is required"
 
-    # packetization-mode: (see Section 5.4 of RFC 6184 for details)
-    #   0: Single NAL Unit Mode
-    #   1: Non-Interleaved Mode (for STAP-A, FU-A)
-    #   2: Interleaved Mode (for STAP-B, MTAP16, MTAP24, FU-A, FU-B)
-    #
     # configspec: for MPEG-4 Audio streams, use hexstring of AudioSpecificConfig()
     # see 1.6.2.1 of ISO/IEC 14496-3 for the details of AudioSpecificConfig
-    configspec = \
-      2 << 11 \ # audioObjectType(5 bits) 2 == AAC LC
-      # samplingFrequencyIndex(4 bits)
-      | codec_utils.getSamplingFreqIndex(opts.audioSampleRate) << 7 \
-      | opts.audioChannels << 3  # channelConfiguration(4 bits)
-      # other GASpecificConfig(3 bits) are all zeroes
-    configspec = configspec.toString 16  # convert into hexstring
-    # rtpmap:96 mpeg4-generic/<audio clock rate>/<audio channels>
+    configspec = new Buffer aac.createAudioSpecificConfig
+      audioObjectType: opts.audioObjectType
+      sampleRate: opts.audioSampleRate
+      channels: opts.audioChannels
+      frameLength: 1024  # TODO: How to detect 960?
+    configspec = configspec.toString 'hex'
 
     # SDP parameters are defined in RFC 4566.
     # sizeLength, indexLength, indexDeltaLength are defined by
     # RFC 3640 or RFC 5691.
     #
-    # TODO: profile-level-id for audio should be computed from
-    #       PCU and RCU.
+    # packetization-mode: (see Section 5.4 of RFC 6184 for details)
+    #   0: Single NAL Unit Mode
+    #   1: Non-Interleaved Mode (for STAP-A, FU-A)
+    #   2: Interleaved Mode (for STAP-B, MTAP16, MTAP24, FU-A, FU-B)
+    #
+    # rtpmap:96 mpeg4-generic/<audio clock rate>/<audio channels>
+    #
+    # TODO: How to determine profile-level-id?
+    #   1: Main Audio Profile Level 1
     """
     v=0
     o=#{opts.username} #{opts.sessionID} #{opts.sessionVersion} IN #{opts.addressType} #{opts.unicastAddress}
@@ -82,4 +83,4 @@ publicAPI =
 
     """.replace /\n/g, "\r\n"
 
-module.exports = publicAPI
+module.exports = api

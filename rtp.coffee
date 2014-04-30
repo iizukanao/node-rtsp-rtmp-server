@@ -15,7 +15,7 @@ TIMESTAMP_ROUNDOFF = 4294967296  # 32 bits
 
 RTP_HEADER_LEN = 12
 
-publicAPI =
+api =
   # Number of bytes in RTP header
   RTP_HEADER_LEN: RTP_HEADER_LEN
 
@@ -132,7 +132,7 @@ publicAPI =
     octetCount = opts.octetCount
     if not opts?.time?
       throw new Error "createSenderReport: time is required"
-    ntp_ts = publicAPI.getNTPTimestamp opts.time
+    ntp_ts = api.getNTPTimestamp opts.time
     if not opts?.rtpTime?
       throw new Error "createSenderReport: rtpTime is required"
     rtp_ts = opts.rtpTime
@@ -188,4 +188,4 @@ publicAPI =
       octetCount & 0xff,
     ]
 
-module.exports = publicAPI
+module.exports = api

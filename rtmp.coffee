@@ -7,6 +7,8 @@ Sequent       = require 'sequent'
 RTMPHandshake = require './rtmp_handshake'
 codecUtils    = require './codec_utils'
 config        = require './config'
+aac           = require './aac'
+flv           = require './flv'
 
 # enum
 SESSION_STATE_NEW               = 1
@@ -103,7 +105,7 @@ sendVideoMessage = (params) ->
       if session.isFirstVideoMessage
         emptyVideoMessage = session.createVideoMessage
           body: new Buffer [
-            (5 << 4) | config.videoCodecId,
+            (5 << 4) | config.flv.videocodecid,
             0x00
           ]
           timestamp: 0
@@ -389,18 +391,21 @@ flushRTMPMessages = ->
   if queuedRTMPMessages.length < config.rtmpMessageQueueSize
     return
 
-  mostRecentAVType = queuedRTMPMessages[queuedRTMPMessages.length-1].avType
-  largestIndex = null
-  for i in [queuedRTMPMessages.length-2..0]
-    rtmpMessage = queuedRTMPMessages[i]
-    if rtmpMessage.avType isnt mostRecentAVType
-      largestIndex = i
-      break
-  if largestIndex is null
-    return
+  rtmpMessagesToSend = queuedRTMPMessages
+  queuedRTMPMessages = []
 
-  rtmpMessagesToSend = queuedRTMPMessages[0..largestIndex]
-  queuedRTMPMessages = queuedRTMPMessages[largestIndex+1..]
+#  mostRecentAVType = queuedRTMPMessages[queuedRTMPMessages.length-1].avType
+#  largestIndex = null
+#  for i in [queuedRTMPMessages.length-2..0]
+#    rtmpMessage = queuedRTMPMessages[i]
+#    if rtmpMessage.avType isnt mostRecentAVType
+#      largestIndex = i
+#      break
+#  if largestIndex is null
+#    return
+#
+#  rtmpMessagesToSend = queuedRTMPMessages[0..largestIndex]
+#  queuedRTMPMessages = queuedRTMPMessages[largestIndex+1..]
 
   allSessions = []
   for clientID, session of rtmptSessions
@@ -1171,24 +1176,24 @@ class RTMPSession
       objects: [
         createAMF0Data('onMetaData'),
         createAMF0Data({
-          cuePoints: []
+          audiocodecid: config.flv.audiocodecid
           audiodatarate: config.audioBitrateKbps
-          hasVideo: config.flv.hasVideo
-          stereo: config.flv.stereo
+          audiodelay: 0
+          audiosamplerate: config.audioSampleRate
           canSeekToEnd: false
           framerate: config.videoFrameRate
-          audiosamplerate: config.audioSampleRate
+          height: config.videoHeight
+          stereo: config.audioChannels > 1
           videocodecid: config.flv.videocodecid
-          hasAudio: true
-          audiodelay: 0
-          height: config.height
-          hasMetadata: true
-          audiocodecid: config.flv.audiocodecid
-          audiochannels: config.flv.audiochannels
           videodatarate: config.videoBitrateKbps
+          width: config.videoWidth
+          cuePoints: []
+          hasVideo: config.flv.hasVideo
+          hasAudio: true
+          hasMetadata: true
+          audiochannels: config.audioChannels
           hasCuePoints: false
-          width: config.width
-          aacaot: config.flv.aacaot
+          aacaot: config.audioObjectType
           avclevel: config.flv.avclevel
           avcprofile: config.flv.avcprofile
         })
@@ -1244,24 +1249,17 @@ class RTMPSession
       chunkSize: @chunkSize
 
     # audio
-    buf = new Buffer [
-      # AUDIODATA tag: appeared in Adobe's Video File Format Spec v10.1 E.4.2.1 AUDIODATA
-      (config.audioCodecId << 4) \ # SoundFormat (4 bits): 10=AAC
-      | (2 << 2) \ # SoundRate (2 bits): 2=22kHz
-      | (1 << 1) \ # SoundSize (1 bit): 1=16-bit samples
-      | 0          # SoundType (1 bit): 0=Mono sound
-      , 0  # AACPacketType (1 bit): 0=AAC sequence header
+    # TODO: support other than AAC too?
+    buf = flv.createAACAudioDataTag
+      aacPacketType: flv.AAC_PACKET_TYPE_SEQUENCE_HEADER
+    # buf is an array at this point
+    buf = buf.concat aac.createAudioSpecificConfig
+      audioObjectType: config.audioObjectType
+      sampleRate: config.audioSampleRate
+      channels: config.audioChannels
+      frameLength: 1024  # TODO: How to detect 960?
+    buf = new Buffer buf
 
-      # AAC AudioSpecificConfig: described in ISO 14496-3 1.6.2.1 AudioSpecificConfig
-      , (2 << 3) \ # audioObjectType (5 bits): 2=AAC LC (Table 1.1)
-      # samplingFrequencyIndex (4 bits): (Table 1.16)
-      | (codecUtils.getSamplingFreqIndex(config.audioSampleRate) >> 1)
-      , ((7 & 0x01) << 7) \ # samplingFrequencyIndex (cont 1 bit)
-      | (1 << 3) \ # channelConfiguration (4 bits): 1=mono
-      | (0 << 2) \ # frameLengthFlag (1 bit): 0=1024
-      | (0 << 1) \ # dependsOnCoreCorder (1 bit): 0=no
-      | 0 # extensionFlag (1 bit): 0 for audio object type 2
-    ]
     audioConfigMessage = createAudioMessage
       body: buf
       timestamp: 0
@@ -1464,6 +1462,9 @@ class RTMPServer
         delete rtmptSessions[socket.rtmptClientID]
         rtmptSessionsCount--
 
+  updateConfig: (newConfig) ->
+    config = newConfig
+
   sendVideoPacket: (nalUnit, timestamp) ->
     timestamp = convertPTSToMilliseconds timestamp
     lastTimestamp = timestamp
@@ -1478,9 +1479,9 @@ class RTMPServer
 
     isKeyFrame = nalUnitType is 5
     if nalUnitType is 5  # IDR picture (keyframe)
-      firstByte = (1 << 4) | config.videoCodecId
+      firstByte = (1 << 4) | config.flv.videocodecid
     else  # non-IDR picture (I frame)
-      firstByte = (2 << 4) | config.videoCodecId
+      firstByte = (2 << 4) | config.flv.videocodecid
     payloadLen = nalUnit.length
     headerBytes = new Buffer [
       # VIDEODATA tag
@@ -1513,14 +1514,10 @@ class RTMPServer
     if sessionsCount + rtmptSessionsCount is 0
       return
 
-    headerBytes = new Buffer [
-        # AUDIODATA tag: appeared in Adobe's Video File Format Spec v10.1 E.4.2.1 AUDIODATA
-        (config.audioCodecId << 4) \ # SoundFormat (4 bits): 10=AAC
-        | (2 << 2) \ # SoundRate (2 bits): 2=22kHz
-        | (1 << 1) \ # SoundSize (1 bit): 1=16-bit samples
-        | 0          # SoundType (1 bit): 0=Mono sound
-        , 1  # AACPacketType (1 bit): 1=AAC raw
-    ]
+    # TODO: support other than AAC too?
+    headerBytes = new Buffer flv.createAACAudioDataTag
+      aacPacketType: flv.AAC_PACKET_TYPE_RAW
+
     buf = Buffer.concat [headerBytes, rawDataBlock], rawDataBlock.length + 2
 
     queueAudioMessage

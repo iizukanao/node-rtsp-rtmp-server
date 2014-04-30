@@ -7,48 +7,16 @@ module.exports =
   serverPort: 80
 
   # Server name to be embedded in response headers
-  serverName: 'node-rtsp-rtmp-server/0.1.0'
+  serverName: 'node-rtsp-rtmp-server/0.2.0'
 
-  # Video frame size
-  width : 1280
-  height: 720
-
-  # How many frames per second
+  # Average frame rate of video
   videoFrameRate: 30
 
-  # Audio sample rate in Hz
-  audioSampleRate: 48000
-
-  # Video bitrate in Kbps
+  # Video bitrate in Kbps (informative)
   videoBitrateKbps: 2000
 
-  # Audio bitrate in Kbps
+  # Audio bitrate in Kbps (informative)
   audioBitrateKbps: 40
-
-  flv:
-    # Has video?
-    hasVideo: true
-
-    # Is audio stereo?
-    stereo: false
-
-    # Video codec ID
-    videocodecid: 'avc1'  # H.264
-
-    # Audio codec ID
-    audiocodecid: 'mp4a'  # AAC
-
-    # Number of audio channels
-    audiochannels: 1
-
-    # MPEG-4 audio object type
-    aacaot: 2  # AAC LC
-
-    # AVC level
-    avclevel: 31  # Level 3.1
-
-    # AVC profile_idc
-    avcprofile: 66  # Baseline profile
 
   # UNIX domain sockets used for receiving audio and video frames
   videoReceiverPath: '/tmp/node_rtsp_rtmp_videoReceiver'
@@ -68,6 +36,16 @@ module.exports =
   # Enable RTMPT and RTMPTE
   enableRTMPT: true
 
+  flv:
+    # Has video?
+    hasVideo: true
+
+    # See: Adobe Flash Video File Format Specification Version 10.1 - E.4.3.1 VIDEODATA
+    videocodecid: 7  # H.264
+
+    # See: Adobe Flash Video File Format Specification Version 10.1 - E.4.2.1 AUDIODATA
+    audiocodecid: 10 # AAC
+
 
   ##########################
   ## Advanced configurations
@@ -75,12 +53,6 @@ module.exports =
 
   # Period size of each audio frame. Use 1024 for picam.
   audioPeriodSize: 1024
-
-  # See: Adobe Flash Video File Format Specification Version 10.1 - E.4.3.1 VIDEODATA
-  videoCodecId: 7  # H.264
-
-  # See: Adobe Flash Video File Format Specification Version 10.1 - E.4.2.1 AUDIODATA
-  audioCodecId: 10 # AAC
 
   # HTTP keepalive timeout
   keepaliveTimeoutMs: 30000  # milliseconds

@@ -13,13 +13,17 @@ url         = require 'url'
 path        = require 'path'
 spawn       = require('child_process').spawn
 
-codecUtils  = require './codec_utils'
+codec_utils = require './codec_utils'
 config      = require './config'
 RTMPServer  = require './rtmp'
 HTTPHandler = require './http'
+rtp         = require './rtp'
+sdp         = require './sdp'
+h264        = require './h264'
+aac         = require './aac'
 
-# Audio clock rate in Hz
-AUDIO_CLOCK_RATE = 90000
+# Clock rate for audio stream
+audioClockRate = null
 
 # Start playing from keyframe
 ENABLE_START_PLAYING_FROM_KEYFRAME = false
@@ -36,11 +40,11 @@ MONTH_NAMES = [
   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
 ]
 
-# Number of seconds from 1900-01-01 to 1970-01-01
-EPOCH = 2208988800
-
-# Constant for calculating NTP fractional second
-NTP_SCALE_FRAC = 4294.967295
+detectedVideoWidth = null
+detectedVideoHeight = null
+detectedAudioSampleRate = null
+detectedAudioChannels = null
+detectedAudioPeriodSize = null
 
 # Delete UNIX domain sockets
 deleteReceiverSocketsSync = ->
@@ -48,22 +52,22 @@ deleteReceiverSocketsSync = ->
     try
       fs.unlinkSync config.videoReceiverPath
     catch e
-      console.error "unlink: #{e}"
+      console.error "unlink error: #{e}"
   if fs.existsSync config.videoControlPath
     try
       fs.unlinkSync config.videoControlPath
     catch e
-      console.error "unlink: #{e}"
+      console.error "unlink error: #{e}"
   if fs.existsSync config.audioReceiverPath
     try
       fs.unlinkSync config.audioReceiverPath
     catch e
-      console.error "unlink: #{e}"
+      console.error "unlink error: #{e}"
   if fs.existsSync config.audioControlPath
     try
       fs.unlinkSync config.audioControlPath
     catch e
-      console.error "unlink: #{e}"
+      console.error "unlink error: #{e}"
 
 deleteReceiverSocketsSync()
 
@@ -73,6 +77,9 @@ rtmpServer.start ->
   # RTMP server is ready
 
 httpHandler = new HTTPHandler
+
+updateConfig = ->
+  rtmpServer.updateConfig config
 
 # profile-level-id is defined in RFC 6184.
 # profile_idc, constraint flags for Baseline profile are
@@ -95,18 +102,19 @@ PROFILE_LEVEL_ID = '42C01F'  # Baseline Profile, Level 3.1
 # PROFILE_LEVEL_ID will be replaced with incoming SPS packet (NAL unit type 7), from byte 1 to 3
 
 spropParameterSets = ''  # will be populated later
+spsString = ''
+ppsString = ''
 
-addSpropParam = (buf) ->
+# Update spropParameterSets based on NAL unit
+updateSpropParam = (buf) ->
   nalUnitType = buf[0] & 0x1f
   if nalUnitType is 7  # SPS packet
+    spsString = buf.toString 'base64'
     PROFILE_LEVEL_ID = buf[1..3].toString('hex').toUpperCase()
-    console.log "PROFILE_LEVEL_ID has been updated to #{PROFILE_LEVEL_ID}"
-  if spropParameterSets.indexOf(',') isnt -1
-    console.warn "[warning] sprop is already filled. sprop=#{spropParameterSets} buf=#{buf.toString 'base64'}"
-    return
-  if spropParameterSets isnt ''
-    spropParameterSets += ','
-  spropParameterSets += buf.toString 'base64'
+  else if nalUnitType is 8  # PPS packet
+    ppsString = buf.toString 'base64'
+
+  spropParameterSets = spsString + ',' + ppsString
 
 clientsCount = 0
 clients = {}
@@ -127,77 +135,63 @@ getDateHeader = ->
 getLocalIP = ->
   ifaces = os.networkInterfaces()
 
-  if ifaces.wlan0?
-    for addr in ifaces.wlan0
-      if addr.family is 'IPv4'
-        return addr.address
+  # wlan0, wlan1, ...
+  for name, info of ifaces
+    if /^wlan\d+$/.test name
+      for addr in ifaces[name]
+        if addr.family is 'IPv4'
+          return addr.address
 
-  if ifaces.eth0?
-    for addr in ifaces.eth0
-      if addr.family is 'IPv4'
-        return addr.address
+  # eth0, eth1, ...
+  for name, info of ifaces
+    if /^eth\d+$/.test name
+      for addr in ifaces[name]
+        if addr.family is 'IPv4'
+          return addr.address
+
+  # en0, en1, ...
+  for name, info of ifaces
+    if /^en\d+$/.test name
+      for addr in ifaces[name]
+        if addr.family is 'IPv4'
+          return addr.address
 
   "127.0.0.1"
 
 getExternalIP = ->
   "127.0.0.1" # TODO: Fetch this from UPnP or something
 
+# Get local IP address which is meaningful to the
+# partner of the given socket
+getMeaningfulIPTo = (socket) ->
+  if isPrivateNetwork socket
+    return getLocalIP()
+  else
+    return getExternalIP()
+
 timeForVideoRTPZero = null
 timeForAudioRTPZero = null
 
-getNTPTimestamp = (time) ->
-  sec = Math.round(time / 1000)
-  ms = time - (sec * 1000)
-  ntp_sec = sec + EPOCH
-  ntp_usec = Math.round(ms * 1000 * NTP_SCALE_FRAC)
-  return [ntp_sec, ntp_usec]
-
 getVideoRTPTimestamp = (time) ->
-  if not timeForVideoRTPZero?
-    throw new Error "timeForVideoRTPZero is not set"
-  ts = Math.round (time - timeForVideoRTPZero) * 90 % TIMESTAMP_ROUNDOFF
-  ts
+  return Math.round time * 90 % TIMESTAMP_ROUNDOFF
 
 getAudioRTPTimestamp = (time) ->
-  if not timeForAudioRTPZero?
-    throw new Error "timeForAudioRTPZero is not set"
-  ts = Math.round ((time - timeForAudioRTPZero) * AUDIO_CLOCK_RATE / 1000) % TIMESTAMP_ROUNDOFF
-  ts
+  if not audioClockRate?
+    throw new Error "audioClockRate is null"
+  return Math.round time * (audioClockRate / 1000) % TIMESTAMP_ROUNDOFF
 
 sendVideoSenderReport = (client) ->
   if not timeForVideoRTPZero?
     return
 
   time = new Date().getTime()
-  ntp_ts = getNTPTimestamp time
-  rtp_ts = getVideoRTPTimestamp time
-  length = 6  # packet bytes / 4 (32 bits) - 1
-  data = [
-    # [header]
-    # version(2), padding(1), reception report count(5)
-    0x80,
-    # packet type(8)
-    200,
-    # length(16)
-    length >> 8, length & 0xff,
-    # SSRC of sender(32)
-    (client.videoSSRC >>> 24) & 0xff, (client.videoSSRC >>> 16) & 0xff,
-    (client.videoSSRC >>> 8) & 0xff, client.videoSSRC & 0xff,
+  buf = new Buffer rtp.createSenderReport
+    time: time
+    rtpTime: getVideoRTPTimestamp time - timeForVideoRTPZero
+    ssrc: client.videoSSRC
+    packetCount: client.videoPacketCount
+    octetCount: client.videoOctetCount
 
-    # [sender info]
-    # NTP timestamp(64)
-    (ntp_ts[0] >>> 24) & 0xff, (ntp_ts[0] >>> 16) & 0xff, (ntp_ts[0] >>> 8) & 0xff, ntp_ts[0] & 0xff,
-    (ntp_ts[1] >>> 24) & 0xff, (ntp_ts[1] >>> 16) & 0xff, (ntp_ts[1] >>> 8) & 0xff, ntp_ts[1] & 0xff,
-    # RTP timestamp(32)
-    (rtp_ts >>> 24) & 0xff, (rtp_ts >>> 16) & 0xff, (rtp_ts >>> 8) & 0xff, rtp_ts & 0xff,
-    # sender's packet count(32)
-    (client.videoPacketCount >>> 24) & 0xff, (client.videoPacketCount >>> 16) & 0xff,
-    (client.videoPacketCount >>> 8) & 0xff, client.videoPacketCount & 0xff,
-    # sender's octet count(32)
-    (client.videoOctetCount >>> 24) & 0xff, (client.videoOctetCount >>> 16) & 0xff,
-    (client.videoOctetCount >>> 8) & 0xff, client.videoOctetCount & 0xff,
-  ]
-  buf = new Buffer data
   if client.useTCPForVideo
     if client.useHTTP
       if client.httpClientType is 'GET'
@@ -214,35 +208,13 @@ sendAudioSenderReport = (client) ->
     return
 
   time = new Date().getTime()
-  ntp_ts = getNTPTimestamp time
-  rtp_ts = getAudioRTPTimestamp(time)
-  length = 6  # packet bytes / 4 (32 bits) - 1
-  data = [
-    # [header]
-    # version(2), padding(1), reception report count(5)
-    0x80,
-    # packet type(8)
-    200,
-    # length(16)
-    length >> 8, length & 0xff,
-    # SSRC of sender(32)
-    (client.audioSSRC >>> 24) & 0xff, (client.audioSSRC >>> 16) & 0xff,
-    (client.audioSSRC >>> 8) & 0xff, client.audioSSRC & 0xff,
+  buf = new Buffer rtp.createSenderReport
+    time: time
+    rtpTime: getAudioRTPTimestamp time - timeForAudioRTPZero
+    ssrc: client.audioSSRC
+    packetCount: client.audioPacketCount
+    octetCount: client.audioOctetCount
 
-    # [sender info]
-    # NTP timestamp(64)
-    (ntp_ts[0] >>> 24) & 0xff, (ntp_ts[0] >>> 16) & 0xff, (ntp_ts[0] >>> 8) & 0xff, ntp_ts[0] & 0xff,
-    (ntp_ts[1] >>> 24) & 0xff, (ntp_ts[1] >>> 16) & 0xff, (ntp_ts[1] >>> 8) & 0xff, ntp_ts[1] & 0xff,
-    # RTP timestamp(32)
-    (rtp_ts >>> 24) & 0xff, (rtp_ts >>> 16) & 0xff, (rtp_ts >>> 8) & 0xff, rtp_ts & 0xff,
-    # sender's packet count(32)
-    (client.audioPacketCount >>> 24) & 0xff, (client.audioPacketCount >>> 16) & 0xff,
-    (client.audioPacketCount >>> 8) & 0xff, client.audioPacketCount & 0xff,
-    # sender's octet count(32)
-    (client.audioOctetCount >>> 24) & 0xff, (client.audioOctetCount >>> 16) & 0xff,
-    (client.audioOctetCount >>> 8) & 0xff, client.audioOctetCount & 0xff,
-  ]
-  buf = new Buffer data
   if client.useTCPForAudio
     if client.useHTTP
       if client.httpClientType is 'GET'
@@ -311,10 +283,8 @@ onReceiveAudioBuffer = (buf) ->
         buf[3] * 0x010000       + \
         buf[4] * 0x0100         + \
         buf[5]
-  if AUDIO_CLOCK_RATE isnt 90000
-    pts = pts * AUDIO_CLOCK_RATE / 90000
-  rawDataBlock = buf.slice 6
-  onReceiveAudioPacket rawDataBlock, pts
+  adtsFrame = buf.slice 6
+  onReceiveAudioPacket adtsFrame, pts
 
 videoReceiveServer = net.createServer (c) ->
   console.log "new videoReceiveServer connection"
@@ -585,7 +555,7 @@ onClientConnect = (c) ->
       sessionID: sessionID
       socket: c
       ip: c.remoteAddress
-      isGlobal: not isLocal c
+      isGlobal: not isPrivateNetwork c
       videoPacketCount: 0
       videoOctetCount: 0
       audioPacketCount: 0
@@ -639,8 +609,7 @@ TIMESTAMP_ROUNDOFF = 4294967296  # 32 bits
 lastVideoRTPTimestamp = null
 lastAudioRTPTimestamp = null
 videoRTPTimestampInterval = Math.round(90000 / config.videoFrameRate)
-audioRTPTimestampInterval = Math.round(AUDIO_CLOCK_RATE /
-                            (config.audioSampleRate / config.audioPeriodSize))
+audioRTPTimestampInterval = config.audioPeriodSize
 
 getNextVideoSequenceNumber = ->
   num = videoSequenceNumber + 1
@@ -682,18 +651,13 @@ sendVideoPacketWithFragment = (nalUnit, timestamp) ->
 
   nalUnitType = nalUnit[0] & 0x1f
   if nalUnitType in [7, 8] # sprop
-    console.log "[rtsp-fragment] addSpropParam by NAL unit type #{nalUnitType}"
-    addSpropParam nalUnit
-    return
-
-  if nalUnitType not in [1, 5]
-    console.log "nalUnitType: #{nalUnitType}"
+    updateSpropParam nalUnit
 
   if clientsCount is 0
     return
 
   isKeyFrame = nalUnitType is 5
-  nal_ref_idc = nalUnit[0] & 0b01100000  # skip ">> 5" operation here
+  nal_ref_idc = nalUnit[0] & 0b01100000  # skip ">> 5" operation
 
   nalUnit = nalUnit.slice 1
 
@@ -706,35 +670,25 @@ sendVideoPacketWithFragment = (nalUnit, timestamp) ->
     thisNalUnit = nalUnit.slice 0, SINGLE_NAL_UNIT_MAX_SIZE
     nalUnit = nalUnit.slice SINGLE_NAL_UNIT_MAX_SIZE
 
-    if fragmentNumber is 1
-      start_bit = 1
-    else
-      start_bit = 0
-
     # TODO: sequence number should be started from a random number
-    # Section 5.1 of RFC 3350 and 6184
-    rtpData = [
-      # version(2), padding(1), extension(1), CSRC count(4)
-      0x80,
-      # marker(1) == 0, payload type(7)
-      97,
-      # sequence number(16)
-      videoSequenceNumber >>> 8, videoSequenceNumber & 0xff,
-      # timestamp(32) in 90 kHz clock rate
-      (ts >>> 24) & 0xff, (ts >>> 16) & 0xff, (ts >>> 8) & 0xff, ts & 0xff,
-      # SSRC(32) will be filled later
-      0, 0, 0, 0
+    rtpData = rtp.createRTPHeader
+      marker: false
+      payloadType: 97
+      sequenceNumber: videoSequenceNumber
+      timestamp: ts
+      ssrc: null
 
-      # FU indicator
-      # forbidden_zero_bit(1), nal_ref_idc(2), type(5)
-      # type is 28 for FU-A
-      nal_ref_idc | 28,
-      # FU header
-      # start bit(1), end bit(1), reserved bit(1), type(5)
-      start_bit << 7 | nalUnitType
-    ]
+    rtpData = rtpData.concat rtp.createFragmentationUnitHeader
+      nal_ref_idc: nal_ref_idc
+      nal_unit_type: nalUnitType
+      isStart: fragmentNumber is 1
+      isEnd: false
+
+    # Append NAL unit
     thisNalUnitLen = thisNalUnit.length
-    rtpBuffer = Buffer.concat [new Buffer(rtpData), thisNalUnit], 14 + thisNalUnitLen
+    rtpBuffer = Buffer.concat [new Buffer(rtpData), thisNalUnit],
+      rtp.RTP_HEADER_LEN + 2 + thisNalUnitLen
+
     for clientID, client of clients
       if client.isWaitingForKeyFrame and isKeyFrame
         process.stdout.write "KeyFrame"
@@ -742,10 +696,8 @@ sendVideoPacketWithFragment = (nalUnit, timestamp) ->
         client.isWaitingForKeyFrame = false
 
       if client.isPlaying
-        rtpBuffer[8] = (client.videoSSRC >>> 24) & 0xff
-        rtpBuffer[9] = (client.videoSSRC >>> 16) & 0xff
-        rtpBuffer[10] = (client.videoSSRC >>> 8) & 0xff
-        rtpBuffer[11] = client.videoSSRC & 0xff
+        rtp.replaceSSRCInRTP rtpBuffer, client.videoSSRC
+
         client.videoPacketCount++
         client.videoOctetCount += thisNalUnitLen
         if client.useTCPForVideo
@@ -764,29 +716,22 @@ sendVideoPacketWithFragment = (nalUnit, timestamp) ->
     videoSequenceNumber -= 65535
 
   # TODO: sequence number should be started from a random number
-  # Section 5.1 of RFC 3350 and 6184
-  rtpData = [
-    # version(2), padding(1), extension(1), CSRC count(4)
-    0x80,
-    # marker(1) == 1, payload type(7)
-    1 << 7 | 97,
-    # sequence number(16)
-    videoSequenceNumber >>> 8, videoSequenceNumber & 0xff,
-    # timestamp(32) in 90 kHz clock rate
-    (ts >>> 24) & 0xff, (ts >>> 16) & 0xff, (ts >>> 8) & 0xff, ts & 0xff,
-    # SSRC(32) will be filled later
-    0, 0, 0, 0
+  rtpData = rtp.createRTPHeader
+    marker: true
+    payloadType: 97
+    sequenceNumber: videoSequenceNumber
+    timestamp: ts
+    ssrc: null
 
-    # FU indicator
-    # forbidden_zero_bit(1), nal_ref_idc(2), type(5)
-    # type is 28 for FU-A
-    nal_ref_idc | 28,
-    # FU header
-    # start bit(1) == 0, end bit(1) == 1, reserved bit(1), type(5)
-    1 << 6 | nalUnitType
-  ]
+  rtpData = rtpData.concat rtp.createFragmentationUnitHeader
+    nal_ref_idc: nal_ref_idc
+    nal_unit_type: nalUnitType
+    isStart: false
+    isEnd: true
+
   nalUnitLen = nalUnit.length
-  rtpBuffer = Buffer.concat [new Buffer(rtpData), nalUnit], 14 + nalUnitLen
+  rtpBuffer = Buffer.concat [new Buffer(rtpData), nalUnit],
+    rtp.RTP_HEADER_LEN + 2 + nalUnitLen
   for clientID, client of clients
     if client.isWaitingForKeyFrame and isKeyFrame
       process.stdout.write "KeyFrame"
@@ -794,10 +739,8 @@ sendVideoPacketWithFragment = (nalUnit, timestamp) ->
       client.isWaitingForKeyFrame = false
 
     if client.isPlaying
-      rtpBuffer[8] = (client.videoSSRC >>> 24) & 0xff
-      rtpBuffer[9] = (client.videoSSRC >>> 16) & 0xff
-      rtpBuffer[10] = (client.videoSSRC >>> 8) & 0xff
-      rtpBuffer[11] = client.videoSSRC & 0xff
+      rtp.replaceSSRCInRTP rtpBuffer, client.videoSSRC
+
       client.videoPacketCount++
       client.videoOctetCount += nalUnitLen
       if client.useTCPForVideo
@@ -821,35 +764,24 @@ sendVideoPacketAsSingleNALUnit = (nalUnit, timestamp) ->
 
   nalUnitType = nalUnit[0] & 0x1f
   if nalUnitType in [7, 8] # sprop
-    console.log "[rtsp-single] addSpropParam by NAL unit type #{nalUnitType}"
-    addSpropParam nalUnit
-    return
-
-  if nalUnitType not in [1, 5]
-    console.log "nalUnitType: #{nalUnitType}"
+    updateSpropParam nalUnit
 
   if clientsCount is 0
     return
 
   isKeyFrame = nalUnitType is 5
 
-  marker = 1
-
   # TODO: sequence number should be started from a random number
-  rtpData = [
-    # version(2), padding(1), extension(1), CSRC count(4)
-    0x80,
-    # marker(1), payload type(7)
-    marker << 7 | 97,
-    # sequence number(16)
-    videoSequenceNumber >>> 8, videoSequenceNumber & 0xff,
-    # timestamp(32) in 90 kHz clock rate
-    (ts >>> 24) & 0xff, (ts >>> 16) & 0xff, (ts >>> 8) & 0xff, ts & 0xff,
-    # SSRC(32) will be filled later
-    0, 0, 0, 0
-  ]
+  rtpHeader = rtp.createRTPHeader
+    marker: true
+    payloadType: 97
+    sequenceNumber: videoSequenceNumber
+    timestamp: ts
+    ssrc: null
+
   nalUnitLen = nalUnit.length
-  rtpBuffer = Buffer.concat [new Buffer(rtpData), nalUnit], 12 + nalUnitLen
+  rtpBuffer = Buffer.concat [new Buffer(rtpHeader), nalUnit],
+    rtp.RTP_HEADER_LEN + nalUnitLen
   for clientID, client of clients
     if client.isWaitingForKeyFrame and isKeyFrame
       process.stdout.write "KeyFrame"
@@ -857,10 +789,8 @@ sendVideoPacketAsSingleNALUnit = (nalUnit, timestamp) ->
       client.isWaitingForKeyFrame = false
 
     if client.isPlaying
-      rtpBuffer[8] = (client.videoSSRC >>> 24) & 0xff
-      rtpBuffer[9] = (client.videoSSRC >>> 16) & 0xff
-      rtpBuffer[10] = (client.videoSSRC >>> 8) & 0xff
-      rtpBuffer[11] = client.videoSSRC & 0xff
+      rtp.replaceSSRCInRTP rtpBuffer, client.videoSSRC
+
       client.videoPacketCount++
       client.videoOctetCount += nalUnitLen
       if client.useTCPForVideo
@@ -881,6 +811,33 @@ sendVideoPacketAsSingleNALUnit = (nalUnit, timestamp) ->
 #   nalUnit: Buffer
 #   timestamp: timestamp in 90 kHz clock rate (PTS)
 onReceiveVideoPacket = (nalUnit, timestamp) ->
+  nalUnitType = h264.getNALUnitType nalUnit
+  if nalUnitType is h264.NAL_UNIT_TYPE_SPS
+    h264.readSPS nalUnit
+    sps = h264.getSPS()
+    frameSize = h264.getFrameSize sps
+    isConfigUpdated = false
+    if detectedVideoWidth isnt frameSize.width
+      detectedVideoWidth = frameSize.width
+      console.log "detected video width change: #{detectedVideoWidth}"
+      config.videoWidth = detectedVideoWidth
+      isConfigUpdated = true
+    if detectedVideoHeight isnt frameSize.height
+      detectedVideoHeight = frameSize.height
+      console.log "detected video height change: #{detectedVideoHeight}"
+      config.videoHeight = detectedVideoHeight
+      isConfigUpdated = true
+    if config.flv.avclevel isnt sps.level_idc
+      config.flv.avclevel = sps.level_idc
+      console.log "avclevel is changed to #{config.flv.avclevel}"
+      isConfigUpdated = true
+    if config.flv.avcprofile isnt sps.profile_idc
+      config.flv.avcprofile = sps.profile_idc
+      console.log "avcprofile is changed to #{config.flv.avcprofile}"
+      isConfigUpdated = true
+    if isConfigUpdated
+      updateConfig()
+
   rtmpServer.sendVideoPacket nalUnit, timestamp
 
   if nalUnit.length >= SINGLE_NAL_UNIT_MAX_SIZE
@@ -890,8 +847,37 @@ onReceiveVideoPacket = (nalUnit, timestamp) ->
 
   return
 
-onReceiveAudioPacket = (rawDataBlock, timestamp) ->
-  rtmpServer.sendAudioPacket rawDataBlock, timestamp
+updateAudioSampleRate = (sampleRate) ->
+  audioClockRate = sampleRate
+  config.audioSampleRate = sampleRate
+
+updateAudioChannels = (channels) ->
+  config.audioChannels = channels
+
+onReceiveAudioPacket = (adtsFrame, pts) ->
+  if audioClockRate isnt 90000
+    timestamp = pts * audioClockRate / 90000
+
+  adtsInfo = aac.parseADTSFrame adtsFrame
+
+  if detectedAudioSampleRate isnt adtsInfo.sampleRate
+    detectedAudioSampleRate = adtsInfo.sampleRate
+    console.log "detected audio sample rate change: #{detectedAudioSampleRate}"
+    updateAudioSampleRate adtsInfo.sampleRate
+
+  if detectedAudioChannels isnt adtsInfo.channels
+    detectedAudioChannels = adtsInfo.channels
+    console.log "detected audio channels change: #{detectedAudioChannels}"
+    updateAudioChannels adtsInfo.channels
+
+  if config.audioObjectType isnt adtsInfo.audioObjectType
+    config.audioObjectType = adtsInfo.audioObjectType
+    console.log "audio object type is changed to #{config.audioObjectType}"
+    updateConfig()
+
+#  rawDataBlock = adtsFrame[7..]
+  rawDataBlock = adtsFrame
+  rtmpServer.sendAudioPacket rawDataBlock, pts
 
   if ++audioSequenceNumber > 65535
     audioSequenceNumber -= 65535
@@ -902,46 +888,31 @@ onReceiveAudioPacket = (rawDataBlock, timestamp) ->
   if clientsCount is 0
     return
 
-  marker = 1
+  rtpData = rtp.createRTPHeader
+    marker: true
+    payloadType: 96
+    sequenceNumber: audioSequenceNumber
+    timestamp: ts
+    ssrc: null
 
   accessUnitLength = rawDataBlock.length
 
   # TODO: maximum size of AAC-hbr is 8191 octets
   # TODO: sequence number should be started from a random number
-  rtpData = [
-    # version(2), padding(1), extension(1), CSRC count(4)
-    0x80,
-    # marker(1), payload type(7)
-    marker << 7 | 96,
-    # sequence number(16)
-    audioSequenceNumber >>> 8, audioSequenceNumber & 0xff,
-    # timestamp(32) in 90 kHz clock rate (clock rate is specified in SDP)
-    (ts >>> 24) & 0xff, (ts >>> 16) & 0xff, (ts >>> 8) & 0xff, ts & 0xff,
-    # SSRC(32) will be filled later
-    0, 0, 0, 0
 
-    ## payload
-    ## AU Header Section
-    # AU-headers-length(16) for AAC-hbr
-    0x00, 0x10,
-    # AU Header
-    # AU-size(13) by SDP
-    # AU-Index(3) MUST be coded with the value 0
-    accessUnitLength >> 5,
-    (accessUnitLength & 0b11111) << 3,
-    # There is no Auxiliary Section for AAC-hbr
-    ## raw_data_block (access unit) follows
-  ]
-  rawDataBlockLen = rawDataBlock.length
-  rtpBuffer = Buffer.concat [new Buffer(rtpData), rawDataBlock], 16 + rawDataBlockLen
+  rtpData = rtpData.concat rtp.createAudioHeader
+    accessUnitLength: accessUnitLength
+
+  # Append the access unit (rawDataBlock)
+  rtpBuffer = Buffer.concat [new Buffer(rtpData), rawDataBlock],
+    rtp.RTP_HEADER_LEN + 4 + accessUnitLength
+
   for clientID, client of clients
     if client.isPlaying
-      rtpBuffer[8] = (client.audioSSRC >>> 24) & 0xff
-      rtpBuffer[9] = (client.audioSSRC >>> 16) & 0xff
-      rtpBuffer[10] = (client.audioSSRC >>> 8) & 0xff
-      rtpBuffer[11] = client.audioSSRC & 0xff
+      rtp.replaceSSRCInRTP rtpBuffer, client.audioSSRC
+
       client.audioPacketCount++
-      client.audioOctetCount += rawDataBlockLen
+      client.audioOctetCount += accessUnitLength
       if client.useTCPForAudio
         if client.useHTTP
           if client.httpClientType is 'GET'
@@ -1013,8 +984,8 @@ respondWithNotFound = (protocol='RTSP', callback) ->
   """.replace /\n/g, "\r\n"
   callback null, res
 
-# Check if the remote address is private
-isLocal = (socket) ->
+# Check if the remote address of the given socket is private
+isPrivateNetwork = (socket) ->
   if /^(10\.|192\.168\.|127\.0\.0\.)/.test socket.remoteAddress
     return true
   if (match = /^172.(\d+)\./.exec socket.remoteAddress)?
@@ -1124,47 +1095,27 @@ respond = (socket, req, callback) ->
         return
       socket.isAuthenticated = true
       client.bandwidth = req.headers.bandwidth
-      # packetization-mode: (refer to Section 5.4 of RFC 6184)
-      #   0: Single NAL Unit Mode
-      #   1: Non-Interleaved Mode (for STAP-A, FU-A)
-      #   2: Interleaved Mode (for STAP-B, MTAP16, MTAP24, FU-A, FU-B)
-      # see Section 6.2 of http://tools.ietf.org/html/rfc6184
-      #
-      # configspec: for MPEG-4 Audio streams, use hexstring of AudioSpecificConfig()
-      # see Table 1.13 of AudioSpecificConfig definition in "ISO/IEC 14496-3 Part 3: Audio"
-      configspec = \
-        2 << 11 \ # audioObjectType(5 bits) 2 == AAC LC
-        # samplingFrequencyIndex(4 bits)
-        | codecUtils.getSamplingFreqIndex(config.audioSampleRate) << 7 \
-        | 1 << 3   # channelConfiguration(4 bits) 1 == 1 channel
-        # other GASpecificConfig(3 bits) are all zeroes
-      configspec = configspec.toString 16  # get the hexstring
-      # rtpmap:96 mpeg4-generic/<clock rate>/<channels>
 
-      # SDP parameters are defined in RFC 4566.
-      # Definition of sizeLength, indexLength, indexDeltaLength is found in RFC 3640 or RFC 5691
-      body = """
-      v=0
-      o=- #{client.sessionID} #{client.sessionID} IN IP4 127.0.0.1
-      s= 
-      c=IN IP4 0.0.0.0
-      t=0 0
-      a=sdplang:en
-      a=range:npt=0.0-
-      a=control:*
-      m=audio 0 RTP/AVP 96
-      a=rtpmap:96 mpeg4-generic/#{AUDIO_CLOCK_RATE}/1
-      a=fmtp:96 profile-level-id=1;mode=AAC-hbr;sizeLength=13;indexLength=3;indexDeltaLength=3;config=#{configspec}
-      a=control:trackID=1
-      m=video 0 RTP/AVP 97
-      a=rtpmap:97 H264/90000
-      a=fmtp:97 packetization-mode=1;profile-level-id=#{PROFILE_LEVEL_ID};sprop-parameter-sets=#{spropParameterSets}
-      a=cliprect:0,0,#{config.height},#{config.width}
-      a=framesize:97 #{config.width}-#{config.height}
-      a=framerate:#{config.videoFrameRate.toFixed 1}
-      a=control:trackID=2
-
-      """.replace /\n/g, "\r\n"
+      body = sdp.createSDP
+        username: '-'
+        sessionID: client.sessionID
+        sessionVersion: client.sessionID
+        addressType: 'IP4'
+        unicastAddress: getMeaningfulIPTo socket
+        audioPayloadType: 96
+        audioEncodingName: 'mpeg4-generic'
+        audioClockRate: audioClockRate
+        audioChannels: config.audioChannels
+        audioSampleRate: config.audioSampleRate
+        audioObjectType: config.audioObjectType
+        videoPayloadType: 97
+        videoEncodingName: 'H264'  # must be H264
+        videoClockRate: 90000  # must be 90000
+        videoProfileLevelId: PROFILE_LEVEL_ID
+        videoSpropParameterSets: spropParameterSets
+        videoHeight: config.videoHeight
+        videoWidth: config.videoWidth
+        videoFrameRate: config.videoFrameRate.toFixed 1
 
       if /^HTTP\//.test req.protocol
         res = 'HTTP/1.0 200 OK\n'
@@ -1195,11 +1146,11 @@ respond = (socket, req, callback) ->
     track = null
 
     # Check tranpsort
-    if client.isGlobal and not /\bTCP\b/.test req.headers.transport
-      # We can't use UDP over the internet in most cases.
-      console.log "Unsupported transport: UDP may not be available over the internet"
-      respondWithUnsupportedTransport callback, {CSeq: req.headers.cseq}
-      return
+    # Disable UDP transport over the internet
+#    if client.isGlobal and not /\bTCP\b/.test req.headers.transport
+#      console.log "Unsupported transport: UDP is temporarily disabled"
+#      respondWithUnsupportedTransport callback, {CSeq: req.headers.cseq}
+#      return
 
     if /trackID=1/.test req.uri  # audio
       track = 'audio'
@@ -1280,7 +1231,7 @@ respond = (socket, req, callback) ->
                           ";ssrc=#{zeropad(8, ssrc.toString(16))}"
     else
       transportHeader = req.headers.transport +
-                        ";source=#{if isLocal(socket) then getLocalIP() else getExternalIP()}" +
+                        ";source=#{getMeaningfulIPTo socket}" +
                         ";server_port=#{serverPort};ssrc=#{zeropad(8, ssrc.toString(16))}"
     dateHeader = getDateHeader()
     res = """

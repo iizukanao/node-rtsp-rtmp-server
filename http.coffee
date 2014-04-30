@@ -4,6 +4,7 @@ fs      = require 'fs'
 zlib    = require 'zlib'
 spawn   = require('child_process').spawn
 Sequent = require 'sequent'
+config  = require './config'
 
 # Directory to store EJS templates
 TEMPLATE_DIR = "#{__dirname}/template"
@@ -14,8 +15,8 @@ STATIC_DIR  = "#{__dirname}/public"
 # Filename of default file in static directory
 DIRECTORY_INDEX_FILENAME = 'index.html'
 
-# Server name to be embedded in HTTP response header
-SERVER_NAME = "node-rtsp-rtmp-server/0.0.1"
+# Server name which is embedded in HTTP response header
+SERVER_NAME = config.serverName
 
 # Response larger than this bytes is compressed
 GZIP_SIZE_THRESHOLD = 300
