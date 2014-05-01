@@ -6,7 +6,8 @@ module.exports =
   # Server listen port
   serverPort: 80
 
-  # Server name to be embedded in response headers
+  # Server name which will be embedded in
+  # RTSP and HTTP response headers
   serverName: 'node-rtsp-rtmp-server/0.2.0'
 
   # Average frame rate of video
