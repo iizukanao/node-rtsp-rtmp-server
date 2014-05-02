@@ -627,11 +627,13 @@ api =
 
   # Removes emulation prevention byte (0x000003)
   removeEmulationPreventionByte: (nalUnit) ->
+    searchPos = 0
     loop
-      emulPos = bits.searchBytesInArray nalUnit, [0x00, 0x00, 0x03], 0
+      emulPos = bits.searchBytesInArray nalUnit, [0x00, 0x00, 0x03], searchPos
       if emulPos is -1
         break
       nalUnit[emulPos+2..emulPos+2] = []  # Remove 0x03
+      searchPos = emulPos + 2
     return
 
   # opts:
