@@ -8,6 +8,8 @@ audioBuf = null
 MPEG_IDENTIFIER_MPEG2 = 1
 MPEG_IDENTIFIER_MPEG4 = 0
 
+eventListeners = {}
+
 api =
   SYN_ID_SCE: 0x0  # single_channel_element
   SYN_ID_CPE: 0x1  # channel_pair_element
@@ -23,6 +25,153 @@ api =
 
   close: ->
     audioBuf = null
+
+  emit: (name, data...) ->
+    if eventListeners[name]?
+      for listener in eventListeners[name]
+        listener data...
+    return
+
+  on: (name, listener) ->
+    if eventListeners[name]?
+      eventListeners[name].push listener
+    else
+      eventListeners[name] = [ listener ]
+
+  end: ->
+    @emit 'end'
+
+  getNextPossibleSyncwordPosition: (buffer) ->
+    syncwordPos = bits.searchBitsInArray buffer, [0xff, 0xf0], 1
+    # The maximum distance between two syncwords is 8192 bytes.
+    if syncwordPos > 8192
+      throw new Error "the next syncword is too far: #{syncwordPos} bytes"
+    return syncwordPos
+
+  skipToNextPossibleSyncword: ->
+    syncwordPos = bits.searchBitsInArray audioBuf, [0xff, 0xf0], 1
+    if syncwordPos > 0
+      # The maximum distance between two syncwords is 8192 bytes.
+      if syncwordPos > 8192
+        throw new Error "the next syncword is too far: #{syncwordPos} bytes"
+      console.log "skipped #{syncwordPos} bytes until syncword"
+      audioBuf = audioBuf[syncwordPos..]
+    return
+
+  splitIntoADTSFrames: (buffer) ->
+    adtsFrames = []
+    loop
+      if buffer.length < 7
+        # not enough ADTS header
+        break
+      if (buffer[0] isnt 0xff) or (buffer[1] & 0xf0 isnt 0xf0)
+        console.log "aac: syncword is not at current position"
+        syncwordPos = @getNextPossibleSyncwordPosition()
+        buffer = buffer[syncwordPos..]
+        continue
+
+      aac_frame_length = bits.parse_bits_uint buffer, 30, 13
+      if buffer.length < aac_frame_length
+        # not enough buffer
+        break
+
+      if buffer.length >= aac_frame_length + 2
+        # check next syncword
+        if (buffer[aac_frame_length] isnt 0xff) or
+        (buffer[aac_frame_length+1] & 0xf0 isnt 0xf0)  # false syncword
+          console.log "aac: syncword was false positive (emulated syncword)"
+          syncwordPos = @getNextPossibleSyncwordPosition()
+          buffer = buffer[syncwordPos..]
+          continue
+
+      adtsFrame = buffer[0...aac_frame_length]
+
+      # Truncate audio buffer
+      buffer = buffer[aac_frame_length..]
+
+      adtsFrames.push adtsFrame
+    return adtsFrames
+
+  feedPESPacket: (pesPacket) ->
+    if audioBuf?
+      audioBuf = Buffer.concat [audioBuf, pesPacket.pes.data]
+    else
+      audioBuf = pesPacket.pes.data
+
+    pts = pesPacket.pes.PTS
+    dts = pesPacket.pes.DTS
+
+    adtsFrames = []
+    loop
+      if audioBuf.length < 7
+        # not enough ADTS header
+        break
+      if (audioBuf[0] isnt 0xff) or (audioBuf[1] & 0xf0 isnt 0xf0)
+        console.log "aac: syncword is not at current position"
+        @skipToNextPossibleSyncword()
+        continue
+
+      aac_frame_length = bits.parse_bits_uint audioBuf, 30, 13
+      if audioBuf.length < aac_frame_length
+        # not enough buffer
+        break
+
+      if audioBuf.length >= aac_frame_length + 2
+        # check next syncword
+        if (audioBuf[aac_frame_length] isnt 0xff) or
+        (audioBuf[aac_frame_length+1] & 0xf0 isnt 0xf0)  # false syncword
+          console.log "aac: syncword was false positive (emulated syncword)"
+          @skipToNextPossibleSyncword()
+          continue
+
+      adtsFrame = audioBuf[0...aac_frame_length]
+
+      # Truncate audio buffer
+      audioBuf = audioBuf[aac_frame_length..]
+
+      adtsFrames.push adtsFrame
+      @emit 'dts_adts_frame', pts, dts, adtsFrame
+    if adtsFrames.length > 0
+      @emit 'dts_adts_frames', pts, dts, adtsFrames
+
+  feed: (data) ->
+    if audioBuf?
+      audioBuf = Buffer.concat [audioBuf, data]
+    else
+      audioBuf = data
+
+    adtsFrames = []
+    loop
+      if audioBuf.length < 7
+        # not enough ADTS header
+        break
+      if (audioBuf[0] isnt 0xff) or (audioBuf[1] & 0xf0 isnt 0xf0)
+        console.log "aac: syncword is not at current position"
+        @skipToNextPossibleSyncword()
+        continue
+
+      aac_frame_length = bits.parse_bits_uint audioBuf, 30, 13
+      if audioBuf.length < aac_frame_length
+        # not enough buffer
+        break
+
+      if audioBuf.length >= aac_frame_length + 2
+        # check next syncword
+        if (audioBuf[aac_frame_length] isnt 0xff) or
+        (audioBuf[aac_frame_length+1] & 0xf0 isnt 0xf0)  # false syncword
+          console.log "aac: syncword was false positive (emulated syncword)"
+          @skipToNextPossibleSyncword()
+          continue
+
+      adtsFrame = audioBuf[0...aac_frame_length]
+
+      # Truncate audio buffer
+      audioBuf = audioBuf[aac_frame_length..]
+
+      adtsFrames.push adtsFrame
+      @emit 'adts_frame', adtsFrame
+    if adtsFrames.length > 0
+      @emit 'adts_frames', adtsFrames
 
   hasMoreData: ->
     return audioBuf? and (audioBuf.length > 0)
@@ -158,19 +307,18 @@ api =
     if (adtsFrame[0] isnt 0xff) or (adtsFrame[1] & 0xf0 isnt 0xf0)
       throw new Error "malformed audio: data doesn't start with a syncword (0xfff)"
 
-    info.mpegIdentifier = bits.read_bits_uint adtsFrame, 12, 1
-    profile_ObjectType = bits.read_bits_uint adtsFrame, 16, 2
+    info.mpegIdentifier = bits.parse_bits_uint adtsFrame, 12, 1
+    profile_ObjectType = bits.parse_bits_uint adtsFrame, 16, 2
     if info.mpegIdentifier is MPEG_IDENTIFIER_MPEG2
       info.audioObjectType = profile_ObjectType
     else
       info.audioObjectType = profile_ObjectType + 1
-    freq = bits.read_bits_uint adtsFrame, 18, 4
+    freq = bits.parse_bits_uint adtsFrame, 18, 4
     info.sampleRate = api.getSampleRateFromFreqIndex freq
-    info.channels = bits.read_bits_uint adtsFrame, 23, 3
+    info.channels = bits.parse_bits_uint adtsFrame, 23, 3
 
 #    # raw_data_block starts from byte index 7
-#    id_syn_ele = bits.read_bits_uint adtsFrame, 56, 3
-#    console.log "id_syn_ele: #{id_syn_ele}"
+#    id_syn_ele = bits.parse_bits_uint adtsFrame, 56, 3
 
     return info
 
@@ -178,28 +326,33 @@ api =
     if not audioBuf?
       throw new Error "aac error: file is not opened yet"
 
-    if not api.hasMoreData()
-      return null
+    loop
+      if not api.hasMoreData()
+        return null
 
-    # An ADTS frame starts with a syncword (0xfff).
-    # But a raw data block may also contain 0xfff which is not
-    # a syncword. The length of a frame can be determined by
-    # aac_frame_length which is included in the ADTS variable header.
-    # However, an audio file may start in the middle of a raw data
-    # block. In that case, there is some difficulty in searching for
-    # a correct syncword. In real use cases, those data should be
-    # handled correctly, but we reject such data here for the
-    # sake of simplicity.
-    if (audioBuf[0] isnt 0xff) or (audioBuf[1] & 0xf0 isnt 0xf0)
-      throw new Error "malformed audio: data doesn't start with a syncword (0xfff)\n" +
-                      "try ffmpeg -i <input_file> -c:a copy output.aac"
+      if (audioBuf[0] isnt 0xff) or (audioBuf[1] & 0xf0 isnt 0xf0)
+        console.log "aac: syncword is not at current position"
+        @skipToNextPossibleSyncword()
+        continue
 
-    aac_frame_length = bits.read_bits_uint audioBuf, 30, 13
-    adtsFrame = audioBuf[0...aac_frame_length]
+      aac_frame_length = bits.parse_bits_uint audioBuf, 30, 13
+      if audioBuf.length < aac_frame_length
+        # not enough buffer
+        return null
 
-    # Truncate audio buffer
-    audioBuf = audioBuf[aac_frame_length..]
+      if audioBuf.length >= aac_frame_length + 2
+        # check next syncword
+        if (audioBuf[aac_frame_length] isnt 0xff) or
+        (audioBuf[aac_frame_length+1] & 0xf0 isnt 0xf0)  # false syncword
+          console.log "aac: syncword was false positive (emulated syncword)"
+          @skipToNextPossibleSyncword()
+          continue
 
-    return adtsFrame
+      adtsFrame = audioBuf[0...aac_frame_length]
+
+      # Truncate audio buffer
+      audioBuf = audioBuf[aac_frame_length..]
+
+      return adtsFrame
 
 module.exports = api

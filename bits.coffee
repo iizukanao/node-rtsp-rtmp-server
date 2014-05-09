@@ -69,7 +69,7 @@ api =
 
   peak_bytes: ->
     console.log buf[byte_index..]
-    console.log "bit index: #{bit_index}"
+    console.log "bit_index=#{bit_index} (byte_index=#{byte_index})"
 
   skip_bytes: (len) ->
     byte_index += len
@@ -173,12 +173,12 @@ api =
       result = (byte >> (7 - index)) & 0x01
     return result
 
-  push_stash_data: ->
+  push_stash: ->
     stash_buf.push buf
     stash_byte_index.push byte_index
     stash_bit_index.push bit_index
 
-  pop_stash_data: ->
+  pop_stash: ->
     buf = stash_buf.shift()
     byte_index = stash_byte_index.shift()
     bit_index = stash_bit_index.shift()
@@ -188,13 +188,16 @@ api =
     byte_index = 0
     bit_index = 0
 
-  is_more_data: ->
+  has_more_data: ->
     return api.get_remaining_bits() > 0
 
   get_remaining_bits: ->
     total_bits = buf.length * 8
     total_read_bits = byte_index * 8 + bit_index
     return total_bits - total_read_bits
+
+  is_byte_aligned: ->
+    return bit_index is 0
 
   read_until_byte_aligned: ->
     sum = 0
@@ -261,9 +264,18 @@ api =
       if haystackIdx is haystackLen
         return -1
 
+  get_current_byte: ->
+    return api.get_byte_at 0
+
+  get_byte_at: (byteOffset) ->
+    if bit_index is 0
+      return buf[byte_index + byteOffset]
+    else
+      api.parse_bits_uint buf, byteOffset * 8, 8
+
   # Read <len> bits from the bit position <pos> from the start of
   # the buffer <buf>, and return it as unsigned integer
-  read_bits_uint: (buf, pos, len) ->
+  parse_bits_uint: (buffer, pos, len) ->
     byteIndex = parseInt pos / 8
     bitIndex = pos % 8
     consumedLen = 0
@@ -275,7 +287,7 @@ api =
       if consumedLen > len
         otherBitsLen = consumedLen - len
         consumedLen = len
-      num += ((buf[byteIndex] & ((1 << (8 - bitIndex)) - 1)) <<
+      num += ((buffer[byteIndex] & ((1 << (8 - bitIndex)) - 1)) <<
         (len - consumedLen)) >> otherBitsLen
       byteIndex++
       bitIndex = 0
@@ -287,9 +299,9 @@ api =
       binString += (byte >> i) & 0x01
     return binString
 
-  printBinary: (buf) ->
+  printBinary: (buffer) ->
     col = 0
-    for byte in buf
+    for byte in buffer
       process.stdout.write api.toBinary byte
       col++
       if col is 4

@@ -7,6 +7,7 @@ Sequent       = require 'sequent'
 RTMPHandshake = require './rtmp_handshake'
 codecUtils    = require './codec_utils'
 config        = require './config'
+h264          = require './h264'
 aac           = require './aac'
 flv           = require './flv'
 
@@ -14,6 +15,10 @@ flv           = require './flv'
 SESSION_STATE_NEW               = 1
 SESSION_STATE_HANDSHAKE_ONGOING = 2
 SESSION_STATE_HANDSHAKE_DONE    = 3
+
+AVC_PACKET_TYPE_SEQUENCE_HEADER = 0
+AVC_PACKET_TYPE_NALU            = 1
+AVC_PACKET_TYPE_END_OF_SEQUENCE = 2
 
 TIMESTAMP_ROUNDOFF = 4294967296  # 32 bits
 
@@ -283,7 +288,8 @@ parseAMF0Data = (buf) ->
     date = new Date(time)
     return { type: 'date', value: date, readLen: i + 10 }  # 8 (time) + 2 (time-zone)
   else
-    throw new Error "Unknown data type for AMF0: #{type}"
+    # TODO: sometimes fails to parse data sent by rtmpdump
+    throw new Error "Unknown AMF0 data type: #{type}"
 
 createAMF0Data = (data) ->
   type = typeof data
@@ -725,7 +731,6 @@ class RTMPSession
     if @isTearedDown
       console.log "[rtmp] already teared down"
       return
-    console.log "[rtmp] teardown"
     @isTearedDown = true
     @clearTimeout()
     @stopPlaying()
@@ -1221,8 +1226,8 @@ class RTMPSession
     ppsLen = ppsPacket.length
     buf = new Buffer [
       # VIDEODATA tag (Appeared in Adobe's Video File Format Spec v10.1 E.4.3.1 VIDEODATA
-      0x17,  # ( 1=keyframe << 4 ) + 7=video_codec_id
-      0x00,  # 0=configuration data
+      (1 << 4) | config.flv.videocodecid, # 1=key frame
+      0x00,  # 0=AVC sequence header (configuration data)
       0x00,  # composition time
       0x00,  # composition time
       0x00,  # composition time
@@ -1230,8 +1235,8 @@ class RTMPSession
       # AVC decoder configuration: described in ISO 14496-15 5.2.4.1.1 Syntax
       0x01,  # version
       spsPacket[1..3]...,
-      0xff, # 6 bits reserved (111111) + 2 bits nal size length - 1 (11)
-      0xe1, # 3 bits reserved (111) + 5 bits number of sps (00001)
+      0xff, # 6 bits reserved (0b111111) + 2 bits nal size length - 1 (0b11)
+      0xe1, # 3 bits reserved (0b111) + 5 bits number of sps (0b00001)
 
       (spsLen >> 8) & 0xff,
       spsLen & 0xff,
@@ -1428,12 +1433,12 @@ class RTMPServer
         if data? and data.length > 0
           c.write data
       c.on 'close', ->
-        console.log "[rtmp] client is disconnected"
+        console.log "[rtmp] client disconnected"
         if sessions[c.clientId]?
           sessions[c.clientId].teardown()
           delete sessions[c.clientId]
           sessionsCount--
-        console.log "[rtmp] current #{sessionsCount} clients"
+        console.log "[rtmp] #{sessionsCount} clients"
       c.on 'error', (err) ->
         console.error "[rtmp] Socket error: #{err}"
         c.destroy()
@@ -1465,45 +1470,71 @@ class RTMPServer
   updateConfig: (newConfig) ->
     config = newConfig
 
-  sendVideoPacket: (nalUnit, timestamp) ->
-    timestamp = convertPTSToMilliseconds timestamp
-    lastTimestamp = timestamp
+  updateSPS: (buf) ->
+    spsPacket = buf
 
-    nalUnitType = nalUnit[0] & 0x1f
-    if nalUnitType in [7, 8] # codec config
-      retainCodecConfigPacket nalUnit
-      return
+  updatePPS: (buf) ->
+    ppsPacket = buf
+
+  # Packets must be come in DTS ascending order
+  sendVideoPacket: (nalUnits, pts, dts) ->
+    if dts > pts
+      throw new Error "pts must be >= dts (pts=#{pts} dts=#{dts})"
+    timestamp = convertPTSToMilliseconds dts
+    lastTimestamp = timestamp
 
     if sessionsCount + rtmptSessionsCount is 0
       return
 
-    isKeyFrame = nalUnitType is 5
-    if nalUnitType is 5  # IDR picture (keyframe)
+    message = []
+
+    hasKeyFrame = false
+    # This format may be AVCSample in 5.3.4.2.1 of ISO 14496-15
+    for nalUnit in nalUnits
+      nalUnitType = h264.getNALUnitType nalUnit
+      if config.dropH264AccessUnitDelimiter and
+      (nalUnitType is h264.NAL_UNIT_TYPE_ACCESS_UNIT_DELIMITER)
+        # ignore access unit delimiters
+        continue
+      if nalUnitType is h264.NAL_UNIT_TYPE_IDR_PICTURE  # 5
+        hasKeyFrame = true
+      payloadLen = nalUnit.length
+      message.push new Buffer [
+        # The length of this data is specified in
+        # configuration data that has already been sent
+        (payloadLen >>> 24) & 0xff,
+        (payloadLen >>> 16) & 0xff,
+        (payloadLen >>> 8) & 0xff,
+        payloadLen & 0xff,
+      ]
+      message.push nalUnit
+
+    # Add VIDEODATA tag
+    if hasKeyFrame  # IDR picture (key frame)
       firstByte = (1 << 4) | config.flv.videocodecid
-    else  # non-IDR picture (I frame)
+    else  # non-IDR picture (inter frame)
       firstByte = (2 << 4) | config.flv.videocodecid
-    payloadLen = nalUnit.length
-    headerBytes = new Buffer [
+    # Composition time offset: composition time (PTS) - decoding time (DTS)
+    compositionTimeMs = Math.round (pts - dts) / 90  # convert to milliseconds
+    if compositionTimeMs > 0x7fffff  # composition time is signed 24-bit integer
+      compositionTimeMs = 0x7fffff
+    message.unshift new Buffer [
       # VIDEODATA tag
       firstByte,
-      0x01,  # picture data
-      0,     # composition time
-      0,     # composition time
-      0,     # composition time
-
-      # The length of this data is specified in
-      # configuration data that has already been sent
-      (payloadLen >>> 24) & 0xff,
-      (payloadLen >>> 16) & 0xff,
-      (payloadLen >>> 8) & 0xff,
-      payloadLen & 0xff,
+      AVC_PACKET_TYPE_NALU,
+      # Composition time (signed 24-bit integer)
+      # See ISO 14496-12, 8.15.3 for details
+      (compositionTimeMs >> 16) & 0xff, # composition time (difference between PTS and DTS)
+      (compositionTimeMs >> 8) & 0xff,
+      compositionTimeMs & 0xff,
     ]
-    buf = Buffer.concat [headerBytes, nalUnit], payloadLen + 9
+
+    buf = Buffer.concat message
 
     queueVideoMessage
       body: buf
       timestamp: timestamp
-      isKeyFrame: isKeyFrame
+      isKeyFrame: hasKeyFrame
 
     return
 

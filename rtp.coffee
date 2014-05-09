@@ -5,6 +5,9 @@
 # RTP payload format for AAC audio:
 #   RFC 3640  http://tools.ietf.org/html/rfc3640
 #   RFC 5691  http://tools.ietf.org/html/rfc5691
+#
+# TODO: Use DON (decoding order number) to carry B-frames.
+#       DON is to RTP what DTS is to MPEG-TS.
 
 # Number of seconds from 1900-01-01 to 1970-01-01
 EPOCH = 2208988800
@@ -14,6 +17,8 @@ NTP_SCALE_FRAC = 4294.967295
 TIMESTAMP_ROUNDOFF = 4294967296  # 32 bits
 
 RTP_HEADER_LEN = 12
+
+MAX_PAYLOAD_SIZE = 1360
 
 api =
   # Number of bytes in RTP header
@@ -40,21 +45,47 @@ api =
   # opts:
   #   accessUnitLength (number): number of bytes in the access unit
   createAudioHeader: (opts) ->
-    return [
+    if opts.accessUnits.length > 4095
+      throw new Error "too many audio access units: #{opts.accessUnits.length} (must be <= 4095)"
+    numBits = opts.accessUnits.length * 16  # 2 bytes per access unit
+    header = [
       ## payload
       ## See section 3.2.1 and 3.3.6 of RFC 3640 for details
       ## AU Header Section
       # AU-headers-length(16) for AAC-hbr
       # Number of bits in the AU-headers
-      0x00, 0x10,
+      (numBits >> 8) & 0xff,
+      numBits & 0xff,
+    ]
+    for accessUnit in opts.accessUnits
+      header = header.concat api.createAudioAUHeader accessUnit.length
+    return header
+
+  groupAudioFrames: (adtsFrames) ->
+    packetSize = RTP_HEADER_LEN
+    groups = []
+    currentGroup = []
+    for adtsFrame, i in adtsFrames
+      packetSize += adtsFrame.length + 2  # 2 bytes for AU-Header
+      if packetSize > MAX_PAYLOAD_SIZE
+        groups.push currentGroup
+        currentGroup = []
+        packetSize = RTP_HEADER_LEN + adtsFrame.length + 2
+      currentGroup.push adtsFrame
+    if currentGroup.length > 0
+      groups.push currentGroup
+    return groups
+
+  createAudioAUHeader: (accessUnitLength) ->
+    return [
       # AU Header
       # AU-size(13) by SDP
       # AU-Index(3) or AU-Index-Delta(3)
       # AU-Index is used for the first access unit, and the value must be 0.
       # AU-Index-Delta is used for the consecutive access units.
       # When interleaving is not applied, AU-Index-Delta is 0.
-      opts.accessUnitLength >> 5,
-      (opts.accessUnitLength & 0b11111) << 3,
+      accessUnitLength >> 5,
+      (accessUnitLength & 0b11111) << 3,
       # There is no Auxiliary Section for AAC-hbr
     ]
 

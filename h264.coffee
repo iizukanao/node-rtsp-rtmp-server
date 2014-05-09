@@ -96,6 +96,13 @@ SLICE_TYPES =
   8: 'SP'
   9: 'SI'
 
+eventListeners = {}
+
+lastPTS = null
+lastDTS = null
+
+dtsPackets = []
+
 api =
   NAL_UNIT_TYPE_NON_IDR_PICTURE: 1 # inter frame
   NAL_UNIT_TYPE_IDR_PICTURE: 5     # key frame
@@ -109,6 +116,116 @@ api =
 
   close: ->
     videoBuf = null
+
+  emit: (name, data...) ->
+    if eventListeners[name]?
+      for listener in eventListeners[name]
+        listener data...
+    return
+
+  on: (name, listener) ->
+    if eventListeners[name]?
+      eventListeners[name].push listener
+    else
+      eventListeners[name] = [ listener ]
+
+  end: ->
+    @emit 'end'
+
+  # Assumes the last NAL unit in this buffer is in complete form
+  splitIntoNALUnits: (buffer) ->
+    nalUnits = []
+    loop
+      startCodePos = bits.searchBytesInArray buffer, [0x00, 0x00, 0x01], 0
+
+      if startCodePos isnt -1
+        nalUnit = buffer[0...startCodePos]
+        buffer = buffer[startCodePos+3..]
+      else
+        nalUnit = buffer
+
+      # Remove trailing_zero_8bits
+      while nalUnit[nalUnit.length-1] is 0x00
+        nalUnit = nalUnit[0...nalUnit.length-1]
+
+      if nalUnit.length > 0
+        nalUnits.push nalUnit
+
+      if startCodePos is -1
+        break
+    return nalUnits
+
+  feedPESPacket: (pesPacket) ->
+    if videoBuf?
+      videoBuf = Buffer.concat [videoBuf, pesPacket.pes.data]
+    else
+      videoBuf = pesPacket.pes.data
+
+    pts = pesPacket.pes.PTS
+    dts = pesPacket.pes.DTS
+
+    nalUnits = []
+    loop
+      startCodePos = bits.searchBytesInArray videoBuf, [0x00, 0x00, 0x01], 0
+
+      if startCodePos is -1
+        break
+      nalUnit = videoBuf[0...startCodePos]
+      videoBuf = videoBuf[startCodePos+3..]
+
+      # Remove trailing_zero_8bits
+      while nalUnit[nalUnit.length-1] is 0x00
+        nalUnit = nalUnit[0...nalUnit.length-1]
+
+      if nalUnit.length > 0
+        nalUnitType = nalUnit[0] & 0x1f
+        if nalUnitType is api.NAL_UNIT_TYPE_SPS
+          api.readSPS nalUnit
+        else if nalUnitType is api.NAL_UNIT_TYPE_PPS
+          api.readPPS nalUnit
+        else if nalUnitType is api.NAL_UNIT_TYPE_SEI
+          api.readSEI nalUnit
+        nalUnits.push nalUnit
+        if (dtsPackets.length > 0) and (pts isnt lastPTS)
+          dtsPackets.push nalUnit
+          @emit 'dts_nal_units', lastPTS, lastDTS, dtsPackets
+          dtsPackets = []
+        else
+          dtsPackets.push nalUnit
+        lastPTS = pts
+        lastDTS = dts
+
+  feed: (data) ->
+    if videoBuf?
+      videoBuf = Buffer.concat [videoBuf, data]
+    else
+      videoBuf = data
+
+    nalUnits = []
+    loop
+      startCodePos = bits.searchBytesInArray videoBuf, [0x00, 0x00, 0x01], 0
+
+      if startCodePos is -1
+        break
+      nalUnit = videoBuf[0...startCodePos]
+      videoBuf = videoBuf[startCodePos+3..]
+
+      # Remove trailing_zero_8bits
+      while nalUnit[nalUnit.length-1] is 0x00
+        nalUnit = nalUnit[0...nalUnit.length-1]
+
+      if nalUnit.length > 0
+        nalUnitType = nalUnit[0] & 0x1f
+        if nalUnitType is api.NAL_UNIT_TYPE_SPS
+          api.readSPS nalUnit
+        else if nalUnitType is api.NAL_UNIT_TYPE_PPS
+          api.readPPS nalUnit
+        else if nalUnitType is api.NAL_UNIT_TYPE_SEI
+          api.readSEI nalUnit
+        nalUnits.push nalUnit
+        @emit 'nal_unit', nalUnit
+    if nalUnits.length > 0
+      @emit 'nal_units', nalUnits
 
   hasMoreData: ->
     return videoBuf? and (videoBuf.length > 0)
@@ -192,18 +309,20 @@ api =
     nalUnitCopy = new Buffer nalUnit.length
     nalUnit.copy nalUnitCopy
     api.removeEmulationPreventionByte nalUnitCopy
+    bits.push_stash()
     bits.set_data nalUnitCopy
     api.read_nal_header()
     loop
       api.read_sei_message()
       if not api.more_rbsp_data()
         break
-    return
+    bits.pop_stash()
 
   readPPS: (nalUnit) ->
     nalUnitCopy = new Buffer nalUnit.length
     nalUnit.copy nalUnitCopy
     api.removeEmulationPreventionByte nalUnitCopy
+    bits.push_stash()
     bits.set_data nalUnitCopy
     api.read_nal_header()
     pic_parameter_set_id = bits.read_ue()
@@ -258,6 +377,7 @@ api =
                 useDefaultScalingMatrix8x8Flag)
       second_chroma_qp_index_offset = bits.read_se()
     # rbsp_trailing_bits()
+    bits.pop_stash()
 
   # Get width and height of video frame
   # @param sps (object): SPS object
@@ -293,6 +413,7 @@ api =
     nalUnitCopy = new Buffer nalUnit.length
     nalUnit.copy nalUnitCopy
     api.removeEmulationPreventionByte nalUnitCopy
+    bits.push_stash()
     bits.set_data nalUnitCopy
     api.read_nal_header()
     sps.profile_idc = bits.read_byte()
@@ -396,6 +517,7 @@ api =
 
     if bits.get_remaining_bits() isnt 0
       console.warn "warning: malformed SPS length"
+    bits.pop_stash()
 
   read_slice_data: (opts) ->
     if pps.entropy_coding_mode_flag
@@ -590,12 +712,7 @@ api =
         pps.slice_group_change_rate_minus1 + 1) / Math.LN2)
       sliceHeader.slice_group_change_cycle = bits.read_bits(numBits)
 
-  # Returns whether nalUnit1 and nalUnit2 share the same coded picture
-  #
-  # @return  boolean  true if the NAL units have the same picture.
-  isSamePicture: (nalUnit1, nalUnit2) ->
-    nalData1 = api.parseNALUnit nalUnit1
-    nalData2 = api.parseNALUnit nalUnit2
+  _isSamePicture: (nalData1, nalData2) ->
     for elem in [
       'pic_parameter_set_id'
       'frame_num'
@@ -615,14 +732,28 @@ api =
     # same picture
     return true
 
+  # Returns whether nalUnit1 and nalUnit2 share the same coded picture
+  #
+  # @return  boolean  true if the NAL units have the same picture.
+  isSamePicture: (nalUnit1, nalUnit2) ->
+    nalData1 = api.parseNALUnit nalUnit1
+    nalData2 = api.parseNALUnit nalUnit2
+    api._isSamePicture nalData1, nalData2
+
   parseNALUnit: (nalUnit) ->
     data = {}
     nalUnitCopy = new Buffer nalUnit.length
     nalUnit.copy nalUnitCopy
     api.removeEmulationPreventionByte nalUnitCopy
+    bits.push_stash()
     bits.set_data nalUnitCopy
     data.nalHeader = api.read_nal_header()
-    api.read_slice_header data
+    if data.nalHeader.nal_unit_type in [
+      api.NAL_UNIT_TYPE_NON_IDR_PICTURE
+      api.NAL_UNIT_TYPE_IDR_PICTURE
+    ]
+      api.read_slice_header data
+    bits.pop_stash()
     return data
 
   # Removes emulation prevention byte (0x000003)
@@ -814,51 +945,52 @@ api =
     time_offset_length = bits.read_bits 5
 
   read_vui_parameters: ->
-    aspect_ratio_info_present_flag = bits.read_bit()
-    if aspect_ratio_info_present_flag
-      aspect_ratio_idc = bits.read_bits 8
-      if aspect_ratio_idc is ASPECT_RATIO_IDC_EXTENDED_SAR
-        sar_width = bits.read_bits 16
-        sar_height = bits.read_bits 16
-    overscan_info_present_flag = bits.read_bit()
-    if overscan_info_present_flag
-      overscan_appropriate_flag = bits.read_bit()
-    video_signal_type_present_flag = bits.read_bit()
-    if video_signal_type_present_flag
-      video_format = bits.read_bits 3
-      video_full_range_flag = bits.read_bit()
-      colour_description_present_flag = bits.read_bit()
-      if colour_description_present_flag
-        colour_primaries = bits.read_bits 8
-        transfer_characteristics = bits.read_bits 8
-        matrix_coefficients = bits.read_bits 8
-    chroma_loc_info_present_flag = bits.read_bit()
-    if chroma_loc_info_present_flag is 1
-      chroma_sample_loc_type_top_field = bits.read_ue()
-      chroma_sample_loc_type_bottom_field = bits.read_ue()
-    timing_info_present_flag = bits.read_bit()
-    if timing_info_present_flag
-      num_units_in_tick = bits.read_bits 32
-      time_scale = bits.read_bits 32
-      fixed_frame_rate_flag = bits.read_bit()
-    nal_hrd_parameters_present_flag = bits.read_bit()
-    if nal_hrd_parameters_present_flag
+    vui = {}
+    vui.aspect_ratio_info_present_flag = bits.read_bit()
+    if vui.aspect_ratio_info_present_flag
+      vui.aspect_ratio_idc = bits.read_bits 8
+      if vui.aspect_ratio_idc is ASPECT_RATIO_IDC_EXTENDED_SAR
+        vui.sar_width = bits.read_bits 16
+        vui.sar_height = bits.read_bits 16
+    vui.overscan_info_present_flag = bits.read_bit()
+    if vui.overscan_info_present_flag
+      vui.overscan_appropriate_flag = bits.read_bit()
+    vui.video_signal_type_present_flag = bits.read_bit()
+    if vui.video_signal_type_present_flag
+      vui.video_format = bits.read_bits 3
+      vui.video_full_range_flag = bits.read_bit()
+      vui.colour_description_present_flag = bits.read_bit()
+      if vui.colour_description_present_flag
+        vui.colour_primaries = bits.read_bits 8
+        vui.transfer_characteristics = bits.read_bits 8
+        vui.matrix_coefficients = bits.read_bits 8
+    vui.chroma_loc_info_present_flag = bits.read_bit()
+    if vui.chroma_loc_info_present_flag is 1
+      vui.chroma_sample_loc_type_top_field = bits.read_ue()
+      vui.chroma_sample_loc_type_bottom_field = bits.read_ue()
+    vui.timing_info_present_flag = bits.read_bit()
+    if vui.timing_info_present_flag
+      vui.num_units_in_tick = bits.read_bits 32
+      vui.time_scale = bits.read_bits 32
+      vui.fixed_frame_rate_flag = bits.read_bit()
+    vui.nal_hrd_parameters_present_flag = bits.read_bit()
+    if vui.nal_hrd_parameters_present_flag
       api.read_hrd_parameters()
-    vcl_hrd_parameters_present_flag = bits.read_bit()
-    if vcl_hrd_parameters_present_flag
+    vui.vcl_hrd_parameters_present_flag = bits.read_bit()
+    if vui.vcl_hrd_parameters_present_flag
       api.read_hrd_parameters()
-    if nal_hrd_parameters_present_flag or vcl_hrd_parameters_present_flag
-      low_delay_hrd_flag = bits.read_bit()
-    pic_struct_present_flag = bits.read_bit()
-    bitstream_restriction_flag = bits.read_bit()
-    if bitstream_restriction_flag
-      motion_vectors_over_pic_boundaries_flag = bits.read_bit()
-      max_bytes_per_pic_denom = bits.read_ue()
-      max_bits_per_mb_denom = bits.read_ue()
-      log2_max_mv_length_horizontal = bits.read_ue()
-      log2_max_mv_length_vertical = bits.read_ue()
-      max_num_reorder_frames = bits.read_ue()
-      max_dec_frame_buffering = bits.read_ue()
+    if vui.nal_hrd_parameters_present_flag or vui.vcl_hrd_parameters_present_flag
+      vui.low_delay_hrd_flag = bits.read_bit()
+    vui.pic_struct_present_flag = bits.read_bit()
+    vui.bitstream_restriction_flag = bits.read_bit()
+    if vui.bitstream_restriction_flag
+      vui.motion_vectors_over_pic_boundaries_flag = bits.read_bit()
+      vui.max_bytes_per_pic_denom = bits.read_ue()
+      vui.max_bits_per_mb_denom = bits.read_ue()
+      vui.log2_max_mv_length_horizontal = bits.read_ue()
+      vui.log2_max_mv_length_vertical = bits.read_ue()
+      vui.max_num_reorder_frames = bits.read_ue()
+      vui.max_dec_frame_buffering = bits.read_ue()
 
   # returns an object {
   #   byte: byte index (starts from 0)
