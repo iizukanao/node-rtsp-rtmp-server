@@ -347,6 +347,8 @@ else if config.receiverType is 'udp'
   videoReceiveServer.name = 'VideoData'
   videoReceiveServer.on 'packet', (buf) ->
     onReceiveVideoBuffer buf[3..]
+else
+  throw new Error "unknown receiverType in config: #{config.receiverType}"
 
 if config.receiverType is 'unix'
   videoReceiveServer.listen config.videoReceiverPath, ->
@@ -419,6 +421,8 @@ else if config.receiverType is 'udp'
       rtmpServer.startStream timeForVideoRTPZero
     else
       console.log "[videoControlServer] unknown data: #{buf.length} bytes"
+else
+  throw new Error "unknown receiverType in config: #{config.receiverType}"
 
 if config.receiverType is 'unix'
   videoControlServer.listen config.videoControlPath, ->
@@ -465,6 +469,8 @@ else if config.receiverType is 'udp'
   audioReceiveServer.name = 'AudioData'
   audioReceiveServer.on 'packet', (buf) ->
     onReceiveAudioBuffer buf[3..]
+else
+  throw new Error "unknown receiverType in config: #{config.receiverType}"
 
 if config.receiverType is 'unix'
   audioReceiveServer.listen config.audioReceiverPath, ->
@@ -535,6 +541,8 @@ else if config.receiverType is 'udp'
       rtmpServer.startStream timeForAudioRTPZero
     else
       console.log "[audioControlServer] unknown data: #{buf.length} bytes"
+else
+  throw new Error "unknown receiverType in config: #{config.receiverType}"
 
 if config.receiverType is 'unix'
   audioControlServer.listen config.audioControlPath, ->
