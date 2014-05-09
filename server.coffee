@@ -263,30 +263,58 @@ lastVideoStatsTime = null
 lastAudioStatsTime = null
 
 onReceiveVideoBuffer = (buf) ->
+  packetType = buf[0]
   # Using own format
   # pts (6 bytes)
   # NAL unit (remaining)
-  pts = buf[0] * 0x010000000000 + \
-        buf[1] * 0x0100000000   + \
-        buf[2] * 0x01000000     + \
-        buf[3] * 0x010000       + \
-        buf[4] * 0x0100         + \
-        buf[5]
-  nalUnit = buf.slice 6
-  onReceiveVideoPacket nalUnit, pts
+  pts = buf[1] * 0x010000000000 + \
+        buf[2] * 0x0100000000   + \
+        buf[3] * 0x01000000     + \
+        buf[4] * 0x010000       + \
+        buf[5] * 0x0100         + \
+        buf[6]
+  if packetType is 0x01  # PTS == DTS
+    nalUnit = buf[7..]
+    dts = pts
+  else if packetType is 0x02
+    dts = buf[7]  * 0x010000000000 + \
+          buf[8]  * 0x0100000000   + \
+          buf[9]  * 0x01000000     + \
+          buf[10] * 0x010000       + \
+          buf[11] * 0x0100         + \
+          buf[12]
+    nalUnit = buf[13..]
+  else
+    console.error "video data error: unknown packet type: #{packetType}"
+    return
+  onReceiveVideoPacket nalUnit, pts, dts
 
 onReceiveAudioBuffer = (buf) ->
+  packetType = buf[0]
   # Using own format
   # pts (6 bytes)
   # Access Unit == raw_data_block (remaining)
-  pts = buf[0] * 0x010000000000 + \
-        buf[1] * 0x0100000000   + \
-        buf[2] * 0x01000000     + \
-        buf[3] * 0x010000       + \
-        buf[4] * 0x0100         + \
-        buf[5]
-  adtsFrame = buf.slice 6
-  onReceiveAudioPacket adtsFrame, pts
+  pts = buf[1] * 0x010000000000 + \
+        buf[2] * 0x0100000000   + \
+        buf[3] * 0x01000000     + \
+        buf[4] * 0x010000       + \
+        buf[5] * 0x0100         + \
+        buf[6]
+  if packetType is 0x01  # PTS == DTS
+    adtsFrame = buf[7..]
+    dts = pts
+  else if packetType is 0x02
+    dts = buf[7]  * 0x010000000000 + \
+          buf[8]  * 0x0100000000   + \
+          buf[9]  * 0x01000000     + \
+          buf[10] * 0x010000       + \
+          buf[11] * 0x0100         + \
+          buf[12]
+    adtsFrame = buf[13..]
+  else
+    console.error "audio data error: unknown packet type: #{packetType}"
+    return
+  onReceiveAudioPacket adtsFrame, pts, dts
 
 if config.receiverType in ['unix', 'tcp']
   videoReceiveServer = net.createServer (c) ->
