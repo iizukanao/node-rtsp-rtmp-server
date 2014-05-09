@@ -21,6 +21,7 @@ rtp         = require './rtp'
 sdp         = require './sdp'
 h264        = require './h264'
 aac         = require './aac'
+hybrid_udp  = require './hybrid_udp'
 
 # Clock rate for audio stream
 audioClockRate = null
@@ -48,26 +49,27 @@ detectedAudioPeriodSize = null
 
 # Delete UNIX domain sockets
 deleteReceiverSocketsSync = ->
-  if fs.existsSync config.videoReceiverPath
-    try
-      fs.unlinkSync config.videoReceiverPath
-    catch e
-      console.error "unlink error: #{e}"
-  if fs.existsSync config.videoControlPath
-    try
-      fs.unlinkSync config.videoControlPath
-    catch e
-      console.error "unlink error: #{e}"
-  if fs.existsSync config.audioReceiverPath
-    try
-      fs.unlinkSync config.audioReceiverPath
-    catch e
-      console.error "unlink error: #{e}"
-  if fs.existsSync config.audioControlPath
-    try
-      fs.unlinkSync config.audioControlPath
-    catch e
-      console.error "unlink error: #{e}"
+  if config.receiverType is 'unix'
+    if fs.existsSync config.videoReceiverPath
+      try
+        fs.unlinkSync config.videoReceiverPath
+      catch e
+        console.error "unlink error: #{e}"
+    if fs.existsSync config.videoControlPath
+      try
+        fs.unlinkSync config.videoControlPath
+      catch e
+        console.error "unlink error: #{e}"
+    if fs.existsSync config.audioReceiverPath
+      try
+        fs.unlinkSync config.audioReceiverPath
+      catch e
+        console.error "unlink error: #{e}"
+    if fs.existsSync config.audioControlPath
+      try
+        fs.unlinkSync config.audioControlPath
+      catch e
+        console.error "unlink error: #{e}"
 
 deleteReceiverSocketsSync()
 
@@ -286,110 +288,239 @@ onReceiveAudioBuffer = (buf) ->
   adtsFrame = buf.slice 6
   onReceiveAudioPacket adtsFrame, pts
 
-videoReceiveServer = net.createServer (c) ->
-  console.log "new videoReceiveServer connection"
-  buf = null
-  c.on 'close', ->
-    console.log "videoReceiveServer connection closed"
-  c.on 'data', (data) ->
-    if config.debug.dropAllData
-      return
-    if buf?
-      buf = Buffer.concat [buf, data], buf.length + data.length
-    else
-      buf = data
-    if buf.length >= 3
-      loop
-        payloadSize = buf[0] * 0x10000 + buf[1] * 0x100 + buf[2]
-        totalSize = payloadSize + 3  # 3 bytes for payload size
-        if buf.length >= totalSize
-          onReceiveVideoBuffer buf.slice 3, totalSize  # 3 bytes for payload size
-          if buf.length > totalSize
-            buf = buf.slice totalSize
+if config.receiverType in ['unix', 'tcp']
+  videoReceiveServer = net.createServer (c) ->
+    console.log "new videoReceiveServer connection"
+    buf = null
+    c.on 'close', ->
+      console.log "videoReceiveServer connection closed"
+    c.on 'data', (data) ->
+      if config.debug.dropAllData
+        return
+      if buf?
+        buf = Buffer.concat [buf, data], buf.length + data.length
+      else
+        buf = data
+      if buf.length >= 3
+        loop
+          payloadSize = buf[0] * 0x10000 + buf[1] * 0x100 + buf[2]
+          totalSize = payloadSize + 3  # 3 bytes for payload size
+          if buf.length >= totalSize
+            onReceiveVideoBuffer buf.slice 3, totalSize  # 3 bytes for payload size
+            if buf.length > totalSize
+              buf = buf.slice totalSize
+            else
+              buf = null
+              break
+          else
+            break
+else if config.receiverType is 'udp'
+  videoReceiveServer = new hybrid_udp.UDPServer
+  videoReceiveServer.name = 'VideoData'
+  videoReceiveServer.on 'packet', (buf) ->
+    onReceiveVideoBuffer buf[3..]
+
+if config.receiverType is 'unix'
+  videoReceiveServer.listen config.videoReceiverPath, ->
+    fs.chmodSync config.videoReceiverPath, '777'
+    console.log "videoReceiveServer is listening on #{config.videoReceiverPath}"
+else if config.receiverType is 'tcp'
+  videoReceiveServer.listen config.videoDataPort,
+    config.listenHost, config.tcpBacklog, ->
+      console.log "videoReceiveServer is listening on TCP:#{config.videoDataPort}"
+else if config.receiverType is 'udp'
+  videoReceiveServer.start config.videoDataPort, config.listenHost, ->
+    console.log "videoReceiveServer is started on UDP:#{config.videoDataPort}"
+else
+  throw new Error "unknown receiverType in config: #{config.receiverType}"
+
+if config.receiverType in ['unix', 'tcp']
+  videoControlServer = net.createServer (c) ->
+    console.log "new videoControl connection"
+    buf = null
+    c.on 'close', ->
+      console.log "videoControl connection closed"
+    c.on 'data', (data) ->
+      if config.debug.dropAllData
+        return
+      if buf?
+        buf = Buffer.concat [buf, data], buf.length + data.length
+      else
+        buf = data
+      if buf.length >= 9
+        if buf[0] is 1  # timestamp information
+          time  = buf[1] * 0x0100000000000000  # this loses some precision
+          time += buf[2] * 0x01000000000000
+          time += buf[3] * 0x010000000000
+          time += buf[4] * 0x0100000000
+          time += buf[5] * 0x01000000
+          time += buf[6] * 0x010000
+          time += buf[7] * 0x0100
+          time += buf[8]
+          lastVideoStatsTime = new Date().getTime()
+          timeForVideoRTPZero = time / 1000
+          timeForAudioRTPZero = timeForVideoRTPZero
+          console.log "timeForVideoRTPZero: #{timeForVideoRTPZero}"
+          spropParameterSets = ''
+          rtmpServer.startStream timeForVideoRTPZero
+          if buf.length > 9
+            buf = buf[9..]
           else
             buf = null
-            break
         else
-          break
-
-videoReceiveServer.listen config.videoReceiverPath, ->
-  fs.chmodSync config.videoReceiverPath, '777'
-
-videoControlServer = net.createServer (c) ->
-  console.log "new videoControl connection"
-  c.on 'close', ->
-    console.log "videoControl connection closed"
-  c.on 'data', (data) ->
-    if data[0] is 1  # timestamp information
-      time  = data[1] * 0x0100000000000000  # this loses some precision
-      time += data[2] * 0x01000000000000
-      time += data[3] * 0x010000000000
-      time += data[4] * 0x0100000000
-      time += data[5] * 0x01000000
-      time += data[6] * 0x010000
-      time += data[7] * 0x0100
-      time += data[8]
+          console.log "[videoControlServer] unknown data: #{buf.length} bytes"
+          buf = null  # discard
+else if config.receiverType is 'udp'
+  videoControlServer = new hybrid_udp.UDPServer
+  videoControlServer.name = 'VideoControl'
+  videoControlServer.on 'packet', (buf) ->
+    if buf[0] is 1  # timestamp information
+      time  = buf[1] * 0x0100000000000000  # this loses some precision
+      time += buf[2] * 0x01000000000000
+      time += buf[3] * 0x010000000000
+      time += buf[4] * 0x0100000000
+      time += buf[5] * 0x01000000
+      time += buf[6] * 0x010000
+      time += buf[7] * 0x0100
+      time += buf[8]
       lastVideoStatsTime = new Date().getTime()
       timeForVideoRTPZero = time / 1000
       timeForAudioRTPZero = timeForVideoRTPZero
       console.log "timeForVideoRTPZero: #{timeForVideoRTPZero}"
       spropParameterSets = ''
       rtmpServer.startStream timeForVideoRTPZero
-
-videoControlServer.listen config.videoControlPath, ->
-  fs.chmodSync config.videoControlPath, '777'
-
-audioReceiveServer = net.createServer (c) ->
-  console.log "new audioReceiveServer connection"
-  buf = null
-  c.on 'close', ->
-    console.log "audioReceiveServer connection closed"
-  c.on 'data', (data) ->
-    if config.debug.dropAllData
-      return
-    if buf?
-      buf = Buffer.concat [buf, data], buf.length + data.length
     else
-      buf = data
-    if buf.length >= 3
-      loop
-        payloadSize = buf[0] * 0x10000 + buf[1] * 0x100 + buf[2]
-        totalSize = payloadSize + 3  # 3 bytes for payload size
-        if buf.length >= totalSize
-          onReceiveAudioBuffer buf.slice 3, totalSize  # 3 bytes for payload size
-          if buf.length > totalSize
-            buf = buf.slice totalSize
+      console.log "[videoControlServer] unknown data: #{buf.length} bytes"
+
+if config.receiverType is 'unix'
+  videoControlServer.listen config.videoControlPath, ->
+    fs.chmodSync config.videoControlPath, '777'
+    console.log "videoControlServer is listening on #{config.videoControlPath}"
+else if config.receiverType is 'tcp'
+  videoControlServer.listen config.videoControlPort,
+    config.listenHost, config.tcpBacklog, ->
+      console.log "videoControlServer is listening on TCP:#{config.videoControlPort}"
+else if config.receiverType is 'udp'
+  videoControlServer.start config.videoControlPort, config.listenHost, ->
+    console.log "videoControlServer is started on UDP:#{config.videoControlPort}"
+else
+  throw new Error "unknown receiverType in config: #{config.receiverType}"
+
+if config.receiverType in ['unix', 'tcp']
+  audioReceiveServer = net.createServer (c) ->
+    console.log "new audioReceiveServer connection"
+    buf = null
+    c.on 'close', ->
+      console.log "audioReceiveServer connection closed"
+    c.on 'data', (data) ->
+      if config.debug.dropAllData
+        return
+      if buf?
+        buf = Buffer.concat [buf, data], buf.length + data.length
+      else
+        buf = data
+      if buf.length >= 3
+        loop
+          payloadSize = buf[0] * 0x10000 + buf[1] * 0x100 + buf[2]
+          totalSize = payloadSize + 3  # 3 bytes for payload size
+          if buf.length >= totalSize
+            onReceiveAudioBuffer buf.slice 3, totalSize  # 3 bytes for payload size
+            if buf.length > totalSize
+              buf = buf.slice totalSize
+            else
+              buf = null
+              break
+          else
+            break
+else if config.receiverType is 'udp'
+  audioReceiveServer = new hybrid_udp.UDPServer
+  audioReceiveServer.name = 'AudioData'
+  audioReceiveServer.on 'packet', (buf) ->
+    onReceiveAudioBuffer buf[3..]
+
+if config.receiverType is 'unix'
+  audioReceiveServer.listen config.audioReceiverPath, ->
+    fs.chmodSync config.audioReceiverPath, '777'
+    console.log "audioReceiveServer is listening on #{config.audioReceiverPath}"
+else if config.receiverType is 'tcp'
+  audioReceiveServer.listen config.audioDataPort,
+    config.listenHost, config.tcpBacklog, ->
+      console.log "audioReceiveServer is listening on TCP:#{config.audioDataPort}"
+else if config.receiverType is 'udp'
+  audioReceiveServer.start config.audioDataPort, config.listenHost, ->
+    console.log "audioReceiveServer is started on UDP:#{config.audioDataPort}"
+else
+  throw new Error "unknown receiverType in config: #{config.receiverType}"
+
+if config.receiverType in ['unix', 'tcp']
+  audioControlServer = net.createServer (c) ->
+    console.log "new audioControl connection"
+    buf = null
+    c.on 'close', ->
+      console.log "audioControl connection closed"
+    c.on 'data', (data) ->
+      if config.debug.dropAllData
+        return
+      if buf?
+        buf = Buffer.concat [buf, data], buf.length + data.length
+      else
+        buf = data
+      if buf.length >= 9
+        if buf[0] is 1  # timestamp information
+          time  = buf[1] * 0x0100000000000000  # this loses some precision
+          time += buf[2] * 0x01000000000000
+          time += buf[3] * 0x010000000000
+          time += buf[4] * 0x0100000000
+          time += buf[5] * 0x01000000
+          time += buf[6] * 0x010000
+          time += buf[7] * 0x0100
+          time += buf[8]
+          lastAudioStatsTime = new Date().getTime()
+          timeForAudioRTPZero = time / 1000
+          timeForVideoRTPZero = timeForAudioRTPZero
+          console.log "timeForAudioRTPZero: #{timeForAudioRTPZero}"
+          rtmpServer.startStream timeForAudioRTPZero
+          if buf.length > 9
+            buf = buf[9..]
           else
             buf = null
-            break
         else
-          break
-
-audioReceiveServer.listen config.audioReceiverPath, ->
-  fs.chmodSync config.audioReceiverPath, '777'
-
-audioControlServer = net.createServer (c) ->
-  console.log "new audioControl connection"
-  c.on 'close', ->
-    console.log "audioControl connection closed"
-  c.on 'data', (data) ->
-    if data[0] is 1  # timestamp information
-      time  = data[1] * 0x0100000000000000  # this loses some precision
-      time += data[2] * 0x01000000000000
-      time += data[3] * 0x010000000000
-      time += data[4] * 0x0100000000
-      time += data[5] * 0x01000000
-      time += data[6] * 0x010000
-      time += data[7] * 0x0100
-      time += data[8]
+          console.log "[audioControlServer] unknown data: #{buf.length} bytes"
+          buf = null  # discard
+else if config.receiverType is 'udp'
+  audioControlServer = new hybrid_udp.UDPServer
+  audioControlServer.name = 'AudioControl'
+  audioControlServer.on 'packet', (buf) ->
+    if buf[0] is 1  # timestamp information
+      time  = buf[1] * 0x0100000000000000  # this loses some precision
+      time += buf[2] * 0x01000000000000
+      time += buf[3] * 0x010000000000
+      time += buf[4] * 0x0100000000
+      time += buf[5] * 0x01000000
+      time += buf[6] * 0x010000
+      time += buf[7] * 0x0100
+      time += buf[8]
       lastAudioStatsTime = new Date().getTime()
       timeForAudioRTPZero = time / 1000
       timeForVideoRTPZero = timeForAudioRTPZero
       console.log "timeForAudioRTPZero: #{timeForAudioRTPZero}"
       rtmpServer.startStream timeForAudioRTPZero
+    else
+      console.log "[audioControlServer] unknown data: #{buf.length} bytes"
 
-audioControlServer.listen config.audioControlPath, ->
-  fs.chmodSync config.audioControlPath, '777'
+if config.receiverType is 'unix'
+  audioControlServer.listen config.audioControlPath, ->
+    fs.chmodSync config.audioControlPath, '777'
+    console.log "audioControlServer is listening on #{config.audioControlPath}"
+else if config.receiverType is 'tcp'
+  audioControlServer.listen config.audioControlPort,
+    config.listenHost, config.tcpBacklog, ->
+      console.log "audioControlServer is listening on TCP:#{config.audioControlPort}"
+else if config.receiverType is 'udp'
+  audioControlServer.start config.audioControlPort, config.listenHost, ->
+    console.log "audioControlServer is started on UDP:#{config.audioControlPort}"
+else
+  throw new Error "unknown receiverType in config: #{config.receiverType}"
 
 # Generate random 32 bit unsigned integer.
 # Return value is intended to be used as an SSRC identifier.
@@ -598,9 +729,9 @@ server.on 'error', (err) ->
   console.error "Server error: #{err.message}"
   throw err
 
-console.log "Starting server on port #{config.serverPort}"
+console.log "starting server on port #{config.serverPort}"
 server.listen config.serverPort, '0.0.0.0', 511, ->
-  console.log "Server is started"
+  console.log "server is started"
 
 videoSequenceNumber = 0
 audioSequenceNumber = 0
@@ -809,41 +940,58 @@ sendVideoPacketAsSingleNALUnit = (nalUnit, timestamp) ->
 #
 # arguments:
 #   nalUnit: Buffer
-#   timestamp: timestamp in 90 kHz clock rate (PTS)
-onReceiveVideoPacket = (nalUnit, timestamp) ->
-  nalUnitType = h264.getNALUnitType nalUnit
-  if nalUnitType is h264.NAL_UNIT_TYPE_SPS
-    h264.readSPS nalUnit
-    sps = h264.getSPS()
-    frameSize = h264.getFrameSize sps
-    isConfigUpdated = false
-    if detectedVideoWidth isnt frameSize.width
-      detectedVideoWidth = frameSize.width
-      console.log "detected video width change: #{detectedVideoWidth}"
-      config.videoWidth = detectedVideoWidth
-      isConfigUpdated = true
-    if detectedVideoHeight isnt frameSize.height
-      detectedVideoHeight = frameSize.height
-      console.log "detected video height change: #{detectedVideoHeight}"
-      config.videoHeight = detectedVideoHeight
-      isConfigUpdated = true
-    if config.flv.avclevel isnt sps.level_idc
-      config.flv.avclevel = sps.level_idc
-      console.log "avclevel is changed to #{config.flv.avclevel}"
-      isConfigUpdated = true
-    if config.flv.avcprofile isnt sps.profile_idc
-      config.flv.avcprofile = sps.profile_idc
-      console.log "avcprofile is changed to #{config.flv.avcprofile}"
-      isConfigUpdated = true
-    if isConfigUpdated
-      updateConfig()
+#   pts: timestamp in 90 kHz clock rate (PTS)
+onReceiveVideoPacket = (nalUnitGlob, pts, dts) ->
+  nalUnits = h264.splitIntoNALUnits nalUnitGlob
+  if nalUnits.length is 0
+    return
 
-  rtmpServer.sendVideoPacket nalUnit, timestamp
+  for nalUnit, i in nalUnits
+    # detect configuration
+    nalUnitType = h264.getNALUnitType nalUnit
+    if config.dropH264AccessUnitDelimiter and
+    (nalUnitType is h264.NAL_UNIT_TYPE_ACCESS_UNIT_DELIMITER)
+      # ignore access unit delimiters
+      continue
+    if nalUnitType is h264.NAL_UNIT_TYPE_PPS
+      rtmpServer.updatePPS nalUnit
+    else if nalUnitType is h264.NAL_UNIT_TYPE_SPS
+      rtmpServer.updateSPS nalUnit
+      try
+        h264.readSPS nalUnit
+      catch e
+        console.error "video data error: failed to read SPS"
+        console.error e.stack
+        continue
+      sps = h264.getSPS()
+      frameSize = h264.getFrameSize sps
+      isConfigUpdated = false
+      if detectedVideoWidth isnt frameSize.width
+        detectedVideoWidth = frameSize.width
+        console.log "detected video width change: #{detectedVideoWidth}"
+        config.videoWidth = detectedVideoWidth
+        isConfigUpdated = true
+      if detectedVideoHeight isnt frameSize.height
+        detectedVideoHeight = frameSize.height
+        console.log "detected video height change: #{detectedVideoHeight}"
+        config.videoHeight = detectedVideoHeight
+        isConfigUpdated = true
+      if config.flv.avclevel isnt sps.level_idc
+        config.flv.avclevel = sps.level_idc
+        console.log "avclevel is changed to #{config.flv.avclevel}"
+        isConfigUpdated = true
+      if config.flv.avcprofile isnt sps.profile_idc
+        config.flv.avcprofile = sps.profile_idc
+        console.log "avcprofile is changed to #{config.flv.avcprofile}"
+        isConfigUpdated = true
+      if isConfigUpdated
+        updateConfig()
+    if nalUnit.length >= SINGLE_NAL_UNIT_MAX_SIZE
+      sendVideoPacketWithFragment nalUnit, pts, dts # TODO dts
+    else
+      sendVideoPacketAsSingleNALUnit nalUnit, pts, dts # TODO dts
 
-  if nalUnit.length >= SINGLE_NAL_UNIT_MAX_SIZE
-    sendVideoPacketWithFragment nalUnit, timestamp
-  else
-    sendVideoPacketAsSingleNALUnit nalUnit, timestamp
+  rtmpServer.sendVideoPacket nalUnits, pts, dts
 
   return
 
@@ -854,11 +1002,20 @@ updateAudioSampleRate = (sampleRate) ->
 updateAudioChannels = (channels) ->
   config.audioChannels = channels
 
-onReceiveAudioPacket = (adtsFrame, pts) ->
-  if audioClockRate isnt 90000
-    timestamp = pts * audioClockRate / 90000
+onReceiveAudioPacket = (adtsFrameGlob, pts, dts) ->
+  adtsFrames = aac.splitIntoADTSFrames adtsFrameGlob
+  if adtsFrames.length is 0
+    return
+  adtsInfo = aac.parseADTSFrame adtsFrames[0]
 
-  adtsInfo = aac.parseADTSFrame adtsFrame
+  ptsPerFrame = 90000 / (adtsInfo.sampleRate / 1024)
+
+  # timestamp: RTP timestamp in audioClockRate
+  # pts: PTS in 90 kHz clock
+  if audioClockRate isnt 90000  # given pts is not in 90 kHz clock
+    timestamp = pts * audioClockRate / 90000
+  else
+    timestamp = pts
 
   if detectedAudioSampleRate isnt adtsInfo.sampleRate
     detectedAudioSampleRate = adtsInfo.sampleRate
@@ -875,53 +1032,69 @@ onReceiveAudioPacket = (adtsFrame, pts) ->
     console.log "audio object type is changed to #{config.audioObjectType}"
     updateConfig()
 
-  rawDataBlock = adtsFrame[7..]
-  rtmpServer.sendAudioPacket rawDataBlock, pts
+  rtpTimePerFrame = 1024
 
-  if ++audioSequenceNumber > 65535
-    audioSequenceNumber -= 65535
-
-  ts = timestamp % TIMESTAMP_ROUNDOFF
-  lastAudioRTPTimestamp = ts
+  rawDataBlocks = []
+  for adtsFrame, i in adtsFrames
+    rawDataBlock = adtsFrame[7..]
+    rawDataBlocks.push rawDataBlock
+    rtmpServer.sendAudioPacket rawDataBlock,
+      Math.round(pts + ptsPerFrame * i),
+      Math.round(dts + ptsPerFrame * i)
 
   if clientsCount is 0
     return
 
-  rtpData = rtp.createRTPHeader
-    marker: true
-    payloadType: 96
-    sequenceNumber: audioSequenceNumber
-    timestamp: ts
-    ssrc: null
+  frameGroups = rtp.groupAudioFrames rawDataBlocks
+  processedFrames = 0
+  for group, i in frameGroups
+    concatRawDataBlock = Buffer.concat group
 
-  accessUnitLength = rawDataBlock.length
+    if ++audioSequenceNumber > 65535
+      audioSequenceNumber -= 65535
 
-  # TODO: maximum size of AAC-hbr is 8191 octets
-  # TODO: sequence number should be started from a random number
+    ts = Math.round((timestamp + rtpTimePerFrame * processedFrames) % TIMESTAMP_ROUNDOFF)
+    processedFrames += group.length
+    lastAudioRTPTimestamp = (timestamp + rtpTimePerFrame * processedFrames) % TIMESTAMP_ROUNDOFF
 
-  rtpData = rtpData.concat rtp.createAudioHeader
-    accessUnitLength: accessUnitLength
+    # TODO dts
+    rtpData = rtp.createRTPHeader
+      marker: true
+      payloadType: 96
+      sequenceNumber: audioSequenceNumber
+      timestamp: ts
+      ssrc: null
 
-  # Append the access unit (rawDataBlock)
-  rtpBuffer = Buffer.concat [new Buffer(rtpData), rawDataBlock],
-    rtp.RTP_HEADER_LEN + 4 + accessUnitLength
+    accessUnitLength = concatRawDataBlock.length
 
-  for clientID, client of clients
-    if client.isPlaying
-      rtp.replaceSSRCInRTP rtpBuffer, client.audioSSRC
+    # TODO: maximum size of AAC-hbr is 8191 octets
+    # TODO: sequence number should be started from a random number
 
-      client.audioPacketCount++
-      client.audioOctetCount += accessUnitLength
-      if client.useTCPForAudio
-        if client.useHTTP
-          if client.httpClientType is 'GET'
+    audioHeader = rtp.createAudioHeader
+      accessUnits: group
+
+    rtpData = rtpData.concat audioHeader
+
+    # Append the access unit (rawDataBlock)
+    rtpBuffer = Buffer.concat [new Buffer(rtpData), concatRawDataBlock],
+      rtp.RTP_HEADER_LEN + audioHeader.length + accessUnitLength
+
+    for clientID, client of clients
+      if client.isPlaying
+        rtp.replaceSSRCInRTP rtpBuffer, client.audioSSRC
+
+        client.audioPacketCount++
+        client.audioOctetCount += accessUnitLength
+        if client.useTCPForAudio
+          if client.useHTTP
+            if client.httpClientType is 'GET'
+              sendDataByTCP client.socket, client.audioTCPDataChannel, rtpBuffer
+          else
             sendDataByTCP client.socket, client.audioTCPDataChannel, rtpBuffer
         else
-          sendDataByTCP client.socket, client.audioTCPDataChannel, rtpBuffer
-      else
-        audioRTPSocket.send rtpBuffer, 0, rtpBuffer.length, client.clientAudioRTPPort, client.ip, (err, bytes) ->
-          if err
-            console.error "[audioRTPSend] error: #{err.message}"
+          audioRTPSocket.send rtpBuffer, 0, rtpBuffer.length, client.clientAudioRTPPort, client.ip, (err, bytes) ->
+            if err
+              console.error "[audioRTPSend] error: #{err.message}"
   return
 
 pad = (digits, n) ->
