@@ -31,7 +31,7 @@ exports.UDPClient = class UDPClient
   constructor: ->
     @pendingPackets = []
     @newPacketId = 0
-    @maxPacketSize = 8000  # good for localhost
+    @maxPacketSize = 8000  # good for LAN?
 #    @maxPacketSize = 1472  # good for internet
     @isInBlockMode = false
     @ackCallbacks = {}
@@ -64,7 +64,7 @@ exports.UDPClient = class UDPClient
       if @ackCallbacks[packetId]?
         @ackCallbacks[packetId]()
       else
-        console.log "ACK is already processed for packetId #{packetId}"
+        console.warn "ACK is already processed for packetId #{packetId}"
     else
       console.warn "unknown packet type: #{packetType} len=#{msg.length}"
       console.warn msg
@@ -137,7 +137,7 @@ exports.UDPClient = class UDPClient
 
     setTimeout =>
       if not isACKReceived
-        console.log "resend reset (no ACK received)"
+        console.warn "resend reset (no ACK received)"
         @resetPacketId callback
     , RESEND_TIMEOUT
 
@@ -147,7 +147,6 @@ exports.UDPClient = class UDPClient
   write: (buf, callback) ->
     if @isInBlockMode
       @pendingPackets.push [@write, arguments...]
-      console.log "postpone packet: #{@pendingPackets.length}"
       return
 
     packetId = @getNextPacketId()
@@ -166,7 +165,7 @@ exports.UDPClient = class UDPClient
 
     setTimeout =>
       if not isACKReceived
-        console.log "resend #{packetId} (no ACK received)"
+        console.warn "resend #{packetId} (no ACK received)"
         onTimeoutCallback()
     , RESEND_TIMEOUT
 
@@ -210,7 +209,6 @@ exports.UDPClient = class UDPClient
   writeReliableBlocked: (buf, callback) ->
     if @isInBlockMode
       @pendingPackets.push [@writeReliableBlocked, arguments...]
-      console.log "postpone packet: #{@pendingPackets.length}"
       return
 
     @isInBlockMode = true
@@ -234,8 +232,6 @@ exports.UDPClient = class UDPClient
 
 exports.UDPServer = class UDPServer extends events.EventEmitter
   constructor: ->
-    @name = 'UDPServerInstance'
-
     @socket = dgram.createSocket 'udp4'
 
     @socket.on 'error', (err) ->
@@ -330,7 +326,7 @@ exports.UDPServer = class UDPServer extends events.EventEmitter
       "#{zeropad 2, d.getDate()} #{zeropad 2, d.getHours()}:" +
       "#{zeropad 2, d.getMinutes()}:#{zeropad 2, d.getSeconds()}." +
       zeropad 3, d.getMilliseconds()
-    console.log "#{dateDesc} [#{@name}] #{msg}"
+    console.log "#{dateDesc} UDPServer: #{msg}"
 
   consumeBufferedPacketsFrom: (packetId) ->
     oldEnoughTime = Date.now() - OLD_UDP_PACKET_TIME_THRESHOLD
@@ -361,7 +357,6 @@ exports.UDPServer = class UDPServer extends events.EventEmitter
     oldEnoughTime = Date.now() - OLD_UDP_PACKET_TIME_THRESHOLD
     for packetId in [oldestUnprocessedPacketId...@latestPacketId]
       if not @packetLastReceiveTime[packetId]?
-        @log "did not receive packet #{packetId}"
         @packetLastReceiveTime[packetId] = Date.now()
       if @packetLastReceiveTime[packetId] <= oldEnoughTime
         # Failed to receive a packet
@@ -434,7 +429,6 @@ exports.UDPServer = class UDPServer extends events.EventEmitter
 # Usage
 
     server = new hybrid_udp.UDPServer
-    server.name = "TestServer"
     server.on 'packet', (buf) ->
       # buf is a Buffer instance
       console.log "server received: 0x#{buf.toString 'hex'}"
