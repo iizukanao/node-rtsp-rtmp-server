@@ -1453,6 +1453,7 @@ class RTMPServer
             console.log "[rtmp] no response"
 
   start: (callback) ->
+    console.log "starting rtmp server on port #{@port}"
     @server.listen @port, '0.0.0.0', 511, callback
 
   stop: (callback) ->
@@ -1558,7 +1559,6 @@ class RTMPServer
     return
 
   startStream: (timeForVideoRTPZero) ->
-    console.log "RTMP server startStream"
     spsPacket = null
     ppsPacket = null
 

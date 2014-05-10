@@ -603,7 +603,7 @@ server.on 'error', (err) ->
   console.error "Server error: #{err.message}"
   throw err
 
-console.log "starting server on port #{config.serverPort}"
+console.log "starting rtsp/http server on port #{config.serverPort}"
 server.listen config.serverPort, '0.0.0.0', 511, ->
   console.log "server is started"
 
