@@ -48,30 +48,15 @@ detectedAudioChannels = null
 detectedAudioPeriodSize = null
 
 # Delete UNIX domain sockets
-deleteReceiverSocketsSync = ->
-  if config.receiverType is 'unix'
-    if fs.existsSync config.videoReceiverPath
+deleteReceiverSocketSync = ->
+  if config.dataReceiverType is 'unix'
+    if fs.existsSync config.dataReceiverPath
       try
-        fs.unlinkSync config.videoReceiverPath
-      catch e
-        console.error "unlink error: #{e}"
-    if fs.existsSync config.videoControlPath
-      try
-        fs.unlinkSync config.videoControlPath
-      catch e
-        console.error "unlink error: #{e}"
-    if fs.existsSync config.audioReceiverPath
-      try
-        fs.unlinkSync config.audioReceiverPath
-      catch e
-        console.error "unlink error: #{e}"
-    if fs.existsSync config.audioControlPath
-      try
-        fs.unlinkSync config.audioControlPath
+        fs.unlinkSync config.dataReceiverPath
       catch e
         console.error "unlink error: #{e}"
 
-deleteReceiverSocketsSync()
+deleteReceiverSocketSync()
 
 # Create RTMP server
 rtmpServer = new RTMPServer
@@ -262,66 +247,112 @@ audioFrames = 0
 lastVideoStatsTime = null
 lastAudioStatsTime = null
 
-onReceiveVideoBuffer = (buf) ->
+onReceiveBuffer = (buf) ->
   packetType = buf[0]
-  # Using own format
-  # pts (6 bytes)
-  # NAL unit (remaining)
+  switch packetType
+    when 0x00 then onReceiveVideoControlBuffer buf
+    when 0x01 then onReceiveAudioControlBuffer buf
+    when 0x02 then onReceiveVideoDataBuffer buf
+    when 0x03 then onReceiveAudioDataBuffer buf
+    when 0x04 then onReceiveVideoDataBufferWithDTS buf
+    when 0x05 then onReceiveAudioDataBufferWithDTS buf
+    else
+      console.log "unknown packet type: #{packetType}"
+      # ignore
+  return
+
+onReceiveVideoControlBuffer = (buf) ->
+  time  = buf[1] * 0x0100000000000000  # this loses some precision
+  time += buf[2] * 0x01000000000000
+  time += buf[3] * 0x010000000000
+  time += buf[4] * 0x0100000000
+  time += buf[5] * 0x01000000
+  time += buf[6] * 0x010000
+  time += buf[7] * 0x0100
+  time += buf[8]
+  lastVideoStatsTime = new Date().getTime()
+  timeForVideoRTPZero = time / 1000
+  timeForAudioRTPZero = timeForVideoRTPZero
+  console.log "video start time: #{timeForVideoRTPZero}"
+  spropParameterSets = ''
+  rtmpServer.startStream timeForVideoRTPZero
+
+onReceiveAudioControlBuffer = (buf) ->
+  time  = buf[1] * 0x0100000000000000  # this loses some precision
+  time += buf[2] * 0x01000000000000
+  time += buf[3] * 0x010000000000
+  time += buf[4] * 0x0100000000
+  time += buf[5] * 0x01000000
+  time += buf[6] * 0x010000
+  time += buf[7] * 0x0100
+  time += buf[8]
+  lastAudioStatsTime = new Date().getTime()
+  timeForAudioRTPZero = time / 1000
+  timeForVideoRTPZero = timeForAudioRTPZero
+  console.log "audio start time: #{timeForAudioRTPZero}"
+  rtmpServer.startStream timeForAudioRTPZero
+
+onReceiveVideoDataBuffer = (buf) ->
   pts = buf[1] * 0x010000000000 + \
         buf[2] * 0x0100000000   + \
         buf[3] * 0x01000000     + \
         buf[4] * 0x010000       + \
         buf[5] * 0x0100         + \
         buf[6]
-  if packetType is 0x01  # PTS == DTS
-    nalUnit = buf[7..]
-    dts = pts
-  else if packetType is 0x02
-    dts = buf[7]  * 0x010000000000 + \
-          buf[8]  * 0x0100000000   + \
-          buf[9]  * 0x01000000     + \
-          buf[10] * 0x010000       + \
-          buf[11] * 0x0100         + \
-          buf[12]
-    nalUnit = buf[13..]
-  else
-    console.error "video data error: unknown packet type: #{packetType}"
-    return
+  dts = pts
+  nalUnit = buf[7..]
   onReceiveVideoPacket nalUnit, pts, dts
 
-onReceiveAudioBuffer = (buf) ->
-  packetType = buf[0]
-  # Using own format
-  # pts (6 bytes)
-  # Access Unit == raw_data_block (remaining)
+onReceiveVideoDataBufferWithDTS = (buf) ->
   pts = buf[1] * 0x010000000000 + \
         buf[2] * 0x0100000000   + \
         buf[3] * 0x01000000     + \
         buf[4] * 0x010000       + \
         buf[5] * 0x0100         + \
         buf[6]
-  if packetType is 0x01  # PTS == DTS
-    adtsFrame = buf[7..]
-    dts = pts
-  else if packetType is 0x02
-    dts = buf[7]  * 0x010000000000 + \
-          buf[8]  * 0x0100000000   + \
-          buf[9]  * 0x01000000     + \
-          buf[10] * 0x010000       + \
-          buf[11] * 0x0100         + \
-          buf[12]
-    adtsFrame = buf[13..]
-  else
-    console.error "audio data error: unknown packet type: #{packetType}"
-    return
+  dts = buf[7]  * 0x010000000000 + \
+        buf[8]  * 0x0100000000   + \
+        buf[9]  * 0x01000000     + \
+        buf[10] * 0x010000       + \
+        buf[11] * 0x0100         + \
+        buf[12]
+  nalUnit = buf[13..]
+  onReceiveVideoPacket nalUnit, pts, dts
+
+onReceiveAudioDataBuffer = (buf) ->
+  pts = buf[1] * 0x010000000000 + \
+        buf[2] * 0x0100000000   + \
+        buf[3] * 0x01000000     + \
+        buf[4] * 0x010000       + \
+        buf[5] * 0x0100         + \
+        buf[6]
+  dts = pts
+  adtsFrame = buf[7..]
   onReceiveAudioPacket adtsFrame, pts, dts
 
-if config.receiverType in ['unix', 'tcp']
-  videoReceiveServer = net.createServer (c) ->
-    console.log "new videoReceiveServer connection"
+onReceiveAudioDataBufferWithDTS = (buf) ->
+  pts = buf[1] * 0x010000000000 + \
+        buf[2] * 0x0100000000   + \
+        buf[3] * 0x01000000     + \
+        buf[4] * 0x010000       + \
+        buf[5] * 0x0100         + \
+        buf[6]
+  dts = buf[7]  * 0x010000000000 + \
+        buf[8]  * 0x0100000000   + \
+        buf[9]  * 0x01000000     + \
+        buf[10] * 0x010000       + \
+        buf[11] * 0x0100         + \
+        buf[12]
+  adtsFrame = buf[13..]
+  onReceiveAudioPacket adtsFrame, pts, dts
+
+# Setup dataReceiver
+if config.dataReceiverType in ['unix', 'tcp']
+  dataReceiver = net.createServer (c) ->
+    console.log "new connection to dataReceiver"
     buf = null
     c.on 'close', ->
-      console.log "videoReceiveServer connection closed"
+      console.log "connection to dataReceiver closed"
     c.on 'data', (data) ->
       if config.debug.dropAllData
         return
@@ -329,12 +360,12 @@ if config.receiverType in ['unix', 'tcp']
         buf = Buffer.concat [buf, data], buf.length + data.length
       else
         buf = data
-      if buf.length >= 3
+      if buf.length >= 3  # 3 bytes == payload size
         loop
           payloadSize = buf[0] * 0x10000 + buf[1] * 0x100 + buf[2]
           totalSize = payloadSize + 3  # 3 bytes for payload size
           if buf.length >= totalSize
-            onReceiveVideoBuffer buf.slice 3, totalSize  # 3 bytes for payload size
+            onReceiveBuffer buf.slice 3, totalSize  # 3 bytes for payload size
             if buf.length > totalSize
               buf = buf.slice totalSize
             else
@@ -342,221 +373,28 @@ if config.receiverType in ['unix', 'tcp']
               break
           else
             break
-else if config.receiverType is 'udp'
-  videoReceiveServer = new hybrid_udp.UDPServer
-  videoReceiveServer.name = 'VideoData'
-  videoReceiveServer.on 'packet', (buf) ->
-    onReceiveVideoBuffer buf[3..]
+      return
+else if config.dataReceiverType is 'udp'
+  dataReceiver = new hybrid_udp.UDPServer
+  dataReceiver.on 'packet', (buf) ->
+    onReceiveBuffer buf[3..]
 else
-  throw new Error "unknown receiverType in config: #{config.receiverType}"
+  throw new Error "unknown dataReceiverType in config: #{config.dataReceiverType}"
 
-if config.receiverType is 'unix'
-  videoReceiveServer.listen config.videoReceiverPath, ->
-    fs.chmodSync config.videoReceiverPath, '777'
-    console.log "videoReceiveServer is listening on #{config.videoReceiverPath}"
-else if config.receiverType is 'tcp'
-  videoReceiveServer.listen config.videoDataPort,
-    config.listenHost, config.tcpBacklog, ->
-      console.log "videoReceiveServer is listening on TCP:#{config.videoDataPort}"
-else if config.receiverType is 'udp'
-  videoReceiveServer.start config.videoDataPort, config.listenHost, ->
-    console.log "videoReceiveServer is started on UDP:#{config.videoDataPort}"
+# Start dataReceiver
+if config.dataReceiverType is 'unix'
+  dataReceiver.listen config.dataReceiverPath, ->
+    fs.chmodSync config.dataReceiverPath, '777'
+    console.log "dataReceiver is listening on #{config.dataReceiverPath}"
+else if config.dataReceiverType is 'tcp'
+  dataReceiver.listen config.dataReceiverPort,
+    config.dataReceiverListenHost, config.dataReceiverTCPBacklog, ->
+      console.log "dataReceiver is listening on tcp:#{config.dataReceiverPort}"
+else if config.dataReceiverType is 'udp'
+  dataReceiver.start config.dataReceiverPort, config.dataReceiverListenHost, ->
+    console.log "dataReceiver is listening on udp:#{config.dataReceiverPort}"
 else
-  throw new Error "unknown receiverType in config: #{config.receiverType}"
-
-if config.receiverType in ['unix', 'tcp']
-  videoControlServer = net.createServer (c) ->
-    console.log "new videoControl connection"
-    buf = null
-    c.on 'close', ->
-      console.log "videoControl connection closed"
-    c.on 'data', (data) ->
-      if config.debug.dropAllData
-        return
-      if buf?
-        buf = Buffer.concat [buf, data], buf.length + data.length
-      else
-        buf = data
-      if buf.length >= 9
-        if buf[0] is 1  # timestamp information
-          time  = buf[1] * 0x0100000000000000  # this loses some precision
-          time += buf[2] * 0x01000000000000
-          time += buf[3] * 0x010000000000
-          time += buf[4] * 0x0100000000
-          time += buf[5] * 0x01000000
-          time += buf[6] * 0x010000
-          time += buf[7] * 0x0100
-          time += buf[8]
-          lastVideoStatsTime = new Date().getTime()
-          timeForVideoRTPZero = time / 1000
-          timeForAudioRTPZero = timeForVideoRTPZero
-          console.log "timeForVideoRTPZero: #{timeForVideoRTPZero}"
-          spropParameterSets = ''
-          rtmpServer.startStream timeForVideoRTPZero
-          if buf.length > 9
-            buf = buf[9..]
-          else
-            buf = null
-        else
-          console.log "[videoControlServer] unknown data: #{buf.length} bytes"
-          buf = null  # discard
-else if config.receiverType is 'udp'
-  videoControlServer = new hybrid_udp.UDPServer
-  videoControlServer.name = 'VideoControl'
-  videoControlServer.on 'packet', (buf) ->
-    if buf[0] is 1  # timestamp information
-      time  = buf[1] * 0x0100000000000000  # this loses some precision
-      time += buf[2] * 0x01000000000000
-      time += buf[3] * 0x010000000000
-      time += buf[4] * 0x0100000000
-      time += buf[5] * 0x01000000
-      time += buf[6] * 0x010000
-      time += buf[7] * 0x0100
-      time += buf[8]
-      lastVideoStatsTime = new Date().getTime()
-      timeForVideoRTPZero = time / 1000
-      timeForAudioRTPZero = timeForVideoRTPZero
-      console.log "timeForVideoRTPZero: #{timeForVideoRTPZero}"
-      spropParameterSets = ''
-      rtmpServer.startStream timeForVideoRTPZero
-    else
-      console.log "[videoControlServer] unknown data: #{buf.length} bytes"
-else
-  throw new Error "unknown receiverType in config: #{config.receiverType}"
-
-if config.receiverType is 'unix'
-  videoControlServer.listen config.videoControlPath, ->
-    fs.chmodSync config.videoControlPath, '777'
-    console.log "videoControlServer is listening on #{config.videoControlPath}"
-else if config.receiverType is 'tcp'
-  videoControlServer.listen config.videoControlPort,
-    config.listenHost, config.tcpBacklog, ->
-      console.log "videoControlServer is listening on TCP:#{config.videoControlPort}"
-else if config.receiverType is 'udp'
-  videoControlServer.start config.videoControlPort, config.listenHost, ->
-    console.log "videoControlServer is started on UDP:#{config.videoControlPort}"
-else
-  throw new Error "unknown receiverType in config: #{config.receiverType}"
-
-if config.receiverType in ['unix', 'tcp']
-  audioReceiveServer = net.createServer (c) ->
-    console.log "new audioReceiveServer connection"
-    buf = null
-    c.on 'close', ->
-      console.log "audioReceiveServer connection closed"
-    c.on 'data', (data) ->
-      if config.debug.dropAllData
-        return
-      if buf?
-        buf = Buffer.concat [buf, data], buf.length + data.length
-      else
-        buf = data
-      if buf.length >= 3
-        loop
-          payloadSize = buf[0] * 0x10000 + buf[1] * 0x100 + buf[2]
-          totalSize = payloadSize + 3  # 3 bytes for payload size
-          if buf.length >= totalSize
-            onReceiveAudioBuffer buf.slice 3, totalSize  # 3 bytes for payload size
-            if buf.length > totalSize
-              buf = buf.slice totalSize
-            else
-              buf = null
-              break
-          else
-            break
-else if config.receiverType is 'udp'
-  audioReceiveServer = new hybrid_udp.UDPServer
-  audioReceiveServer.name = 'AudioData'
-  audioReceiveServer.on 'packet', (buf) ->
-    onReceiveAudioBuffer buf[3..]
-else
-  throw new Error "unknown receiverType in config: #{config.receiverType}"
-
-if config.receiverType is 'unix'
-  audioReceiveServer.listen config.audioReceiverPath, ->
-    fs.chmodSync config.audioReceiverPath, '777'
-    console.log "audioReceiveServer is listening on #{config.audioReceiverPath}"
-else if config.receiverType is 'tcp'
-  audioReceiveServer.listen config.audioDataPort,
-    config.listenHost, config.tcpBacklog, ->
-      console.log "audioReceiveServer is listening on TCP:#{config.audioDataPort}"
-else if config.receiverType is 'udp'
-  audioReceiveServer.start config.audioDataPort, config.listenHost, ->
-    console.log "audioReceiveServer is started on UDP:#{config.audioDataPort}"
-else
-  throw new Error "unknown receiverType in config: #{config.receiverType}"
-
-if config.receiverType in ['unix', 'tcp']
-  audioControlServer = net.createServer (c) ->
-    console.log "new audioControl connection"
-    buf = null
-    c.on 'close', ->
-      console.log "audioControl connection closed"
-    c.on 'data', (data) ->
-      if config.debug.dropAllData
-        return
-      if buf?
-        buf = Buffer.concat [buf, data], buf.length + data.length
-      else
-        buf = data
-      if buf.length >= 9
-        if buf[0] is 1  # timestamp information
-          time  = buf[1] * 0x0100000000000000  # this loses some precision
-          time += buf[2] * 0x01000000000000
-          time += buf[3] * 0x010000000000
-          time += buf[4] * 0x0100000000
-          time += buf[5] * 0x01000000
-          time += buf[6] * 0x010000
-          time += buf[7] * 0x0100
-          time += buf[8]
-          lastAudioStatsTime = new Date().getTime()
-          timeForAudioRTPZero = time / 1000
-          timeForVideoRTPZero = timeForAudioRTPZero
-          console.log "timeForAudioRTPZero: #{timeForAudioRTPZero}"
-          rtmpServer.startStream timeForAudioRTPZero
-          if buf.length > 9
-            buf = buf[9..]
-          else
-            buf = null
-        else
-          console.log "[audioControlServer] unknown data: #{buf.length} bytes"
-          buf = null  # discard
-else if config.receiverType is 'udp'
-  audioControlServer = new hybrid_udp.UDPServer
-  audioControlServer.name = 'AudioControl'
-  audioControlServer.on 'packet', (buf) ->
-    if buf[0] is 1  # timestamp information
-      time  = buf[1] * 0x0100000000000000  # this loses some precision
-      time += buf[2] * 0x01000000000000
-      time += buf[3] * 0x010000000000
-      time += buf[4] * 0x0100000000
-      time += buf[5] * 0x01000000
-      time += buf[6] * 0x010000
-      time += buf[7] * 0x0100
-      time += buf[8]
-      lastAudioStatsTime = new Date().getTime()
-      timeForAudioRTPZero = time / 1000
-      timeForVideoRTPZero = timeForAudioRTPZero
-      console.log "timeForAudioRTPZero: #{timeForAudioRTPZero}"
-      rtmpServer.startStream timeForAudioRTPZero
-    else
-      console.log "[audioControlServer] unknown data: #{buf.length} bytes"
-else
-  throw new Error "unknown receiverType in config: #{config.receiverType}"
-
-if config.receiverType is 'unix'
-  audioControlServer.listen config.audioControlPath, ->
-    fs.chmodSync config.audioControlPath, '777'
-    console.log "audioControlServer is listening on #{config.audioControlPath}"
-else if config.receiverType is 'tcp'
-  audioControlServer.listen config.audioControlPort,
-    config.listenHost, config.tcpBacklog, ->
-      console.log "audioControlServer is listening on TCP:#{config.audioControlPort}"
-else if config.receiverType is 'udp'
-  audioControlServer.start config.audioControlPort, config.listenHost, ->
-    console.log "audioControlServer is started on UDP:#{config.audioControlPort}"
-else
-  throw new Error "unknown receiverType in config: #{config.receiverType}"
+  throw new Error "unknown dataReceiverType in config: #{config.dataReceiverType}"
 
 # Generate random 32 bit unsigned integer.
 # Return value is intended to be used as an SSRC identifier.
@@ -751,11 +589,11 @@ onClientConnect = (c) ->
       handleOnData c, data
 
 process.on 'SIGINT', ->
-  deleteReceiverSocketsSync()
+  deleteReceiverSocketSync()
   process.kill process.pid, 'SIGTERM'
 
 process.on 'uncaughtException', (err) ->
-  deleteReceiverSocketsSync()
+  deleteReceiverSocketSync()
   throw err
 
 server = net.createServer (c) ->
