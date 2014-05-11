@@ -20,18 +20,24 @@ module.exports =
   audioBitrateKbps: 40
 
   # What transport is used for feeding audio/video data
-  dataReceiverType: 'unix'  # 'unix' or 'tcp' or 'udp'
+  receiverType: 'unix'  # 'unix' or 'tcp' or 'udp'
 
-  # For dataReceiverType == 'unix'
+  # For receiverType == 'unix'
   # UNIX domain socket used for receiving audio/video data
-  dataReceiverPath: '/tmp/node_rtsp_rtmp_data'
+  videoControlReceiverPath: '/tmp/node_rtsp_rtmp_videoControl'
+  audioControlReceiverPath: '/tmp/node_rtsp_rtmp_audioControl'
+  videoDataReceiverPath: '/tmp/node_rtsp_rtmp_videoData'
+  audioDataReceiverPath: '/tmp/node_rtsp_rtmp_audioData'
 
-  # For dataReceiverType == 'tcp' or 'udp'
-  dataReceiverPort: 1111
-  dataReceiverListenHost: '0.0.0.0'
+  # For receiverType == 'tcp' or 'udp'
+  videoControlReceiverPort: 1111
+  audioControlReceiverPort: 1112
+  videoDataReceiverPort: 1113
+  audioDataReceiverPort: 1114
+  receiverListenHost: '0.0.0.0'
 
-  # For dataReceiverType == 'tcp'
-  dataReceiverTCPBacklog: 511
+  # For receiverType == 'tcp'
+  receiverTCPBacklog: 511
 
   # Server ports for RTP and RTCP
   audioRTPServerPort : 7042  # even

@@ -48,15 +48,31 @@ detectedAudioChannels = null
 detectedAudioPeriodSize = null
 
 # Delete UNIX domain sockets
-deleteReceiverSocketSync = ->
-  if config.dataReceiverType is 'unix'
-    if fs.existsSync config.dataReceiverPath
+deleteReceiverSocketsSync = ->
+  if config.receiverType is 'unix'
+    if fs.existsSync config.videoControlReceiverPath
       try
-        fs.unlinkSync config.dataReceiverPath
+        fs.unlinkSync config.videoControlReceiverPath
       catch e
         console.error "unlink error: #{e}"
+    if fs.existsSync config.audioControlReceiverPath
+      try
+        fs.unlinkSync config.audioControlReceiverPath
+      catch e
+        console.error "unlink error: #{e}"
+    if fs.existsSync config.videoDataReceiverPath
+      try
+        fs.unlinkSync config.videoDataReceiverPath
+      catch e
+        console.error "unlink error: #{e}"
+    if fs.existsSync config.audioDataReceiverPath
+      try
+        fs.unlinkSync config.audioDataReceiverPath
+      catch e
+        console.error "unlink error: #{e}"
+  return
 
-deleteReceiverSocketSync()
+deleteReceiverSocketsSync()
 
 # Create RTMP server
 rtmpServer = new RTMPServer
@@ -273,7 +289,7 @@ onReceiveVideoControlBuffer = (buf) ->
   lastVideoStatsTime = new Date().getTime()
   timeForVideoRTPZero = Date.now()
   timeForAudioRTPZero = timeForVideoRTPZero
-  console.log "video start time: #{timeForVideoRTPZero}"
+  console.log "video start"
   spropParameterSets = ''
   rtmpServer.startStream timeForVideoRTPZero
 
@@ -289,7 +305,7 @@ onReceiveAudioControlBuffer = (buf) ->
   lastAudioStatsTime = new Date().getTime()
   timeForAudioRTPZero = Date.now()
   timeForVideoRTPZero = timeForAudioRTPZero
-  console.log "audio start time: #{timeForAudioRTPZero}"
+  console.log "audio start"
   rtmpServer.startStream timeForAudioRTPZero
 
 onReceiveVideoDataBuffer = (buf) ->
@@ -346,18 +362,17 @@ onReceiveAudioDataBufferWithDTS = (buf) ->
   adtsFrame = buf[13..]
   onReceiveAudioPacket adtsFrame, pts, dts
 
-# Setup dataReceiver
-if config.dataReceiverType in ['unix', 'tcp']
-  dataReceiver = net.createServer (c) ->
-    console.log "new connection to dataReceiver"
+createReceiver = (name, callback) ->
+  return net.createServer (c) ->
+    console.log "new connection to #{name}"
     buf = null
     c.on 'close', ->
-      console.log "connection to dataReceiver closed"
+      console.log "connection to #{name} closed"
     c.on 'data', (data) ->
       if config.debug.dropAllData
         return
       if buf?
-        buf = Buffer.concat [buf, data], buf.length + data.length
+        buf = Buffer.concat [buf, data]
       else
         buf = data
       if buf.length >= 3  # 3 bytes == payload size
@@ -365,7 +380,7 @@ if config.dataReceiverType in ['unix', 'tcp']
           payloadSize = buf[0] * 0x10000 + buf[1] * 0x100 + buf[2]
           totalSize = payloadSize + 3  # 3 bytes for payload size
           if buf.length >= totalSize
-            onReceiveBuffer buf.slice 3, totalSize  # 3 bytes for payload size
+            callback buf.slice 3, totalSize  # 3 bytes for payload size
             if buf.length > totalSize
               buf = buf.slice totalSize
             else
@@ -374,27 +389,76 @@ if config.dataReceiverType in ['unix', 'tcp']
           else
             break
       return
-else if config.dataReceiverType is 'udp'
-  dataReceiver = new hybrid_udp.UDPServer
-  dataReceiver.on 'packet', (buf) ->
-    onReceiveBuffer buf[3..]
-else
-  throw new Error "unknown dataReceiverType in config: #{config.dataReceiverType}"
 
-# Start dataReceiver
-if config.dataReceiverType is 'unix'
-  dataReceiver.listen config.dataReceiverPath, ->
-    fs.chmodSync config.dataReceiverPath, '777'
-    console.log "dataReceiver is listening on #{config.dataReceiverPath}"
-else if config.dataReceiverType is 'tcp'
-  dataReceiver.listen config.dataReceiverPort,
-    config.dataReceiverListenHost, config.dataReceiverTCPBacklog, ->
-      console.log "dataReceiver is listening on tcp:#{config.dataReceiverPort}"
-else if config.dataReceiverType is 'udp'
-  dataReceiver.start config.dataReceiverPort, config.dataReceiverListenHost, ->
-    console.log "dataReceiver is listening on udp:#{config.dataReceiverPort}"
+# Setup data receivers
+#
+# We create four separate sockets for receiving different kinds of data.
+# If we have just one socket for receiving all kinds of data, the sender
+# has to lock and synchronize audio/video writer threads and it leads to
+# slightly worse performance.
+if config.receiverType in ['unix', 'tcp']
+  videoControlReceiver = createReceiver 'VideoControl', onReceiveVideoControlBuffer
+  audioControlReceiver = createReceiver 'AudioControl', onReceiveAudioControlBuffer
+  videoDataReceiver = createReceiver 'VideoData', onReceiveVideoDataBuffer
+  audioDataReceiver = createReceiver 'AudioData', onReceiveAudioDataBuffer
+else if config.receiverType is 'udp'
+  videoControlReceiver = new hybrid_udp.UDPServer
+  videoControlReceiver.name = 'VideoControl'
+  videoControlReceiver.on 'packet', (buf) ->
+    onReceiveVideoControlBuffer buf[3..]
+  audioControlReceiver = new hybrid_udp.UDPServer
+  audioControlReceiver.name = 'AudioControl'
+  audioControlReceiver.on 'packet', (buf) ->
+    onReceiveAudioControlBuffer buf[3..]
+  videoDataReceiver = new hybrid_udp.UDPServer
+  videoDataReceiver.name = 'VideoData'
+  videoDataReceiver.on 'packet', (buf) ->
+    onReceiveVideoDataBuffer buf[3..]
+  audioDataReceiver = new hybrid_udp.UDPServer
+  audioDataReceiver.name = 'AudioData'
+  audioDataReceiver.on 'packet', (buf) ->
+    onReceiveAudioDataBuffer buf[3..]
 else
-  throw new Error "unknown dataReceiverType in config: #{config.dataReceiverType}"
+  throw new Error "unknown receiverType in config: #{config.receiverType}"
+
+# Start data receivers
+if config.receiverType is 'unix'
+  videoControlReceiver.listen config.videoControlReceiverPath, ->
+    fs.chmodSync config.videoControlReceiverPath, '777'
+    console.log "videoControlReceiver is listening on #{config.videoControlReceiverPath}"
+  audioControlReceiver.listen config.audioControlReceiverPath, ->
+    fs.chmodSync config.audioControlReceiverPath, '777'
+    console.log "audioControlReceiver is listening on #{config.audioControlReceiverPath}"
+  videoDataReceiver.listen config.videoDataReceiverPath, ->
+    fs.chmodSync config.videoDataReceiverPath, '777'
+    console.log "videoDataReceiver is listening on #{config.videoDataReceiverPath}"
+  audioDataReceiver.listen config.audioDataReceiverPath, ->
+    fs.chmodSync config.audioDataReceiverPath, '777'
+    console.log "audioDataReceiver is listening on #{config.audioDataReceiverPath}"
+else if config.receiverType is 'tcp'
+  videoControlReceiver.listen config.videoControlReceiverPort,
+    config.receiverListenHost, config.receiverTCPBacklog, ->
+      console.log "videoControlReceiver is listening on tcp:#{config.videoControlReceiverPort}"
+  audioControlReceiver.listen config.audioControlReceiverPort,
+    config.receiverListenHost, config.receiverTCPBacklog, ->
+      console.log "audioControlReceiver is listening on tcp:#{config.audioControlReceiverPort}"
+  videoDataReceiver.listen config.videoDataReceiverPort,
+    config.receiverListenHost, config.receiverTCPBacklog, ->
+      console.log "videoDataReceiver is listening on tcp:#{config.videoDataReceiverPort}"
+  audioDataReceiver.listen config.audioDataReceiverPort,
+    config.receiverListenHost, config.receiverTCPBacklog, ->
+      console.log "audioDataReceiver is listening on tcp:#{config.audioDataReceiverPort}"
+else if config.receiverType is 'udp'
+  videoControlReceiver.start config.videoControlReceiverPort, config.receiverListenHost, ->
+    console.log "videoControlReceiver is listening on udp:#{config.videoControlReceiverPort}"
+  audioControlReceiver.start config.audioControlReceiverPort, config.receiverListenHost, ->
+    console.log "audioControlReceiver is listening on udp:#{config.audioControlReceiverPort}"
+  videoDataReceiver.start config.videoDataReceiverPort, config.receiverListenHost, ->
+    console.log "videoDataReceiver is listening on udp:#{config.videoDataReceiverPort}"
+  audioDataReceiver.start config.audioDataReceiverPort, config.receiverListenHost, ->
+    console.log "audioDataReceiver is listening on udp:#{config.audioDataReceiverPort}"
+else
+  throw new Error "unknown receiverType in config: #{config.receiverType}"
 
 # Generate random 32 bit unsigned integer.
 # Return value is intended to be used as an SSRC identifier.
@@ -589,11 +653,11 @@ onClientConnect = (c) ->
       handleOnData c, data
 
 process.on 'SIGINT', ->
-  deleteReceiverSocketSync()
+  deleteReceiverSocketsSync()
   process.kill process.pid, 'SIGTERM'
 
 process.on 'uncaughtException', (err) ->
-  deleteReceiverSocketSync()
+  deleteReceiverSocketsSync()
   throw err
 
 server = net.createServer (c) ->
