@@ -260,8 +260,6 @@ onReceiveAudioRTCP = (buf) ->
 
 videoFrames = 0
 audioFrames = 0
-lastVideoStatsTime = null
-lastAudioStatsTime = null
 
 onReceiveBuffer = (buf) ->
   packetType = buf[0]
@@ -278,34 +276,16 @@ onReceiveBuffer = (buf) ->
   return
 
 onReceiveVideoControlBuffer = (buf) ->
-  time  = buf[1] * 0x0100000000000000  # this loses some precision
-  time += buf[2] * 0x01000000000000
-  time += buf[3] * 0x010000000000
-  time += buf[4] * 0x0100000000
-  time += buf[5] * 0x01000000
-  time += buf[6] * 0x010000
-  time += buf[7] * 0x0100
-  time += buf[8]
-  lastVideoStatsTime = new Date().getTime()
+  console.log "video start"
   timeForVideoRTPZero = Date.now()
   timeForAudioRTPZero = timeForVideoRTPZero
-  console.log "video start"
   spropParameterSets = ''
   rtmpServer.startStream timeForVideoRTPZero
 
 onReceiveAudioControlBuffer = (buf) ->
-  time  = buf[1] * 0x0100000000000000  # this loses some precision
-  time += buf[2] * 0x01000000000000
-  time += buf[3] * 0x010000000000
-  time += buf[4] * 0x0100000000
-  time += buf[5] * 0x01000000
-  time += buf[6] * 0x010000
-  time += buf[7] * 0x0100
-  time += buf[8]
-  lastAudioStatsTime = new Date().getTime()
+  console.log "audio start"
   timeForAudioRTPZero = Date.now()
   timeForVideoRTPZero = timeForAudioRTPZero
-  console.log "audio start"
   rtmpServer.startStream timeForAudioRTPZero
 
 onReceiveVideoDataBuffer = (buf) ->
