@@ -37,6 +37,7 @@ exports.UDPClient = class UDPClient
     @ackCallbacks = {}
     @serverPort = null
     @serverHost = null
+    @isStopped = false
 
     @socket = dgram.createSocket 'udp4'
 
@@ -55,6 +56,7 @@ exports.UDPClient = class UDPClient
       @resetPacketId callback
 
   stop: ->
+    @isStopped = true
     @socket.close()
 
   onMessage: (msg, rinfo) ->
@@ -136,7 +138,7 @@ exports.UDPClient = class UDPClient
     @socket.send buf, 0, buf.length, @serverPort, @serverHost
 
     setTimeout =>
-      if not isACKReceived
+      if not isACKReceived and not @isStopped
         console.warn "resend reset (no ACK received)"
         @resetPacketId callback
     , RESEND_TIMEOUT
@@ -164,7 +166,7 @@ exports.UDPClient = class UDPClient
     @sendPacket PACKET_TYPE_REQUIRE_ACK, packetId, buf
 
     setTimeout =>
-      if not isACKReceived
+      if not isACKReceived and not @isStopped
         console.warn "resend #{packetId} (no ACK received)"
         onTimeoutCallback()
     , RESEND_TIMEOUT
@@ -241,6 +243,7 @@ exports.UDPServer = class UDPServer extends events.EventEmitter
     @socket.on 'message', (msg, rinfo) =>
       @onReceiveMessage msg, rinfo
 
+    @isStopped = false
     @resetServerState()
 
   resetServerState: ->
@@ -421,6 +424,7 @@ exports.UDPServer = class UDPServer extends events.EventEmitter
     @socket.bind port, address, callback
 
   stop: ->
+    @isStopped = true
     @socket.close()
 
 
