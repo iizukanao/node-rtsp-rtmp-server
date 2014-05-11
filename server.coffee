@@ -271,7 +271,7 @@ onReceiveVideoControlBuffer = (buf) ->
   time += buf[7] * 0x0100
   time += buf[8]
   lastVideoStatsTime = new Date().getTime()
-  timeForVideoRTPZero = time / 1000
+  timeForVideoRTPZero = Date.now()
   timeForAudioRTPZero = timeForVideoRTPZero
   console.log "video start time: #{timeForVideoRTPZero}"
   spropParameterSets = ''
@@ -287,7 +287,7 @@ onReceiveAudioControlBuffer = (buf) ->
   time += buf[7] * 0x0100
   time += buf[8]
   lastAudioStatsTime = new Date().getTime()
-  timeForAudioRTPZero = time / 1000
+  timeForAudioRTPZero = Date.now()
   timeForVideoRTPZero = timeForAudioRTPZero
   console.log "audio start time: #{timeForAudioRTPZero}"
   rtmpServer.startStream timeForAudioRTPZero
