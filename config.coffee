@@ -26,15 +26,15 @@ module.exports =
   # UNIX domain socket used for receiving audio/video data
   videoControlReceiverPath: '/tmp/node_rtsp_rtmp_videoControl'
   audioControlReceiverPath: '/tmp/node_rtsp_rtmp_audioControl'
-  videoDataReceiverPath: '/tmp/node_rtsp_rtmp_videoData'
-  audioDataReceiverPath: '/tmp/node_rtsp_rtmp_audioData'
+  videoDataReceiverPath   : '/tmp/node_rtsp_rtmp_videoData'
+  audioDataReceiverPath   : '/tmp/node_rtsp_rtmp_audioData'
 
   # For receiverType == 'tcp' or 'udp'
+  receiverListenHost      : '0.0.0.0'
   videoControlReceiverPort: 1111
   audioControlReceiverPort: 1112
-  videoDataReceiverPort: 1113
-  audioDataReceiverPort: 1114
-  receiverListenHost: '0.0.0.0'
+  videoDataReceiverPort   : 1113
+  audioDataReceiverPort   : 1114
 
   # For receiverType == 'tcp'
   receiverTCPBacklog: 511
