@@ -999,23 +999,104 @@ class RTMPSession
 
     messages = []
 
-    while rtmpMessage.length > 0
+    consumedLen = 0
+
+    while rtmpMessage.length > 1
+      headerLen = 0
       message = {}
 
-      # 5.3.1.1.  Chunk Basic Header
+      # RTMP Chunk Format
+      #
+      # ------------------
+      # Basic Header (1-3 bytes)
+      # ------------------
+      # Message Header (0/3/7/11 bytes)
+      # ------------------
+      # Extended Timestamp (0/4 bytes)
+      # ------------------
+      # Chunk Data (variable size)
+      # ------------------
+
+      # 5.3.1.1. Chunk Basic Header
+      #
+      # Chunk basic header 1 (1 byte)
+      # For chunk stream IDs 2-63
+      # ---------------
+      # fmt (2 bits)
+      # chunk stream id (6 bits)
+      # ---------------
+      #
+      # Chunk basic header 2 (2 bytes)
+      # For chunk stream IDs 64-319
+      # ---------------
+      # fmt (2 bits)
+      # 0 (6 bits)
+      # chunk stream id - 64 (8 bits)
+      # ---------------
+      #
+      # Chunk basic header 3 (3 bytes)
+      # For chunk stream IDs 64-65599
+      # ---------------
+      # fmt (2 bits)
+      # 1 (6 bits)
+      # chunk stream id - 64 (16 bits)
+      # ---------------
       chunkBasicHeader = rtmpMessage[0]
       message.formatType = chunkBasicHeader >> 6
       message.chunkStreamID = chunkBasicHeader & 0b111111
-      if message.chunkStreamID is 0
+      if message.chunkStreamID is 0  # Chunk basic header 2
+        if rtmpMessage.length < 2  # buffer is incomplete
+          break
         message.chunkStreamID = rtmpMessage[1] + 64
         chunkMessageHeader = rtmpMessage[2..]
-      else if message.chunkStreamID is 1
+        headerLen += 2
+      else if message.chunkStreamID is 1  # Chunk basic header 3
+        if rtmpMessage.length < 3  # buffer is incomplete
+          break
         message.chunkStreamID = (rtmpMessage[1] << 8) + rtmpMessage[2] + 64
         chunkMessageHeader = rtmpMessage[3..]
-      else
+        headerLen += 3
+      else  # Chunk basic header 1
         chunkMessageHeader = rtmpMessage[1..]
+        headerLen += 1
 
-      if message.formatType is 0  # 5.3.1.2.1.  Type 0
+      # 5.3.1.2. Chunk Message Header
+      #
+      # 5.3.1.2.1 Type 0 chunk header (11 bytes)
+      # ---------------
+      # timestamp (3 bytes)
+      #   Absolute timestamp of the message.
+      #   The value of 0xffffff indicates the presence of
+      #   Extended Timestamp field.
+      # message length (3 bytes)
+      # message type id (1 byte)
+      # message stream id (4 bytes) - little endian
+      # ---------------
+      #
+      # 5.3.1.2.2 Type 1 chunk header (7 bytes)
+      # This chunk has the same stream ID as the preceding chunk.
+      # ---------------
+      # timestamp delta (3 bytes)
+      # message length (3 bytes)
+      # message type id (1 byte)
+      # ---------------
+      #
+      # 5.3.1.2.3. Type 2 chunk header (3 bytes)
+      # This chunk has the same stream ID and message length as
+      # the preceding chunk.
+      # ---------------
+      # timestamp delta (3 bytes)
+      # ---------------
+      #
+      # 5.3.1.2.4. Type 3 chunk header (0 byte)
+      # This chunk has the same stream ID, message length, and
+      # timestamp delta as the preceding chunk.
+      # ---------------
+      # ---------------
+
+      if message.formatType is 0  # Type 0 (11 bytes)
+        if chunkMessageHeader.length < 11  # buffer is incomplete
+          break
         message.timestamp = (chunkMessageHeader[0] << 16) +
           (chunkMessageHeader[1] << 8) + chunkMessageHeader[2]
         message.messageLength = (chunkMessageHeader[3] << 16) +
@@ -1023,7 +1104,10 @@ class RTMPSession
         message.messageTypeID = chunkMessageHeader[6]
         message.messageStreamID = chunkMessageHeader.readInt32LE 7  # TODO: signed or unsigned?
         chunkBody = chunkMessageHeader[11..]
-      else if message.formatType is 1  # 5.3.1.2.2.  Type 1
+        headerLen += 11
+      else if message.formatType is 1  # Type 1 (7 bytes)
+        if chunkMessageHeader.length < 7  # buffer is incomplete
+          break
         message.timestampDelta = (chunkMessageHeader[0] << 16) +
           (chunkMessageHeader[1] << 8) + chunkMessageHeader[2]
         message.messageLength = (chunkMessageHeader[3] << 16) +
@@ -1031,24 +1115,31 @@ class RTMPSession
         message.messageTypeID = chunkMessageHeader[6]
         previousChunk = @previousChunkMessage[message.chunkStreamID]
         if previousChunk?
+          message.timestamp = previousChunk.timestamp
           message.messageStreamID = previousChunk.messageStreamID
         else
           throw new Error "Chunk reference error for type 1: previous chunk for id #{message.chunkStreamID} is not found"
         chunkBody = chunkMessageHeader[7..]
-      else if message.formatType is 2  # 5.3.1.2.3.  Type 2
+        headerLen += 7
+      else if message.formatType is 2  # Type 2 (3 bytes)
+        if chunkMessageHeader.length < 3  # buffer is incomplete
+          break
         message.timestampDelta = (chunkMessageHeader[0] << 16) +
         (chunkMessageHeader[1] << 8) + chunkMessageHeader[2]
         previousChunk = @previousChunkMessage[message.chunkStreamID]
         if previousChunk?
+          message.timestamp = previousChunk.timestamp
           message.messageStreamID = previousChunk.messageStreamID
           message.messageLength = previousChunk.messageLength
           message.messageTypeID = previousChunk.messageTypeID
         else
           throw new Error "Chunk reference error for type 2: previous chunk for id #{message.chunkStreamID} is not found"
         chunkBody = chunkMessageHeader[3..]
-      else if message.formatType is 3  # 5.3.1.2.4.  Type 3
+        headerLen += 3
+      else if message.formatType is 3  # Type 3 (0 byte)
         previousChunk = @previousChunkMessage[message.chunkStreamID]
         if previousChunk?
+          message.timestamp = previousChunk.timestamp
           message.messageStreamID = previousChunk.messageStreamID
           message.messageLength = previousChunk.messageLength
           message.timestampDelta = previousChunk.timestampDelta
@@ -1059,31 +1150,58 @@ class RTMPSession
       else
         throw new Error "Unknown format type: #{formatType}"
 
-      # TODO: Handle for type 2 and 3
-      messageSize = Math.min @chunkSize, message.messageLength
+      # 5.3.1.3. Extended Timestamp
+      if message.formatType is 0
+        if message.timestamp is 0xffffff
+          if chunkBody.length < 4  # buffer is incomplete
+            break
+          message.timestamp = (chunkBody[0] * Math.pow(256, 3)) +
+            (chunkBody[1] << 16) + (chunkBody[2] << 8) + chunkBody[3]
+          chunkBody = chunkBody[4..]
+          headerLen += 4
+      else if message.timestampDelta is 0xffffff
+        if chunkBody.length < 4  # buffer is incomplete
+          break
+        message.timestampDelta = (chunkBody[0] * Math.pow(256, 3)) +
+          (chunkBody[1] << 16) + (chunkBody[2] << 8) + chunkBody[3]
+        chunkBody = chunkBody[4..]
+        headerLen += 4
 
-      rtmpMessage = chunkBody[messageSize..]
+      previousChunk = @previousChunkMessage[message.chunkStreamID]
+      if previousChunk? and previousChunk.isIncomplete
+        remainingMessageLen = message.messageLength - previousChunk.body.length
+      else
+        remainingMessageLen = message.messageLength
+      chunkPayloadSize = Math.min @chunkSize, remainingMessageLen
 
-      chunkBody = chunkBody[0...messageSize]
+      if chunkBody.length < chunkPayloadSize  # buffer is incomplete
+        break
 
-      if message.formatType is 3 and
-      @previousChunkMessage[message.chunkStreamID].formatType is 0
-        # Concatenate chunk
-        # TODO: concatenate splitted buffer that share the same chunk stream ID?
-        previousChunk = @previousChunkMessage[message.chunkStreamID]
-        if previousChunk?
-          previousChunk.body = Buffer.concat [
-            previousChunk.body, chunkBody
-          ], previousChunk.body.length + chunkBody.length
-        else
-          throw new Error "Chunk concatenate error: previous chunk not found"
+      # We have enough buffer for this chunk
+
+      rtmpMessage = chunkBody[chunkPayloadSize..]
+      chunkBody = chunkBody[0...chunkPayloadSize]
+      consumedLen += headerLen + chunkPayloadSize
+
+      if previousChunk? and previousChunk.isIncomplete
+        message.body = Buffer.concat [ previousChunk.body, chunkBody ]
       else
         message.body = chunkBody
-        messages.push message
-        @previousChunkMessage[message.chunkStreamID] = message
-        @previousChunk = message
+      if message.body.length >= message.messageLength # message is completed
+        # TODO: Is this check redundant?
+        if message.body.length isnt message.messageLength
+          console.log "warning: RTMP message lengths don't match: " +
+            "got=#{message.body.length} expected=#{message.messageLength}"
 
-    messages
+        messages.push message
+      else
+        message.isIncomplete = true
+      @previousChunkMessage[message.chunkStreamID] = message
+
+    return {
+      consumedLen : consumedLen
+      rtmpMessages: messages
+    }
 
   respondCreateStream: (requestCommand, callback) ->
     _result = createAMF0CommandMessage
@@ -1354,10 +1472,24 @@ class RTMPSession
       if @useEncryption
         buf = @decrypt buf
 
-      rtmpMessages = @parseRTMPMessages buf
+      if @tmpBuf?
+        buf = Buffer.concat [@tmpBuf, buf], @tmpBuf.length + buf.length
+        @tmpBuf = null
+
+      parseResult = @parseRTMPMessages buf
+      if parseResult.consumedLen is 0  # not consumed at all
+        console.log 'not at all'
+        @tmpBuf = buf
+        # no message to process
+        callback null
+        return
+      else if parseResult.consumedLen < buf.length  # consumed a part of buffer
+        console.log 'part'
+        @tmpBuf = buf[parseResult.consumedLen..]
+
       seq = new Sequent
       outputs = []
-      for rtmpMessage in rtmpMessages
+      for rtmpMessage in parseResult.rtmpMessages
         if rtmpMessage.messageTypeID is 0x05  # Window Acknowledgement Size
           ackWindowSize = (rtmpMessage.body[0] << 24) +
             (rtmpMessage.body[1] << 16) +
@@ -1410,7 +1542,7 @@ class RTMPSession
         else
           console.log "[rtmp:receive] unknown message type ID: #{rtmpMessage.messageTypeID}"
           seq.done()
-      seq.wait rtmpMessages.length, =>
+      seq.wait parseResult.rtmpMessages.length, =>
         outbuf = @concatenate outputs
         if @useEncryption
           outbuf = @encrypt outbuf
