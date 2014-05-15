@@ -1,4 +1,4 @@
-# RTMP server
+# RTMP/RTMPE/RTMPT/RTMPTE server
 #
 # RTMP specification is available at:
 # http://wwwimages.adobe.com/content/dam/Adobe/en/devnet/rtmp/pdf/rtmp_specification_1.0.pdf
