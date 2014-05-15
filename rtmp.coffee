@@ -69,7 +69,7 @@ retainCodecConfigPacket = (buf) ->
   else if nalUnitType is 8
     ppsPacket = buf
   else
-    console.error "Unknown NAL unit type: #{nalUnitType}"
+    console.error "[rtmp] unknown NAL unit type: #{nalUnitType}"
 
 parseAcknowledgementMessage = (buf) ->
   sequenceNumber = (buf[0] << 24) + (buf[1] << 16) + (buf[2] << 8) + buf[3]
@@ -451,11 +451,11 @@ flushRTMPMessages = ->
 createMessageHeader = (params) ->
   payloadLength = params.body.length
   if not params.messageTypeID?
-    console.warn "Warning: createMessageHeader(): messageTypeID is not set"
+    console.warn "[rtmp] warning: createMessageHeader(): messageTypeID is not set"
   if not params.timestamp?
-    console.warn "Warning: createMessageHeader(): timestamp is not set"
+    console.warn "[rtmp] warning: createMessageHeader(): timestamp is not set"
   if not params.messageStreamID?
-    console.warn "Warning: createMessageHeader(): messageStreamID is not set"
+    console.warn "[rtmp] warning: createMessageHeader(): messageStreamID is not set"
   # 6.1.1.  Message Header
   return new Buffer [
     params.messageTypeID,
@@ -507,13 +507,13 @@ createRTMPType1Message = (params) ->
   bodyLength = params.body.length
   formatTypeID = 1
   if not params.body?
-    console.warn "Warning: createRTMPType1Message(): body is not set for RTMP message"
+    console.warn "[rtmp] warning: createRTMPType1Message(): body is not set for RTMP message"
   if not params.chunkStreamID?
-    console.warn "Warning: createRTMPType1Message(): chunkStreamID is not set for RTMP message"
+    console.warn "[rtmp] warning: createRTMPType1Message(): chunkStreamID is not set for RTMP message"
   if not params.timestampDelta?
-    console.warn "Warning: createRTMPType1Message(): timestampDelta is not set for RTMP message"
+    console.warn "[rtmp] warning: createRTMPType1Message(): timestampDelta is not set for RTMP message"
   if not params.messageStreamID?
-    console.warn "Warning: createRTMPType1Message(): messageStreamID is not set for RTMP message"
+    console.warn "[rtmp] warning: createRTMPType1Message(): messageStreamID is not set for RTMP message"
   useExtendedTimestamp = false
   if params.timestampDelta >= 0xffffff
     useExtendedTimestamp = true
@@ -558,13 +558,13 @@ createRTMPMessage = (params, chunkSize=128) ->
   # TODO: Use format type ID 1 and 2
   formatTypeID = 0
   if not params.body?
-    console.warn "Warning: createRTMPMessage(): body is not set for RTMP message"
+    console.warn "[rtmp] warning: createRTMPMessage(): body is not set for RTMP message"
   if not params.chunkStreamID?
-    console.warn "Warning: createRTMPMessage(): chunkStreamID is not set for RTMP message"
+    console.warn "[rtmp] warning: createRTMPMessage(): chunkStreamID is not set for RTMP message"
   if not params.timestamp?
-    console.warn "Warning: createRTMPMessage(): timestamp is not set for RTMP message"
+    console.warn "[rtmp] warning: createRTMPMessage(): timestamp is not set for RTMP message"
   if not params.messageStreamID?
-    console.warn "Warning: createRTMPMessage(): messageStreamID is not set for RTMP message"
+    console.warn "[rtmp] warning: createRTMPMessage(): messageStreamID is not set for RTMP message"
   useExtendedTimestamp = false
   if params.timestamp >= 0xffffff
     useExtendedTimestamp = true
@@ -664,7 +664,7 @@ createAMF0CommandMessage = (params, chunkSize) ->
 
 class RTMPSession
   constructor: (socket) ->
-    console.log "new RTMPSession"
+    console.log "[rtmp] created a new session"
     @listeners = {}
     @state = SESSION_STATE_NEW
     @socket = socket
@@ -691,7 +691,7 @@ class RTMPSession
         return
       if Date.now() - @lastTimeoutScheduledTime < config.rtmpSessionTimeoutMs
         return
-      console.log "RTMP session timeout: #{@clientid}"
+      console.log "[rtmp] session timeout: #{@clientid}"
       @teardown()
     , config.rtmpSessionTimeoutMs
 
@@ -701,7 +701,7 @@ class RTMPSession
       clearTimeout @pingTimer
     @pingTimer = setTimeout =>
       if Date.now() - @lastPingScheduledTime < config.rtmpPingTimeoutMs
-        console.log "ping timeout canceled"
+        console.log "[rtmp] ping timeout canceled"
       @ping()
     , config.rtmpPingTimeoutMs
 
@@ -743,7 +743,7 @@ class RTMPSession
     try
       @socket.end()
     catch e
-      console.error "Socket.end error: #{e}"
+      console.error "[rtmp] socket.end error: #{e}"
     @emit 'teardown'
 
   getScaledTimestamp: (timestamp) ->
@@ -878,7 +878,7 @@ class RTMPSession
     app = commandMessage.objects[0].value.app
     app = app.replace /\/$/, ''  # JW Player adds / at the end
     if app isnt config.rtmpApplicationName
-      console.warn "Invalid app name: #{app}"
+      console.warn "[rtmp] requested invalid app name: #{app}"
       @rejectConnect commandMessage, callback
       return
 
@@ -977,7 +977,7 @@ class RTMPSession
       type = s0s1s2[0]
       if type is 6
         @useEncryption = true
-        console.log "using encryption"
+        console.log "[rtmp] using encryption"
 
       @clientPublicKey  = keys.clientPublicKey
       @dh = keys.dh
@@ -1190,7 +1190,7 @@ class RTMPSession
       if message.body.length >= message.messageLength # message is completed
         # TODO: Is this check redundant?
         if message.body.length isnt message.messageLength
-          console.log "warning: RTMP message lengths don't match: " +
+          console.log "[rtmp] warning: message lengths don't match: " +
             "got=#{message.body.length} expected=#{message.messageLength}"
 
         messages.push message
@@ -1336,7 +1336,7 @@ class RTMPSession
 
   getCodecConfigs: ->
     if not spsPacket? or not ppsPacket?
-      console.error "Error: SPS or PPS is not present"
+      console.error "[rtmp] error: SPS or PPS is not present"
       return
 
     # video
@@ -1439,7 +1439,7 @@ class RTMPSession
         buf = Buffer.concat [@tmpBuf, buf], @tmpBuf.length + buf.length
         @tmpBuf = null
       if buf.length < 1537
-        console.log "Waiting for complete C0+C1"
+        console.log "[rtmp] waiting for C0+C1"
         @tmpBuf = buf
         return
       @tmpBuf = null
@@ -1451,7 +1451,7 @@ class RTMPSession
         buf = Buffer.concat [@tmpBuf, buf], @tmpBuf.length + buf.length
         @tmpBuf = null
       if buf.length < 1536
-        console.log "Waiting for complete C2+RTMPMessage"
+        console.log "[rtmp] waiting for C2"
         @tmpBuf = buf
         return
       @tmpBuf = null
@@ -1460,7 +1460,7 @@ class RTMPSession
 #      c2Message = buf[0..1535]
 
       @state = SESSION_STATE_HANDSHAKE_DONE
-      console.log "[rtmp] handshake success, buf.length=#{buf.length}"
+      console.log "[rtmp] handshake success"
 
       if buf.length <= 1536
         callback null
@@ -1478,13 +1478,11 @@ class RTMPSession
 
       parseResult = @parseRTMPMessages buf
       if parseResult.consumedLen is 0  # not consumed at all
-        console.log 'not at all'
         @tmpBuf = buf
         # no message to process
         callback null
         return
       else if parseResult.consumedLen < buf.length  # consumed a part of buffer
-        console.log 'part'
         @tmpBuf = buf[parseResult.consumedLen..]
 
       seq = new Sequent
@@ -1540,7 +1538,11 @@ class RTMPSession
           console.log "[rtmp:receive] ack=#{acknowledgementMessage.sequenceNumber}"
           seq.done()
         else
-          console.log "[rtmp:receive] unknown message type ID: #{rtmpMessage.messageTypeID}"
+          console.log "----- BUG -----"
+          console.log "[rtmp:receive] received unknown (not implemented) message type ID: #{rtmpMessage.messageTypeID}"
+          console.log rtmpMessage
+          console.log "Please report this bug on GitHub."
+          console.log "---------------"
           seq.done()
       seq.wait parseResult.rtmpMessages.length, =>
         outbuf = @concatenate outputs
@@ -1572,17 +1574,15 @@ class RTMPServer
           sessionsCount--
         console.log "[rtmp] #{sessionsCount} clients"
       c.on 'error', (err) ->
-        console.error "[rtmp] Socket error: #{err}"
+        console.error "[rtmp] socket error: #{err}"
         c.destroy()
       c.on 'data', (data) =>
         c.rtmpSession.handleData data, (err, output) ->
           if err
-            console.error "[rtmp] Error: #{err}"
+            console.error "[rtmp] error: #{err}"
           else if output?
             if output.length > 0
               c.write output
-          else
-            console.log "[rtmp] no response"
 
   start: (callback) ->
     console.log "starting rtmp server on port #{@port}"
@@ -1593,7 +1593,7 @@ class RTMPServer
 
   teardownRTMPTClient: (socket) ->
     if socket.rtmptClientID?
-      console.log "teardownRTMPTClient: #{socket.rtmptClientID}"
+      console.log "[rtmp] teardownRTMPTClient: #{socket.rtmptClientID}"
       tsession = rtmptSessions[socket.rtmptClientID]
       if tsession?
         tsession.rtmpSession?.teardown()
@@ -1779,7 +1779,7 @@ class RTMPTSession
       if err
         callback err
       else
-        console.log "session id: #{sid}"
+        console.log "[rtmpt] session id: #{sid}"
         @id = sid
         @socket.rtmptClientID = @id
         @scheduleTimeout()
@@ -1802,7 +1802,7 @@ class RTMPTSession
         return
       if Date.now() - @lastTimeoutScheduledTime < config.rtmptSessionTimeoutMs
         return
-      console.log "RTMPT session timeout: #{@id}"
+      console.log "[rtmpt] session timeout: #{@id}"
       @close()
     , config.rtmptSessionTimeoutMs
 
