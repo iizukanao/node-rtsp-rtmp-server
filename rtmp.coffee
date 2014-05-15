@@ -1,4 +1,7 @@
 # RTMP server
+#
+# RTMP specification is available at:
+# http://wwwimages.adobe.com/content/dam/Adobe/en/devnet/rtmp/pdf/rtmp_specification_1.0.pdf
 
 net           = require 'net'
 crypto        = require 'crypto'
