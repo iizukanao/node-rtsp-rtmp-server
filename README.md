@@ -1,11 +1,8 @@
 ### RTSP, RTMP, and HTTP server in Node.js
 
 - Acts as RTSP, RTMP/RTMPE/RTMPT/RTMPTE, and HTTP server.
-- This server is supposed to receive audio/video packets via UNIX domain sockets.
-- RTSP stream is viewable with Android's VideoView and VLC media player.
-- RTMP stream is viewable with Flowplayer.
-
-(Documentation is in progress)
+- RTSP stream is viewable with VLC media player and a VideoView of Android.
+- RTMP stream is viewable with Flowplayer and JW Player.
 
 ### Installation
 
