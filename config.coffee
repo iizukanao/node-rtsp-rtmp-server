@@ -79,10 +79,10 @@ module.exports =
   rtmpPingTimeoutMs: 5000  # milliseconds
 
   # RTMP session timeout
-  rtmpSessionTimeoutMs: 60000  # milliseconds
+  rtmpSessionTimeoutMs: 600000  # milliseconds
 
   # RTMPT session timeout
-  rtmptSessionTimeoutMs: 60000  # milliseconds
+  rtmptSessionTimeoutMs: 600000  # milliseconds
 
   # RTMP play chunk size
   rtmpPlayChunkSize: 4096  # bytes
