@@ -72,7 +72,7 @@ Replace `input.mp4` with live audio/video sources.
 
 RTSP stream is for VLC media player or Android's VideoView.
 
-RTSP URL: rtsp://localhost:80/live
+**RTSP URL**: rtsp://localhost:80/live
 
 Note that the RTSP server runs on port 80 by default.
 
@@ -80,7 +80,7 @@ Note that the RTSP server runs on port 80 by default.
 
 RTMP stream is for Flash Player. Flowplayer and JW Player are both good free players.
 
-RTMP URL: rtmp://localhost/live/myStream
+**RTMP URL**: rtmp://localhost/live/myStream
 
 If you have rtmpdump installed, you can record the video with:
 
