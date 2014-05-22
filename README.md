@@ -53,6 +53,8 @@ Or if you have an MP4 file that contains other audio/video codecs:
 
     $ ffmpeg -re -i input.mp4 -c:v libx264 -preset fast -c:a libfdk_aac -ab 128k -ar 44100 -f flv rtmp://localhost/live/myStream
 
+Replace input.mp4 with live audio/video sources.
+
 #### From GStreamer
 
 For an MP4 file with H.264 video and AAC audio:
@@ -61,6 +63,8 @@ For an MP4 file with H.264 video and AAC audio:
         flvmux name=mux streamable=true ! queue ! \
         rtmpsink location='rtmp://localhost/live/myStream' demux. ! \
         multiqueue name=mq ! h264parse ! mux. demux. ! mq. mq. ! aacparse ! mux.
+
+Replace input.mp4 with live audio/video sources.
 
 ### Accessing the live stream
 
