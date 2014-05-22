@@ -10,7 +10,7 @@ module.exports =
   # RTSP and HTTP response headers
   serverName: 'node-rtsp-rtmp-server/0.2.0'
 
-  # Average frame rate of video
+  # Average frame rate of video (informative)
   videoFrameRate: 30
 
   # Video bitrate in Kbps (informative)
