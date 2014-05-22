@@ -55,7 +55,7 @@ Or if you have an MP4 file that contains other audio/video codecs:
 
 ### Accessing the live stream
 
-#### RTSP
+#### Via RTSP
 
 RTSP stream is for VLC media player or Android's VideoView.
 
@@ -63,7 +63,7 @@ RTSP URL: rtsp://localhost:80/live
 
 Note that the RTSP server runs on port 80 by default.
 
-#### RTMP
+#### Via RTMP
 
 RTMP stream is for Flash Player. Flowplayer and JW Player are both good free players.
 
