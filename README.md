@@ -29,7 +29,7 @@ If `serverPort` is above 1023 in config.coffee, you can omit `sudo`.
 
 ### Publishing streams
 
-#### Flash Media Live Encoder
+#### From Flash Media Live Encoder
 
 Flash Media Live Encoder is a free live encoder from Adobe.
 
@@ -37,13 +37,13 @@ In the Encoding Options panel, check "Stream to Flash Media Server" and set the 
 
 - **FMS URL**:  rtmp://localhost/live
 - **Backup URL**: (blank)
-- **Stream**: myStream (whatever you like)
+- **Stream**: myStream (or whatever you like)
 
 Press the "Connect" button. Set the video format to H.264, and the audio format to AAC. Press the "Start" button.
 
 Note that multiple streams are not supported. You can push only one stream at a time.
 
-#### FFmpeg
+#### From FFmpeg
 
 If you have an MP4 file with H.264 video and AAC audio:
 
@@ -57,15 +57,17 @@ Or if you have an MP4 file that contains other audio/video codecs:
 
 #### RTSP
 
-RTSP stream is for VLC media player and a Android's VideoView.
+RTSP stream is for VLC media player or Android's VideoView.
 
-Open VLC media player and access the URL: rtsp://localhost:80/live
+RTSP URL: rtsp://localhost:80/live
+
+Note that the RTSP server runs on port 80 by default.
 
 #### RTMP
 
 RTMP stream is for Flash Player. Flowplayer and JW Player are both good free players.
 
-Set the RTMP URL to: rtmp://localhost/live/myStream
+RTMP URL: rtmp://localhost/live/myStream
 
 If you have rtmpdump installed, you can record the video with:
 
