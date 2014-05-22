@@ -1068,10 +1068,7 @@ class RTMPSession
       callback null, s0s1s2
 
   parseRTMPMessages: (rtmpMessage) ->
-    rtmpBody = new Buffer []
-
     messages = []
-
     consumedLen = 0
 
     while rtmpMessage.length > 1
