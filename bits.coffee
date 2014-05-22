@@ -71,6 +71,13 @@ api =
     console.log buf[byte_index..]
     console.log "bit_index=#{bit_index} (byte_index=#{byte_index})"
 
+  skip_bits: (len) ->
+    bit_index += len
+    while bit_index >= 8
+      byte_index++
+      bit_index -= 8
+    return
+
   skip_bytes: (len) ->
     byte_index += len
 
@@ -195,6 +202,9 @@ api =
     total_bits = buf.length * 8
     total_read_bits = byte_index * 8 + bit_index
     return total_bits - total_read_bits
+
+  remaining_buffer: ->
+    return buf[byte_index..]
 
   is_byte_aligned: ->
     return bit_index is 0

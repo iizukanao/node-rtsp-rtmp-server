@@ -1012,4 +1012,42 @@ api =
     else
       return false
 
+  concatWithStartCodePrefix: (bufs) ->
+    nalUnitsWithStartCodePrefix = []
+    startCodePrefix = new Buffer [0x00, 0x00, 0x00, 0x01]
+    totalLen = 0
+    for buf in bufs
+      nalUnitsWithStartCodePrefix.push startCodePrefix
+      nalUnitsWithStartCodePrefix.push buf
+      totalLen += 4 + buf.length
+    return Buffer.concat nalUnitsWithStartCodePrefix, totalLen
+
+  # ISO 14496-15 5.2.4.1.1
+  readAVCDecoderConfigurationRecord: ->
+    info = {}
+    info.configurationVersion = bits.read_byte()
+    if info.configurationVersion isnt 1
+      throw new Error "configurationVersion is not 1: #{info.configurationVersion}"
+
+    # SPS[1..3]
+    info.avcProfileIndication = bits.read_byte()
+    info.profile_compatibility = bits.read_byte()
+    info.avcLevelIndication = bits.read_byte()
+
+    bits.skip_bits 6  # reserved
+    info.lengthSizeMinusOne = bits.read_bits 2
+    info.nalUnitLengthSize = info.lengthSizeMinusOne + 1
+    bits.skip_bits 3  # reserved
+    info.numOfSPS = bits.read_bits 5
+    info.sps = []
+    for i in [0...info.numOfSPS]
+      spsLen = bits.read_bits 16
+      info.sps.push bits.read_bytes spsLen
+    info.numOfPPS = bits.read_byte()
+    info.pps = []
+    for i in [0...info.numOfPPS]
+      ppsLen = bits.read_bits 16
+      info.pps.push bits.read_bytes ppsLen
+    return info
+
 module.exports = api

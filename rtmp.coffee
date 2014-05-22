@@ -75,13 +75,67 @@ retainCodecConfigPacket = (buf) ->
     console.error "[rtmp] unknown NAL unit type: #{nalUnitType}"
 
 parseAcknowledgementMessage = (buf) ->
-  sequenceNumber = (buf[0] << 24) + (buf[1] << 16) + (buf[2] << 8) + buf[3]
+  sequenceNumber = (buf[0] * Math.pow(256, 3)) + (buf[1] << 16) + (buf[2] << 8) + buf[3]
   return {
     sequenceNumber: sequenceNumber
   }
 
 convertPTSToMilliseconds = (pts) ->
   Math.round pts / 90
+
+ascInfo = null
+avcInfo = null
+
+parseVideoMessage = (buf) ->
+  info = flv.parseVideo buf
+  nalUnitGlob = null
+  switch info.videoDataTag.avcPacketType
+    when flv.AVC_PACKET_TYPE_SEQUENCE_HEADER
+      # Retain AVC configuration
+      avcInfo = info.avcDecoderConfigurationRecord
+      if avcInfo.numOfSPS > 1
+        console.log "flv:parseVideo(): warn: numOfSPS is #{numOfSPS} > 1 (may not work)"
+      if avcInfo.numOfPPS > 1
+        console.log "flv:parseVideo(): warn: numOfPPS is #{numOfPPS} > 1 (may not work)"
+      sps = h264.concatWithStartCodePrefix avcInfo.sps
+      pps = h264.concatWithStartCodePrefix avcInfo.pps
+      nalUnitGlob = Buffer.concat [sps, pps]
+    when flv.AVC_PACKET_TYPE_NALU
+      if not avcInfo?
+        throw new Error "[rtmp:publish] malformed video data: avcInfo is missing"
+      nalUnits = flv.splitNALUnits info.nalUnits, avcInfo.nalUnitLengthSize
+      nalUnitGlob = h264.concatWithStartCodePrefix nalUnits
+    when flv.AVC_PACKET_TYPE_EOS
+      console.log "[rtmp:publish] received an EOS from upstream video"
+      # TODO: Do we have to handle EOS?
+    else
+      throw new Error "unknown AVCPacketType: #{flv.AVC_PACKET_TYPE_SEQUENCE_HEADER}"
+  return {
+    info: info
+    nalUnitGlob: nalUnitGlob
+  }
+
+parseAudioMessage = (buf) ->
+  info = flv.parseAudio buf
+  adtsFrame = null
+  switch info.audioDataTag.aacPacketType
+    when flv.AAC_PACKET_TYPE_SEQUENCE_HEADER
+      if info.audioSpecificConfig?
+        # Retain AudioSpecificConfig
+        ascInfo = info.audioSpecificConfig
+      else
+        console.log "[rtmp] skipping empty AudioSpecificConfig"
+    when flv.AAC_PACKET_TYPE_RAW
+      if not ascInfo?
+        throw new Error "[rtmp:publish] malformed audio data: AudioSpecificConfig is missing"
+      adtsHeader = new Buffer aac.createADTSHeader ascInfo, info.rawDataBlock.length
+      adtsFrame = Buffer.concat [ adtsHeader, info.rawDataBlock ]
+    else
+      throw new Error "[rtmp:publish] unknown AAC_PACKET_TYPE: #{info.audioDataTag.aacPacketType}"
+  return {
+    info: info
+    adtsFrame: adtsFrame
+  }
 
 createAudioMessage = (params) ->
   # TODO: Use type 1/2/3
@@ -241,6 +295,19 @@ parseAMF0ECMAArray = (buf) ->
       break
     obj[name] = result.value
   return { value: obj, readLen: readLen }
+
+# Decode AMF0 data message buffer into AMF0 packets
+parseAMF0DataMessage = (buf) ->
+  amf0Packets = []
+  remainingLen = buf.length
+  while remainingLen > 0
+    result = parseAMF0Data buf
+    amf0Packets.push result
+    remainingLen -= result.readLen
+    buf = buf[result.readLen..]
+  return {
+    objects: amf0Packets
+  }
 
 # Decode buffer into AMF0 packets
 parseAMF0CommandMessage = (buf) ->
@@ -451,6 +518,7 @@ flushRTMPMessages = ->
 
   return
 
+# RTMP Message Header used in Aggregate Message
 createMessageHeader = (params) ->
   payloadLength = params.body.length
   if not params.messageTypeID?
@@ -672,10 +740,15 @@ class RTMPSession
     @state = SESSION_STATE_NEW
     @socket = socket
     @chunkSize = 128
+    @receiveChunkSize = 128
     @previousChunkMessage = {}
     @isPlaying = false
     @clientid = generateNewClientID()
     @useEncryption = false
+    @receiveTimestamp = null
+    @windowAckSize = null
+    @lastSentAckBytes = 0
+    @receivedBytes = 0
 
   clearTimeout: ->
     if @timeoutTimer?
@@ -795,11 +868,11 @@ class RTMPSession
         arr[i] = new Buffer 0
     return Buffer.concat arr, len
 
-  emit: (event, data) ->
+  emit: (event, args...) ->
     if not @listeners[event]?
       return
     for listener in @listeners[event]
-      listener data
+      listener args...
     return
 
   on: (event, listener) ->
@@ -1102,6 +1175,7 @@ class RTMPSession
           break
         message.timestamp = (chunkMessageHeader[0] << 16) +
           (chunkMessageHeader[1] << 8) + chunkMessageHeader[2]
+        message.timestampDelta = 0
         message.messageLength = (chunkMessageHeader[3] << 16) +
           (chunkMessageHeader[4] << 8) + chunkMessageHeader[5]
         message.messageTypeID = chunkMessageHeader[6]
@@ -1175,7 +1249,7 @@ class RTMPSession
         remainingMessageLen = message.messageLength - previousChunk.body.length
       else
         remainingMessageLen = message.messageLength
-      chunkPayloadSize = Math.min @chunkSize, remainingMessageLen
+      chunkPayloadSize = Math.min @receiveChunkSize, remainingMessageLen
 
       if chunkBody.length < chunkPayloadSize  # buffer is incomplete
         break
@@ -1187,9 +1261,17 @@ class RTMPSession
       consumedLen += headerLen + chunkPayloadSize
 
       if previousChunk? and previousChunk.isIncomplete
+        # Do not count timestampDelta
         message.body = Buffer.concat [ previousChunk.body, chunkBody ]
       else
         message.body = chunkBody
+
+        # Calculate timestamp for this message
+        if message.timestampDelta?
+          if not message.timestamp?
+            throw new Error "timestamp delta is given, but base timestamp is not known"
+          message.timestamp += message.timestampDelta
+
       if message.body.length >= message.messageLength # message is completed
         # TODO: Is this check redundant?
         if message.body.length isnt message.messageLength
@@ -1200,11 +1282,126 @@ class RTMPSession
       else
         message.isIncomplete = true
       @previousChunkMessage[message.chunkStreamID] = message
+      if messages.length is 1
+        break
 
     return {
       consumedLen : consumedLen
       rtmpMessages: messages
     }
+
+  # releaseStream()
+  respondReleaseStream: (requestCommand, callback) ->
+    streamName = requestCommand.objects[1]?.value
+    console.log "[rtmp] releaseStream: #{streamName}"
+    _result = createAMF0CommandMessage
+      chunkStreamID: 3
+      timestamp: 0
+      messageStreamID: 0
+      command: '_result'
+      transactionID: requestCommand.transactionID
+      objects: [
+        createAMF0Data(null)
+        createAMF0Data(null)
+      ]
+    callback null, _result
+
+  # @setDataFrame
+  receiveSetDataFrame: (requestData) ->
+    if requestData.objects[1].value is 'onMetaData'
+      console.log "[rtmp:receive] @setDataFrame onMetaData"
+#      console.log requestData.objects[2].value
+    else
+      throw new Error "Unknown @setDataFrame: #{requestData.objects[1].value}"
+
+  respondFCUnpublish: (requestCommand, callback) ->
+    streamName = requestCommand.objects[1]?.value
+    console.log "[rtmp] FCUnpublish: #{streamName}"
+    _result = createAMF0CommandMessage
+      chunkStreamID: 3
+      timestamp: 0
+      messageStreamID: 0
+      command: '_result'
+      transactionID: requestCommand.transactionID
+      objects: [
+        createAMF0Data(null)
+        createAMF0Data(null)
+      ]
+
+    unpublishSuccess = createAMF0CommandMessage
+      chunkStreamID: 4
+      timestamp: 0
+      messageStreamID: 1
+      command: 'onStatus'
+      transactionID: requestCommand.transactionID
+      objects: [
+        createAMF0Data(null),
+        createAMF0Object({
+          level: 'status'
+          code: 'NetStream.Unpublish.Success'
+          description: ''
+          details: streamName
+          clientid: @clientid
+        })
+      ]
+    , @chunkSize
+
+    callback null, @concatenate [
+      _result
+      unpublishSuccess
+    ]
+
+  # 7.2.2.6. publish
+  respondPublish: (requestCommand, callback) ->
+    @receiveTimestamp = null
+    publishingName = requestCommand.objects[1]?.value
+    publishingType = requestCommand.objects[2]?.value
+    if publishingType isnt 'live'
+      console.log "[rtmp] warn: publishing type other than 'live' is not supported: #{publishingType}; using 'live'"
+    console.log "[rtmp] publish: stream=#{publishingName} publishingType=#{publishingType}"
+    # strip query string from publishingName
+    if (match = /^(.*?)\?/.exec publishingName)?
+      streamName = match[1]
+    else
+      streamName = publishingName
+
+    @emit 'video_start'
+    @emit 'audio_start'
+
+    publishStart = createAMF0CommandMessage
+      chunkStreamID: 4
+      timestamp: 0
+      messageStreamID: 1
+      command: 'onStatus'
+      transactionID: requestCommand.transactionID
+      objects: [
+        createAMF0Data(null),
+        createAMF0Object({
+          level: 'status'
+          code: 'NetStream.Publish.Start'
+          description: ''
+          details: streamName
+          clientid: @clientid
+        })
+      ]
+    , @chunkSize
+    callback null, publishStart
+
+  # FCPublish()
+  respondFCPublish: (requestCommand, callback) ->
+    streamName = requestCommand.objects[1]?.value
+    console.log "[rtmp] FCPublish: #{streamName}"
+    _result = createAMF0CommandMessage
+      chunkStreamID: 3
+      timestamp: 0
+      messageStreamID: 0
+      command: '_result'
+      transactionID: requestCommand.transactionID
+      objects: [
+        createAMF0Data(null)
+        createAMF0Data(null)
+      ]
+    callback null, _result
 
   respondCreateStream: (requestCommand, callback) ->
     _result = createAMF0CommandMessage
@@ -1407,36 +1604,95 @@ class RTMPSession
     @isWaitingForKeyFrame = false
     callback null
 
-  deleteStream: (callback) ->
+  deleteStream: (requestCommand, callback) ->
     @isPlaying = false
     @isWaitingForKeyFrame = false
+
+    _result = createAMF0CommandMessage
+      chunkStreamID: 3
+      timestamp: 0
+      messageStreamID: 0
+      command: '_result'
+      transactionID: requestCommand.transactionID
+      objects: [
+        createAMF0Data(null)
+        createAMF0Data(null)
+      ]
+    callback null, _result
+
+  handleAMFDataMessage: (dataMessage, callback) ->
     callback null
+    if dataMessage.objects.length is 0
+      console.warn "[rtmp:receive] empty AMF data"
+    switch dataMessage.objects[0].value
+      when '@setDataFrame'
+        @receiveSetDataFrame dataMessage
+      else
+        console.warn "[rtmp:receive] unknown AMF data: #{dataMessage.objects[0].value}"
+    return
 
   handleAMFCommandMessage: (commandMessage, callback) ->
-    if commandMessage.command is 'connect'
-      # Retain objectEncoding for later use
-      #   3=AMF3, 0=AMF0
-      @objectEncoding = commandMessage.objects[0]?.value?.objectEncoding
+    switch commandMessage.command
+      when 'connect'
+        # Retain objectEncoding for later use
+        #   3=AMF3, 0=AMF0
+        @objectEncoding = commandMessage.objects[0]?.value?.objectEncoding
 
-      @respondConnect commandMessage, callback
-    else if commandMessage.command is 'createStream'
-      @respondCreateStream commandMessage, callback
-    else if commandMessage.command is 'play'
-      streamName = commandMessage.objects[1]?.value
-      console.log "[rtmp] requested stream=#{streamName}"
-      @respondPlay commandMessage, callback
-    else if commandMessage.command is 'closeStream'
-      @closeStream callback
-    else if commandMessage.command is 'deleteStream'
-      @deleteStream callback
-    else if commandMessage.command is 'pause'
-      @pauseOrUnpauseStream commandMessage, callback
-    else
-      console.warn "[rtmp:receive] unknown AMF command: #{commandMessage.command}"
-      callback null
+        @respondConnect commandMessage, callback
+      when 'createStream'
+        @respondCreateStream commandMessage, callback
+      when 'play'
+        streamName = commandMessage.objects[1]?.value
+        console.log "[rtmp] requested stream: #{streamName}"
+        @respondPlay commandMessage, callback
+      when 'closeStream'
+        @closeStream callback
+      when 'deleteStream'
+        @deleteStream commandMessage, callback
+      when 'pause'
+        console.log 'pause received'
+        @pauseOrUnpauseStream commandMessage, callback
+
+      # Methods used for publishing from the client
+      when 'releaseStream'
+        @respondReleaseStream commandMessage, callback
+      when 'FCPublish'
+        @respondFCPublish commandMessage, callback
+      when 'publish'
+        @respondPublish commandMessage, callback
+      when 'FCUnpublish'
+        @respondFCUnpublish commandMessage, callback
+      else
+        console.warn "[rtmp:receive] unknown AMF command: #{commandMessage.command}"
+        callback null
+
+  createAck: ->
+    return createRTMPMessage
+      chunkStreamID: 2
+      timestamp: 0  # TODO: Is zero OK?
+      messageTypeID: 3  # Acknowledgement
+      messageStreamID: 0
+      body: new Buffer [
+        # number of bytes received so far (4 bytes)
+        (@receivedBytes >>> 24) & 0xff
+        (@receivedBytes >>> 16) & 0xff
+        (@receivedBytes >>> 8) & 0xff
+        @receivedBytes & 0xff
+      ]
 
   handleData: (buf, callback) ->
     @scheduleTimeout()
+
+    outputs = []
+    seq = new Sequent
+
+    if @windowAckSize?
+      @receivedBytes += buf.length
+      if @receivedBytes - @lastSentAckBytes > @windowAckSize / 2
+        console.log "[rtmp:send] Ack=#{@receivedBytes}"
+        outputs.push @createAck()
+        @lastSentAckBytes = @receivedBytes
+
     if @state is SESSION_STATE_NEW
       if @tmpBuf?
         buf = Buffer.concat [@tmpBuf, buf], @tmpBuf.length + buf.length
@@ -1471,7 +1727,10 @@ class RTMPSession
 
       buf = buf[1536..]
 
-    if @state is SESSION_STATE_HANDSHAKE_DONE
+    if @state isnt SESSION_STATE_HANDSHAKE_DONE
+      console.log "[rtmp:receive] unknown session state: #{@state}"
+      callback new Error "Unknown session state"
+    else
       if @useEncryption
         buf = @decrypt buf
 
@@ -1479,85 +1738,154 @@ class RTMPSession
         buf = Buffer.concat [@tmpBuf, buf], @tmpBuf.length + buf.length
         @tmpBuf = null
 
-      parseResult = @parseRTMPMessages buf
-      if parseResult.consumedLen is 0  # not consumed at all
-        @tmpBuf = buf
-        # no message to process
-        callback null
-        return
-      else if parseResult.consumedLen < buf.length  # consumed a part of buffer
-        @tmpBuf = buf[parseResult.consumedLen..]
-
-      seq = new Sequent
-      outputs = []
-      for rtmpMessage in parseResult.rtmpMessages
-        if rtmpMessage.messageTypeID is 0x05  # Window Acknowledgement Size
-          ackWindowSize = (rtmpMessage.body[0] << 24) +
-            (rtmpMessage.body[1] << 16) +
-            (rtmpMessage.body[2] << 8) +
-            rtmpMessage.body[3]
-          console.log "[rtmp:receive] WindowAck=#{ackWindowSize}"
-          seq.done()
-        else if rtmpMessage.messageTypeID is 20  # AMF0 command
-          commandMessage = parseAMF0CommandMessage rtmpMessage.body
-          console.log "[rtmp:receive] AMF0 command=#{commandMessage.command}"
-          @handleAMFCommandMessage commandMessage, (err, output) ->
-            if output?
-              outputs.push output
-            seq.done()
-
-        else if rtmpMessage.messageTypeID is 17  # AMF3 command
-          commandMessage = parseAMF0CommandMessage rtmpMessage.body[1..]
-          console.log "[rtmp:receive] AMF3 command=#{commandMessage.command}"
-          @handleAMFCommandMessage commandMessage, (err, output) ->
-            if output?
-              outputs.push output
-            seq.done()
-
-        else if rtmpMessage.messageTypeID is 4   # User Control Message
-          userControlMessage = parseUserControlMessage rtmpMessage.body
-          if userControlMessage.eventType is 3  # SetBufferLength
-            streamID = (userControlMessage.eventData[0] << 24) +
-              (userControlMessage.eventData[1] << 16) +
-              (userControlMessage.eventData[2] << 8) +
-              userControlMessage.eventData[3]
-            bufferLength = (userControlMessage.eventData[4] << 24) +
-              (userControlMessage.eventData[5] << 16) +
-              (userControlMessage.eventData[6] << 8) +
-              userControlMessage.eventData[7]
-            console.log "[rtmp:receive] SetBufferLength: streamID=#{streamID} bufferLength=#{bufferLength}"
-          else if userControlMessage.eventType is 7
-            timestamp = (userControlMessage.eventData[0] << 24) +
-              (userControlMessage.eventData[1] << 16) +
-              (userControlMessage.eventData[2] << 8) +
-              userControlMessage.eventData[3]
-            console.log "[rtmp:receive] PingResponse: timestamp=#{timestamp}"
-          else
-            console.log "[rtmp:receive] User Control Message"
-            console.log userControlMessage
-          seq.done()
-        else if rtmpMessage.messageTypeID is 3   # Acknowledgement
-          acknowledgementMessage = parseAcknowledgementMessage rtmpMessage.body
-          console.log "[rtmp:receive] ack=#{acknowledgementMessage.sequenceNumber}"
-          seq.done()
-        else
-          console.log "----- BUG -----"
-          console.log "[rtmp:receive] received unknown (not implemented) message type ID: #{rtmpMessage.messageTypeID}"
-          console.log rtmpMessage
-          console.log "Please report this bug on GitHub."
-          console.log "---------------"
-          seq.done()
-      seq.wait parseResult.rtmpMessages.length, =>
+      onConsumeAllPackets = =>
         outbuf = @concatenate outputs
         if @useEncryption
           outbuf = @encrypt outbuf
         callback null, outbuf
-    else
-      console.log "[rtmp:receive] unknown session state: #{@state}"
-      callback new Error "Unknown session state"
+
+      consumeNextRTMPMessage = =>
+        if not buf?
+          onConsumeAllPackets()
+          return
+        parseResult = @parseRTMPMessages buf
+        if parseResult.consumedLen is 0  # not consumed at all
+          @tmpBuf = buf
+          # no message to process
+          onConsumeAllPackets()
+          return
+        else if parseResult.consumedLen < buf.length  # consumed a part of buffer
+          buf = buf[parseResult.consumedLen..]
+        else  # consumed all buffers
+          buf = null
+
+        seq.reset()
+
+        seq.wait parseResult.rtmpMessages.length, (err, output) ->
+          if err?
+            console.log "[rtmp:receive] packet error: #{err}"
+          if output?
+            outputs.push output
+          consumeNextRTMPMessage()
+
+        for rtmpMessage in parseResult.rtmpMessages
+          switch rtmpMessage.messageTypeID
+            when 1  # Set Chunk Size
+              newChunkSize = rtmpMessage.body[0] * Math.pow(256, 3) +
+                (rtmpMessage.body[1] << 16) +
+                (rtmpMessage.body[2] << 8) +
+                rtmpMessage.body[3]
+#              console.log "[rtmp:receive] Set Chunk Size: #{newChunkSize}"
+              @receiveChunkSize = newChunkSize
+              seq.done()
+            when 3  # Acknowledgement
+              acknowledgementMessage = parseAcknowledgementMessage rtmpMessage.body
+#              console.log "[rtmp:receive] Ack=#{acknowledgementMessage.sequenceNumber}"
+              seq.done()
+            when 4  # User Control Message
+              userControlMessage = parseUserControlMessage rtmpMessage.body
+              if userControlMessage.eventType is 3  # SetBufferLength
+                streamID = (userControlMessage.eventData[0] << 24) +
+                  (userControlMessage.eventData[1] << 16) +
+                  (userControlMessage.eventData[2] << 8) +
+                  userControlMessage.eventData[3]
+                bufferLength = (userControlMessage.eventData[4] << 24) +
+                  (userControlMessage.eventData[5] << 16) +
+                  (userControlMessage.eventData[6] << 8) +
+                  userControlMessage.eventData[7]
+                console.log "[rtmp:receive] SetBufferLength: streamID=#{streamID} bufferLength=#{bufferLength}"
+              else if userControlMessage.eventType is 7
+                timestamp = (userControlMessage.eventData[0] << 24) +
+                  (userControlMessage.eventData[1] << 16) +
+                  (userControlMessage.eventData[2] << 8) +
+                  userControlMessage.eventData[3]
+                console.log "[rtmp:receive] PingResponse: timestamp=#{timestamp}"
+              else
+                console.log "[rtmp:receive] User Control Message"
+                console.log userControlMessage
+              seq.done()
+            when 5  # Window Acknowledgement Size
+              @windowAckSize = (rtmpMessage.body[0] << 24) +
+                (rtmpMessage.body[1] << 16) +
+                (rtmpMessage.body[2] << 8) +
+                rtmpMessage.body[3]
+              seq.done()
+            when 8  # Audio Message (incoming)
+              audioData = parseAudioMessage rtmpMessage.body
+              if audioData.adtsFrame?
+                pts = dts = flv.convertMsToPTS rtmpMessage.timestamp
+                @emit 'audio_data', pts, dts, audioData.adtsFrame
+              seq.done()
+            when 9  # Video Message (incoming)
+              videoData = parseVideoMessage rtmpMessage.body
+              if videoData.nalUnitGlob?
+                dts = rtmpMessage.timestamp
+                pts = dts + videoData.info.videoDataTag.compositionTime
+                pts = flv.convertMsToPTS pts
+                dts = flv.convertMsToPTS dts
+                @emit 'video_data', pts, dts, videoData.nalUnitGlob  # TODO pts, dts
+              seq.done()
+            when 15  # AMF3 data message
+              dataMessage = parseAMF0DataMessage rtmpMessage.body[1..]
+              @handleAMFDataMessage dataMessage, (err, output) ->
+                if err?
+                  console.log "[rtmp:receive] packet error: #{err}"
+                if output?
+                  outputs.push output
+                seq.done()
+            when 17  # AMF3 command (0x11)
+              # Does the first byte == 0x00 mean AMF0?
+              commandMessage = parseAMF0CommandMessage rtmpMessage.body[1..]
+              console.log "[rtmp:receive] AMF3 command: #{commandMessage.command}"
+              @handleAMFCommandMessage commandMessage, (err, output) ->
+                if err?
+                  console.log "[rtmp:receive] packet error: #{err}"
+                if output?
+                  outputs.push output
+                seq.done()
+            when 18  # AMF0 data message
+              dataMessage = parseAMF0DataMessage rtmpMessage.body
+              @handleAMFDataMessage dataMessage, (err, output) ->
+                if err?
+                  console.log "[rtmp:receive] packet error: #{err}"
+                if output?
+                  outputs.push output
+                seq.done()
+            when 20  # AMF0 command
+              commandMessage = parseAMF0CommandMessage rtmpMessage.body
+              console.log "[rtmp:receive] AMF0 command: #{commandMessage.command}"
+              @handleAMFCommandMessage commandMessage, (err, output) ->
+                if err?
+                  console.log "[rtmp:receive] packet error: #{err}"
+                if output?
+                  outputs.push output
+                seq.done()
+            else
+              console.log "----- BUG -----"
+              console.log "[rtmp:receive] received unknown (not implemented) message type ID: #{rtmpMessage.messageTypeID}"
+              console.log rtmpMessage
+              console.log "Please report this bug on GitHub."
+              console.log "---------------"
+              seq.done()
+
+      consumeNextRTMPMessage()
 
 class RTMPServer
+  on: (event, listener) ->
+    if @eventListeners[event]?
+      @eventListeners[event].push listener
+    else
+      @eventListeners[event] = [ listener ]
+    return
+
+  emit: (event, args...) ->
+    if @eventListeners[event]?
+      for listener in @eventListeners[event]
+        listener args...
+    return
+
   constructor: ->
+    @eventListeners = {}
     @port = 1935
     @server = net.createServer (c) =>
       console.log "[rtmp] new client"
@@ -1569,6 +1897,14 @@ class RTMPServer
       sess.on 'data', (data) ->
         if data? and data.length > 0
           c.write data
+      sess.on 'video_start', (args...) =>
+        @emit 'video_start', args...
+      sess.on 'audio_start', (args...) =>
+        @emit 'audio_start', args...
+      sess.on 'video_data', (args...) =>
+        @emit 'video_data', args...
+      sess.on 'audio_data', (args...) =>
+        @emit 'audio_data', args...
       c.on 'close', ->
         console.log "[rtmp] client disconnected"
         if sessions[c.clientId]?
@@ -1721,6 +2057,14 @@ class RTMPServer
           rtmptSessions[session.id] = session
           rtmptSessionsCount++
           session.respondOpen req, callback
+        session.on 'video_start', (args...) =>
+          @emit 'video_start', args...
+        session.on 'audio_start', (args...) =>
+          @emit 'audio_start', args...
+        session.on 'video_data', (args...) =>
+          @emit 'video_data', args...
+        session.on 'audio_data', (args...) =>
+          @emit 'audio_data', args...
       else if command is 'idle'
         session = rtmptSessions[client]
         if session?
@@ -1766,8 +2110,22 @@ generateSessionID = (callback) ->
       callback null, sid
 
 class RTMPTSession
+  on: (event, listener) ->
+    if @eventListeners[event]?
+      @eventListeners[event].push listener
+    else
+      @eventListeners[event] = [ listener ]
+    return
+
+  emit: (event, args...) ->
+    if @eventListeners[event]?
+      for listener in @eventListeners[event]
+        listener args...
+    return
+
   constructor: (socket, callback) ->
     console.log "[rtmpt] new"
+    @eventListeners = {}
     @socket = socket
     @pollingDelay = 1
     @pendingResponses = []
@@ -1775,6 +2133,14 @@ class RTMPTSession
     @rtmpSession.on 'data', (data) =>
       @scheduleTimeout()
       @pendingResponses.push data
+    @rtmpSession.on 'video_start', (args...) =>
+      @emit 'video_start', args...
+    @rtmpSession.on 'audio_start', (args...) =>
+      @emit 'audio_start', args...
+    @rtmpSession.on 'video_data', (args...) =>
+      @emit 'video_data', args...
+    @rtmpSession.on 'audio_data', (args...) =>
+      @emit 'audio_data', args...
     @rtmpSession.on 'teardown', =>
       console.log "[rtmpt] received teardown"
       @close()

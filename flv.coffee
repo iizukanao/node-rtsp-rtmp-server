@@ -1,3 +1,7 @@
+h264 = require './h264'
+aac  = require './aac'
+bits = require './bits'
+
 api =
   SOUND_FORMAT_AAC: 10  # AAC
 
@@ -13,7 +17,11 @@ api =
   SOUND_TYPE_STEREO: 1
 
   AAC_PACKET_TYPE_SEQUENCE_HEADER: 0  # AAC sequence header
-  AAC_PACKET_TYPE_RAW: 1  # AAC raw
+  AAC_PACKET_TYPE_RAW            : 1  # AAC raw
+
+  AVC_PACKET_TYPE_SEQUENCE_HEADER: 0  # AVC sequence header
+  AVC_PACKET_TYPE_NALU           : 1  # AVC NALU
+  AVC_PACKET_TYPE_EOS            : 2  # AVC end of sequence
 
   getSoundType: (channels) ->
     if channels > 1  # stereo
@@ -27,6 +35,15 @@ api =
       when 16 then 1
       else
         throw new Error "Invalid number of bits in a sample: #{numBits}"
+
+  getSampleRateFromSoundRate: (soundRate) ->
+    switch soundRate
+      when 0 then  5512
+      when 1 then 11025
+      when 2 then 22050
+      when 3 then 44100
+      else
+        throw new Error "Invalid SoundRate: #{soundRate}"
 
   # @param  sampleRate (number) sample rate in Hz
   # @return  (number) sound rate
@@ -52,6 +69,84 @@ api =
       soundType: api.SOUND_TYPE_STEREO  # ignored by Flash Player
       aacPacketType: opts.aacPacketType
 
+  parseVideo: (buf) ->
+    info = {}
+    bits.push_stash()
+    bits.set_data buf
+    info.videoDataTag = api.readVideoDataTag()
+
+    # Reject if the codec is not H.264
+    if info.videoDataTag.codecID isnt 7
+      throw new Error "flv: Video codec ID #{info.videoDataTag.codecID} is not supported"
+
+    switch info.videoDataTag.avcPacketType
+      when api.AVC_PACKET_TYPE_SEQUENCE_HEADER
+        info.avcDecoderConfigurationRecord = h264.readAVCDecoderConfigurationRecord()
+      when api.AVC_PACKET_TYPE_NALU
+        info.nalUnits = bits.remaining_buffer()
+      when api.AVC_PACKET_TYPE_EOS
+      else
+        throw new Error "flv: unknown AVCPacketType: #{info.videoDataTag.avcPacketType}"
+    bits.pop_stash()
+    return info
+
+  splitNALUnits: (buf, nalUnitLengthSize) ->
+    bits.push_stash()
+    bits.set_data buf
+    nalUnits = []
+    while bits.has_more_data()
+      nalUnitLen = bits.read_bits nalUnitLengthSize * 8
+      nalUnits.push bits.read_bytes nalUnitLen
+    bits.pop_stash()
+    return nalUnits
+
+  parseAudio: (buf) ->
+    info = {}
+    bits.push_stash()
+    bits.set_data buf
+    info.audioDataTag = api.readAudioDataTag()
+
+    # Reject if the sound format is not AAC
+    if info.audioDataTag.soundFormat isnt api.SOUND_FORMAT_AAC
+      throw new Error "flv: Sound format #{info.audioDataTag.soundFormat} is not supported"
+
+    switch info.audioDataTag.aacPacketType
+      when api.AAC_PACKET_TYPE_SEQUENCE_HEADER
+        if bits.has_more_data()
+          info.audioSpecificConfig = aac.readAudioSpecificConfig()
+        else
+          console.log "flv:parseAudio(): warn: AAC sequence header is empty"
+      when api.AAC_PACKET_TYPE_RAW
+        info.rawDataBlock = bits.remaining_buffer()
+      else
+        throw new Error "flv: unknown AACPacketType: #{info.audioDataTag.aacPacketType}"
+    bits.pop_stash()
+    return info
+
+  # E.4.3.1 VIDEODATA
+  readVideoDataTag: ->
+    info = {}
+    info.frameType = bits.read_bits 4
+    info.codecID = bits.read_bits 4
+    if info.codecID is 7
+      info.avcPacketType = bits.read_byte()
+      info.compositionTime = bits.read_bits 24
+      if (info.avcPacketType isnt 1) and (info.compositionTime isnt 0)
+        console.log "flv:readVideoDataTag(): warn: AVCPacketType isn't 1 but CompositionTime isn't 0; AVCPacketType=#{info.avcPacketType} CompositionTime=#{info.compositionTime}"
+    return info
+
+  # E.4.2.1 AUDIODATA
+  readAudioDataTag: ->
+    info = {}
+    b = bits.read_byte()
+    info.soundFormat = b >> 4
+    info.soundRate = (b >> 2) & 0b11
+    info.soundSize = (b >> 1) & 0b1
+    info.soundType = b & 0b1
+    if info.soundFormat is api.SOUND_FORMAT_AAC
+      info.aacPacketType = bits.read_byte()
+    return info
+
   # @param  opts (object) {
   #   soundFormat (int)
   #   soundRate (int)
@@ -72,5 +167,9 @@ api =
     if opts.soundFormat is api.SOUND_FORMAT_AAC
       buf.push opts.aacPacketType  # AACPacketType (1 bit)
     return buf
+
+  # Convert milliseconds into PTS (90 kHz clock)
+  convertMsToPTS: (ms) ->
+    return ms * 90
 
 module.exports = api

@@ -41,6 +41,63 @@ api =
   end: ->
     @emit 'end'
 
+  parseADTSHeader: (buf) ->
+    info = {}
+    bits.push_stash()
+    bits.set_data buf
+
+    # adts_fixed_header()
+    info.syncword = bits.read_bits 12
+    info.ID = bits.read_bit()
+    info.layer = bits.read_bits 2
+    info.protection_absent = bits.read_bit()
+    info.profile_ObjectType = bits.read_bits 2
+    info.sampling_frequency_index = bits.read_bits 4
+    info.private_bit = bits.read_bit()
+    info.channel_configuration = bits.read_bits 3
+    info.original_copy = bits.read_bit()
+    info.home = bits.read_bit()
+
+    # adts_variable_header()
+    info.copyright_identification_bit = bits.read_bit()
+    info.copyright_identification_start = bits.read_bit()
+    info.aac_frame_length = bits.read_bits 13
+    info.adts_buffer_fullness = bits.read_bits 11
+    info.number_of_raw_data_blocks_in_frame = bits.read_bits 2
+
+    bits.pop_stash()
+    return info
+
+  # Feed the return value of readAudioSpecificConfig()
+  createADTSHeader: (ascInfo, aac_frame_length) ->
+    bits.create_buf()
+    # adts_fixed_header()
+    bits.add_bits 12, 0xfff  # syncword
+    bits.add_bit 0  # ID (1=MPEG-2 AAC; 0=MPEG-4)
+    bits.add_bits 2, 0  # layer
+    bits.add_bit 1  # protection_absent
+    if ascInfo.audioObjectType - 1 > 0b11
+      throw new Error "invalid audioObjectType: #{ascInfo.audioObjectType} (must be <= 4)"
+    bits.add_bits 2, ascInfo.audioObjectType - 1  # profile_ObjectType
+    bits.add_bits 4, ascInfo.samplingFrequencyIndex  # sampling_frequency_index
+    bits.add_bit 0  # private_bit
+    if ascInfo.channelConfiguration > 0b111
+      throw new Error "invalid channelConfiguration: #{ascInfo.channelConfiguration} (must be <= 7)"
+    bits.add_bits 3, ascInfo.channelConfiguration  # channel_configuration
+    bits.add_bit 0  # original_copy
+    bits.add_bit 0  # home
+
+    # adts_variable_header()
+    bits.add_bit 0  # copyright_identification_bit
+    bits.add_bit 0  # copyright_identification_start
+    if aac_frame_length > 8192 - 7  # 7 == length of ADTS header
+      throw new Error "invalid aac_frame_length: #{aac_frame_length} (must be <= 8192)"
+    bits.add_bits 13, aac_frame_length + 7  # aac_frame_length (7 == ADTS header length)
+    bits.add_bits 11, 0x7ff  # adts_buffer_fullness (0x7ff = VBR)
+    bits.add_bits 2, 0  # number_of_raw_data_blocks_in_frame (actual - 1)
+
+    return bits.get_created_buf()
+
   getNextPossibleSyncwordPosition: (buffer) ->
     syncwordPos = bits.searchBitsInArray buffer, [0xff, 0xf0], 1
     # The maximum distance between two syncwords is 8192 bytes.
@@ -79,7 +136,7 @@ api =
         # check next syncword
         if (buffer[aac_frame_length] isnt 0xff) or
         (buffer[aac_frame_length+1] & 0xf0 isnt 0xf0)  # false syncword
-          console.log "aac: syncword was false positive (emulated syncword)"
+          console.log "aac:splitIntoADTSFrames(): syncword was false positive (emulated syncword)"
           syncwordPos = @getNextPossibleSyncwordPosition()
           buffer = buffer[syncwordPos..]
           continue
@@ -120,7 +177,7 @@ api =
         # check next syncword
         if (audioBuf[aac_frame_length] isnt 0xff) or
         (audioBuf[aac_frame_length+1] & 0xf0 isnt 0xf0)  # false syncword
-          console.log "aac: syncword was false positive (emulated syncword)"
+          console.log "aac:feedPESPacket(): syncword was false positive (emulated syncword)"
           @skipToNextPossibleSyncword()
           continue
 
@@ -159,7 +216,7 @@ api =
         # check next syncword
         if (audioBuf[aac_frame_length] isnt 0xff) or
         (audioBuf[aac_frame_length+1] & 0xf0 isnt 0xf0)  # false syncword
-          console.log "aac: syncword was false positive (emulated syncword)"
+          console.log "aac:feed(): syncword was false positive (emulated syncword)"
           @skipToNextPossibleSyncword()
           continue
 
@@ -250,6 +307,93 @@ api =
       bits.add_bit 0
     else
       throw new Error "audio object type #{opts.audioObjectType} is not implemented"
+
+  # ISO 14496-3 GetAudioObjectType()
+  readGetAudioObjectType: ->
+    audioObjectType = bits.read_bits 5
+    if audioObjectType is 31
+      audioObjectType = 32 + bits.read_bits 6
+    return audioObjectType
+
+  read_program_config_element: ->
+    # TODO
+    throw new Error "program_config_element() is not implemented"
+
+  # @param opts: {
+  #   samplingFrequencyIndex: number
+  #   channelConfiguration: number
+  #   audioObjectType: number
+  # }
+  readGASpecificConfig: (opts) ->
+    info = {}
+    info.frameLengthFlag = bits.read_bit()
+    info.dependsOnCoreCoder = bits.read_bit()
+    if info.dependsOnCoreCoder is 1
+      info.coreCoderDelay = bits.read_bits 14
+    info.extensionFlag = bits.read_bit()
+    if opts.channelConfiguration is 0
+      info.program_config_element = api.read_program_config_element()
+    if opts.audioObjectType in [6, 20]
+      info.layerNr = bits.read_bits 3
+    if info.extensionFlag
+      if opts.audioObjectType is 22
+        info.numOfSubFrame = bits.read_bits 5
+        info.layer_length = bits.read_bits 11
+      if opts.audioObjectType in [17, 19, 20, 23]
+        info.aacSectionDataResilienceFlag = bits.read_bit()
+        info.aacScalefactorDataResilienceFlag = bits.read_bit()
+        info.aacSpectralDataResilienceFlag = bits.read_bit()
+      info.extensionFlag3 = bits.read_bit()
+      # ISO 14496-3 says: tbd in version 3
+    return info
+
+  # ISO 14496-3 1.6.2.1 AudioSpecificConfig
+  readAudioSpecificConfig: ->
+    info = {}
+    info.audioObjectType = api.readGetAudioObjectType()
+    info.samplingFrequencyIndex = bits.read_bits 4
+    if info.samplingFrequencyIndex is 0xf
+      info.samplingFrequency = bits.read_bits 24
+    else
+      info.samplingFrequency = api.getSampleRateFromFreqIndex info.samplingFrequencyIndex
+    info.channelConfiguration = bits.read_bits 4
+
+    info.sbrPresentFlag = -1
+    if info.audioObjectType is 5
+      info.extensionAudioObjectType = info.audioObjectType
+      info.sbrPresentFlag = 1
+      extensionSamplingFrequencyIndex = bits.read_bits 4
+      if extensionSamplingFrequencyIndex is 0xf
+        info.extensionSamplingFrequency = bits.read_bits 24
+      else
+        info.extensionSamplingFrequency = api.getSampleRateFromFreqIndex extensionSamplingFrequencyIndex
+      info.audioObjectType = api.readGetAudioObjectType()
+    else
+      info.extensionAudioObjectType = 0
+
+    switch info.audioObjectType
+      when 1, 2, 3, 4, 6, 7, 17, 19, 20, 21, 22, 23
+        info.gaSpecificConfig = api.readGASpecificConfig info
+      else
+        throw new Error "audio object type #{info.audioObjectType} is not implemented"
+    switch info.audioObjectType
+      when 17, 19, 20, 21, 22, 23, 24, 25, 26, 27
+        throw new Error "audio object type #{info.audioObjectType} is not implemented"
+
+    if (info.extensionAudioObjectType isnt 5) and (bits.get_remaining_bits() >= 16)
+      info.syncExtensionType = bits.read_bits 11
+      if info.syncExtensionType is 0x2b7
+        info.extensionAudioObjectType = api.readGetAudioObjectType()
+        if info.extensionAudioObjectType is 5
+          info.sbrPresentFlag = bits.read_bit()
+          if info.sbrPresentFlag is 1
+            extensionSamplingFrequencyIndex = bits.read_bits 4
+            if extensionSamplingFrequencyIndex is 0xf
+              info.extensionSamplingFrequency = bits.read_bits 24
+            else
+              info.extensionSamplingFrequency = api.getSampleRateFromFreqIndex extensionSamplingFrequencyIndex
+
+    return info
 
   # @param opts: {
   #   audioObjectType (int): audio object type
@@ -344,7 +488,7 @@ api =
         # check next syncword
         if (audioBuf[aac_frame_length] isnt 0xff) or
         (audioBuf[aac_frame_length+1] & 0xf0 isnt 0xf0)  # false syncword
-          console.log "aac: syncword was false positive (emulated syncword)"
+          console.log "aac:getNextADTSFrame(): syncword was false positive (emulated syncword)"
           @skipToNextPossibleSyncword()
           continue
 

@@ -76,6 +76,15 @@ deleteReceiverSocketsSync()
 
 # Create RTMP server
 rtmpServer = new RTMPServer
+rtmpServer.on 'video_start', ->
+  onReceiveVideoControlBuffer()
+rtmpServer.on 'video_data', (pts, dts, nalUnits) ->
+  onReceiveVideoPacket nalUnits, pts, dts
+rtmpServer.on 'audio_start', ->
+  onReceiveAudioControlBuffer()
+rtmpServer.on 'audio_data', (pts, dts, adtsFrame) ->
+  onReceiveAudioPacket adtsFrame, pts, dts
+
 rtmpServer.start ->
   # RTMP server is ready
 
