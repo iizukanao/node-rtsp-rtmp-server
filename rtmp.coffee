@@ -213,8 +213,6 @@ queueVideoMessage = (params) ->
   params.messageStreamID = 1
   params.originalTimestamp = params.timestamp
   queuedRTMPMessages.push params
-  queuedRTMPMessages.sort (a, b) ->
-    a.timestamp - b.timestamp
 
   setImmediate flushRTMPMessages
 
@@ -225,8 +223,6 @@ queueAudioMessage = (params) ->
   params.messageStreamID = 1
   params.originalTimestamp = params.timestamp
   queuedRTMPMessages.push params
-  queuedRTMPMessages.sort (a, b) ->
-    a.timestamp - b.timestamp
 
   setImmediate flushRTMPMessages
 
