@@ -966,6 +966,7 @@ class RTMPSession
 #        0, 0x14, 0, 0
         0, 0x26, 0x25, 0xa0
       ]
+#    console.log "[rtmp:send] WindowAckSize=#{0x2625a0}"
 
     setPeerBandwidth = createRTMPMessage
       chunkStreamID: 2
@@ -2235,7 +2236,7 @@ class RTMPTSession
         allBytes = Buffer.concat [interval, output], 1 + output.length
         callback null, @createHTTPResponse allBytes
       else
-        console.log "[rtmpt:send-resp] no response"
+        # No response from me
         allBytes = new Buffer [ @pollingDelay ]
         callback null, @createHTTPResponse allBytes
 

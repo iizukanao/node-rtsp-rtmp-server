@@ -895,21 +895,21 @@ onReceiveVideoPacket = (nalUnitGlob, pts, dts) ->
       isConfigUpdated = false
       if detectedVideoWidth isnt frameSize.width
         detectedVideoWidth = frameSize.width
-        console.log "detected video width change: #{detectedVideoWidth}"
+        console.log "video width has been changed to #{detectedVideoWidth}"
         config.videoWidth = detectedVideoWidth
         isConfigUpdated = true
       if detectedVideoHeight isnt frameSize.height
         detectedVideoHeight = frameSize.height
-        console.log "detected video height change: #{detectedVideoHeight}"
+        console.log "video height has been changed to #{detectedVideoHeight}"
         config.videoHeight = detectedVideoHeight
         isConfigUpdated = true
       if config.flv.avclevel isnt sps.level_idc
         config.flv.avclevel = sps.level_idc
-        console.log "avclevel is changed to #{config.flv.avclevel}"
+        console.log "avclevel has been changed to #{config.flv.avclevel}"
         isConfigUpdated = true
       if config.flv.avcprofile isnt sps.profile_idc
         config.flv.avcprofile = sps.profile_idc
-        console.log "avcprofile is changed to #{config.flv.avcprofile}"
+        console.log "avcprofile has been changed to #{config.flv.avcprofile}"
         isConfigUpdated = true
       if isConfigUpdated
         updateConfig()
@@ -946,17 +946,17 @@ onReceiveAudioPacket = (adtsFrameGlob, pts, dts) ->
 
   if detectedAudioSampleRate isnt adtsInfo.sampleRate
     detectedAudioSampleRate = adtsInfo.sampleRate
-    console.log "detected audio sample rate change: #{detectedAudioSampleRate}"
+    console.log "audio sample rate has been changed to #{detectedAudioSampleRate}"
     updateAudioSampleRate adtsInfo.sampleRate
 
   if detectedAudioChannels isnt adtsInfo.channels
     detectedAudioChannels = adtsInfo.channels
-    console.log "detected audio channels change: #{detectedAudioChannels}"
+    console.log "audio channels has been changed to #{detectedAudioChannels}"
     updateAudioChannels adtsInfo.channels
 
   if config.audioObjectType isnt adtsInfo.audioObjectType
     config.audioObjectType = adtsInfo.audioObjectType
-    console.log "audio object type is changed to #{config.audioObjectType}"
+    console.log "audio object type has been changed to #{config.audioObjectType}"
     updateConfig()
 
   rtpTimePerFrame = 1024
