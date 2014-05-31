@@ -4,7 +4,6 @@ fs      = require 'fs'
 zlib    = require 'zlib'
 spawn   = require('child_process').spawn
 Sequent = require 'sequent'
-config  = require './config'
 
 # Directory to store EJS templates
 TEMPLATE_DIR = "#{__dirname}/template"
@@ -16,7 +15,7 @@ STATIC_DIR  = "#{__dirname}/public"
 DIRECTORY_INDEX_FILENAME = 'index.html'
 
 # Server name which is embedded in HTTP response header
-SERVER_NAME = config.serverName
+serverName = 'node-rtsp-rtmp-server'
 
 # Response larger than this bytes is compressed
 GZIP_SIZE_THRESHOLD = 300
@@ -44,6 +43,9 @@ getDateHeader = ->
 
 class HTTPServer
   constructor: ->
+
+  setServerName: (name) ->
+    serverName = name
 
   handlePath: (filepath, req, callback) ->
     # Example implementation
@@ -93,7 +95,7 @@ class HTTPServer
     header = """
     #{protocol} #{statusMessage}
     Date: #{getDateHeader()}
-    Server: #{SERVER_NAME}
+    Server: #{serverName}
 
     """
 

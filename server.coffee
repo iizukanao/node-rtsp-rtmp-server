@@ -26,6 +26,11 @@ hybrid_udp  = require './hybrid_udp'
 # Clock rate for audio stream
 audioClockRate = null
 
+# Default server name for RTSP and HTTP responses
+DEFAULT_SERVER_NAME = 'node-rtsp-rtmp-server/0.2.0'
+
+serverName = config.serverName ? DEFAULT_SERVER_NAME
+
 # Start playing from keyframe
 ENABLE_START_PLAYING_FROM_KEYFRAME = false
 
@@ -102,6 +107,7 @@ rtmpServer.start ->
   # RTMP server is ready
 
 httpHandler = new HTTPHandler
+httpHandler.setServerName serverName
 
 updateConfig = ->
   rtmpServer.updateConfig config
@@ -1185,7 +1191,7 @@ respond = (socket, req, callback) ->
         socket.isAuthenticated = true
         res = """
         HTTP/1.0 200 OK
-        Server: #{config.serverName}
+        Server: #{serverName}
         Connection: close
         Date: #{getDateHeader()}
         Cache-Control: no-store
@@ -1261,7 +1267,7 @@ respond = (socket, req, callback) ->
       Date: #{dateHeader}
       Expires: #{dateHeader}
       Session: #{client.sessionID};timeout=60
-      Server: #{config.serverName}
+      Server: #{serverName}
       Cache-Control: no-cache
 
 
@@ -1375,7 +1381,7 @@ respond = (socket, req, callback) ->
     Transport: #{transportHeader}
     Session: #{client.sessionID};timeout=60
     CSeq: #{req.headers.cseq}
-    Server: #{config.serverName}
+    Server: #{serverName}
     Cache-Control: no-cache
 
 
@@ -1413,7 +1419,7 @@ respond = (socket, req, callback) ->
     Session: #{client.sessionID};timeout=60
     CSeq: #{req.headers.cseq}
     RTP-Info: #{rtpInfos.join ','}
-    Server: #{config.serverName}
+    Server: #{serverName}
     Cache-Control: no-cache
 
 
