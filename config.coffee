@@ -7,8 +7,9 @@ module.exports =
   serverPort: 80
 
   # Server name which will be embedded in
-  # RTSP and HTTP response headers
-  serverName: 'node-rtsp-rtmp-server/0.2.0'
+  # RTSP and HTTP response headers.
+  # Default server name is used when this value is null.
+  serverName: 'node-rtsp-rtmp-server'
 
   # Average frame rate of video (informative)
   videoFrameRate: 30
