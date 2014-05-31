@@ -1707,7 +1707,7 @@ class RTMPSession
     if @windowAckSize?
       @receivedBytes += buf.length
       if @receivedBytes - @lastSentAckBytes > @windowAckSize / 2
-        console.log "[rtmp:send] Ack=#{@receivedBytes}"
+#        console.log "[rtmp:send] Ack=#{@receivedBytes}"
         outputs.push @createAck()
         @lastSentAckBytes = @receivedBytes
 
