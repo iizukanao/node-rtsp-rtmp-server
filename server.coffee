@@ -74,8 +74,13 @@ deleteReceiverSocketsSync = ->
 
 deleteReceiverSocketsSync()
 
+isVideoStarted = false
+isAudioStarted = false
+
 # Create RTMP server
 rtmpServer = new RTMPServer
+rtmpServer.on 'stream_reset', ->
+  resetStreams()
 rtmpServer.on 'video_start', ->
   onReceiveVideoControlBuffer()
 rtmpServer.on 'video_data', (pts, dts, nalUnits) ->
@@ -84,6 +89,13 @@ rtmpServer.on 'audio_start', ->
   onReceiveAudioControlBuffer()
 rtmpServer.on 'audio_data', (pts, dts, adtsFrame) ->
   onReceiveAudioPacket adtsFrame, pts, dts
+
+# Reset audio/video streams
+resetStreams = ->
+  console.log "reset streams"
+  isVideoStarted = false
+  isAudioStarted = false
+  rtmpServer.resetStreams()
 
 rtmpServer.start ->
   # RTMP server is ready
@@ -286,16 +298,18 @@ onReceiveBuffer = (buf) ->
 
 onReceiveVideoControlBuffer = (buf) ->
   console.log "video start"
+  isVideoStarted = true
   timeForVideoRTPZero = Date.now()
   timeForAudioRTPZero = timeForVideoRTPZero
   spropParameterSets = ''
-  rtmpServer.startStream timeForVideoRTPZero
+  rtmpServer.startVideo()
 
 onReceiveAudioControlBuffer = (buf) ->
   console.log "audio start"
+  isAudioStarted = true
   timeForAudioRTPZero = Date.now()
   timeForVideoRTPZero = timeForAudioRTPZero
-  rtmpServer.startStream timeForAudioRTPZero
+  rtmpServer.startAudio()
 
 onReceiveVideoDataBuffer = (buf) ->
   pts = buf[1] * 0x010000000000 + \

@@ -49,6 +49,9 @@ spsPacket = null
 # NAL unit type 8: Picture parameter set
 ppsPacket = null
 
+isAudioStarted = false
+isVideoStarted = false
+
 # Generate a new client ID without collision
 generateNewClientID = ->
   clientID = generateClientID()
@@ -466,6 +469,9 @@ flushRTMPMessages = ->
   rtmpMessagesToSend = queuedRTMPMessages
   queuedRTMPMessages = []
 
+  if rtmpMessagesToSend.length is 0
+    return
+
 #  mostRecentAVType = queuedRTMPMessages[queuedRTMPMessages.length-1].avType
 #  largestIndex = null
 #  for i in [queuedRTMPMessages.length-2..0]
@@ -489,13 +495,19 @@ flushRTMPMessages = ->
   for session in allSessions
     msgs = null
     if session.isWaitingForKeyFrame
-      for rtmpMessage, i in rtmpMessagesToSend
-        if rtmpMessage.avType is 'video' and rtmpMessage.isKeyFrame
-          session.isPlaying = true
-          session.playStartTimestamp = rtmpMessage.originalTimestamp
-          session.isWaitingForKeyFrame = false
-          msgs = rtmpMessagesToSend[i..]
-          break
+      if isVideoStarted  # has video stream
+        for rtmpMessage, i in rtmpMessagesToSend
+          if rtmpMessage.avType is 'video' and rtmpMessage.isKeyFrame
+            session.isPlaying = true
+            session.playStartTimestamp = rtmpMessage.originalTimestamp
+            session.isWaitingForKeyFrame = false
+            msgs = rtmpMessagesToSend[i..]
+            break
+      else  # audio only
+        session.isPlaying = true
+        session.playStartTimestamp = rtmpMessagesToSend[0].originalTimestamp
+        session.isWaitingForKeyFrame = false
+        msgs = rtmpMessagesToSend
     else
       msgs = rtmpMessagesToSend
 
@@ -1304,7 +1316,12 @@ class RTMPSession
   receiveSetDataFrame: (requestData) ->
     if requestData.objects[1].value is 'onMetaData'
       console.log "[rtmp:receive] @setDataFrame onMetaData"
-#      console.log requestData.objects[2].value
+      metadata = requestData.objects[2].value
+      # TODO: Are metadata keys always lowercase?
+      if metadata.audiocodecid?  # has audio stream
+        @emit 'audio_start'
+      if metadata.videocodecid?  # has video stream
+        @emit 'video_start'
     else
       throw new Error "Unknown @setDataFrame: #{requestData.objects[1].value}"
 
@@ -1359,8 +1376,7 @@ class RTMPSession
     else
       streamName = publishingName
 
-    @emit 'video_start'
-    @emit 'audio_start'
+    @emit 'stream_reset'
 
     publishStart = createAMF0CommandMessage
       chunkStreamID: 4
@@ -1486,34 +1502,39 @@ class RTMPSession
       ]
     , @chunkSize
 
+    metadata =
+      canSeekToEnd: false
+      cuePoints   : []
+      hasMetadata : true
+      hasCuePoints: false
+
+    if isVideoStarted
+      metadata.hasVideo      = true
+      metadata.framerate     = config.videoFrameRate
+      metadata.height        = config.videoHeight
+      metadata.videocodecid  = config.flv.videocodecid
+      metadata.videodatarate = config.videoBitrateKbps
+      metadata.width         = config.videoWidth
+      metadata.avclevel      = config.flv.avclevel
+      metadata.avcprofile    = config.flv.avcprofile
+
+    if isAudioStarted
+      metadata.hasAudio        = true
+      metadata.audiocodecid    = config.flv.audiocodecid
+      metadata.audiodatarate   = config.audioBitrateKbps
+      metadata.audiodelay      = 0
+      metadata.audiosamplerate = config.audioSampleRate
+      metadata.stereo          = config.audioChannels > 1
+      metadata.audiochannels   = config.audioChannels
+      metadata.aacaot          = config.audioObjectType
+
     onMetaData = createAMF0DataMessage
       chunkStreamID: 4
       timestamp: 0
       messageStreamID: 1
       objects: [
         createAMF0Data('onMetaData'),
-        createAMF0Data({
-          audiocodecid: config.flv.audiocodecid
-          audiodatarate: config.audioBitrateKbps
-          audiodelay: 0
-          audiosamplerate: config.audioSampleRate
-          canSeekToEnd: false
-          framerate: config.videoFrameRate
-          height: config.videoHeight
-          stereo: config.audioChannels > 1
-          videocodecid: config.flv.videocodecid
-          videodatarate: config.videoBitrateKbps
-          width: config.videoWidth
-          cuePoints: []
-          hasVideo: config.flv.hasVideo
-          hasAudio: true
-          hasMetadata: true
-          audiochannels: config.audioChannels
-          hasCuePoints: false
-          aacaot: config.audioObjectType
-          avclevel: config.flv.avclevel
-          avcprofile: config.flv.avcprofile
-        })
+        createAMF0Data(metadata)
       ]
     , @chunkSize
 
@@ -1526,63 +1547,70 @@ class RTMPSession
       codecConfigs
     ]
 
+    # ready for playing
     @isWaitingForKeyFrame = true
 
   getCodecConfigs: ->
-    if not spsPacket? or not ppsPacket?
-      console.error "[rtmp] error: SPS or PPS is not present"
-      return
+    configMessages = []
 
-    # video
-    spsLen = spsPacket.length
-    ppsLen = ppsPacket.length
-    buf = new Buffer [
-      # VIDEODATA tag (Appeared in Adobe's Video File Format Spec v10.1 E.4.3.1 VIDEODATA
-      (1 << 4) | config.flv.videocodecid, # 1=key frame
-      0x00,  # 0=AVC sequence header (configuration data)
-      0x00,  # composition time
-      0x00,  # composition time
-      0x00,  # composition time
+    if isVideoStarted
+      if not spsPacket? or not ppsPacket?
+        console.error "[rtmp] error: SPS or PPS is not present"
+        return
 
-      # AVC decoder configuration: described in ISO 14496-15 5.2.4.1.1 Syntax
-      0x01,  # version
-      spsPacket[1..3]...,
-      0xff, # 6 bits reserved (0b111111) + 2 bits nal size length - 1 (0b11)
-      0xe1, # 3 bits reserved (0b111) + 5 bits number of sps (0b00001)
+      # video
+      spsLen = spsPacket.length
+      ppsLen = ppsPacket.length
+      buf = new Buffer [
+        # VIDEODATA tag (Appeared in Adobe's Video File Format Spec v10.1 E.4.3.1 VIDEODATA
+        (1 << 4) | config.flv.videocodecid, # 1=key frame
+        0x00,  # 0=AVC sequence header (configuration data)
+        0x00,  # composition time
+        0x00,  # composition time
+        0x00,  # composition time
 
-      (spsLen >> 8) & 0xff,
-      spsLen & 0xff,
-      spsPacket...,
+        # AVC decoder configuration: described in ISO 14496-15 5.2.4.1.1 Syntax
+        0x01,  # version
+        spsPacket[1..3]...,
+        0xff, # 6 bits reserved (0b111111) + 2 bits nal size length - 1 (0b11)
+        0xe1, # 3 bits reserved (0b111) + 5 bits number of sps (0b00001)
 
-      0x01,  # number of PPS (1)
+        (spsLen >> 8) & 0xff,
+        spsLen & 0xff,
+        spsPacket...,
 
-      (ppsLen >> 8) & 0xff,
-      ppsLen & 0xff,
-      ppsPacket...
-    ]
-    videoConfigMessage = createVideoMessage
-      body: buf
-      timestamp: 0
-      chunkSize: @chunkSize
+        0x01,  # number of PPS (1)
 
-    # audio
-    # TODO: support other than AAC too?
-    buf = flv.createAACAudioDataTag
-      aacPacketType: flv.AAC_PACKET_TYPE_SEQUENCE_HEADER
-    # buf is an array at this point
-    buf = buf.concat aac.createAudioSpecificConfig
-      audioObjectType: config.audioObjectType
-      sampleRate: config.audioSampleRate
-      channels: config.audioChannels
-      frameLength: 1024  # TODO: How to detect 960?
-    buf = new Buffer buf
+        (ppsLen >> 8) & 0xff,
+        ppsLen & 0xff,
+        ppsPacket...
+      ]
+      videoConfigMessage = createVideoMessage
+        body: buf
+        timestamp: 0
+        chunkSize: @chunkSize
+      configMessages.push videoConfigMessage
 
-    audioConfigMessage = createAudioMessage
-      body: buf
-      timestamp: 0
-      chunkSize: @chunkSize
+    if isAudioStarted
+      # audio
+      # TODO: support other than AAC too?
+      buf = flv.createAACAudioDataTag
+        aacPacketType: flv.AAC_PACKET_TYPE_SEQUENCE_HEADER
+      # buf is an array at this point
+      buf = buf.concat aac.createAudioSpecificConfig
+        audioObjectType: config.audioObjectType
+        sampleRate: config.audioSampleRate
+        channels: config.audioChannels
+        frameLength: 1024  # TODO: How to detect 960?
+      buf = new Buffer buf
 
-    return @concatenate [ videoConfigMessage, audioConfigMessage ]
+      audioConfigMessage = createAudioMessage
+        body: buf
+        timestamp: 0
+        chunkSize: @chunkSize
+      configMessages.push audioConfigMessage
+
+    return @concatenate configMessages
 
   pauseOrUnpauseStream: (commandMessage, callback) ->
     doPause = commandMessage.objects[1]?.value is true
@@ -1891,6 +1919,8 @@ class RTMPServer
       sess.on 'data', (data) ->
         if data? and data.length > 0
           c.write data
+      sess.on 'stream_reset', (args...) =>
+        @emit 'stream_reset', args...
       sess.on 'video_start', (args...) =>
         @emit 'video_start', args...
       sess.on 'audio_start', (args...) =>
@@ -2023,9 +2053,17 @@ class RTMPServer
 
     return
 
-  startStream: (timeForVideoRTPZero) ->
+  resetStreams: ->
     spsPacket = null
     ppsPacket = null
+    isAudioStarted = false
+    isVideoStarted = false
+
+  startAudio: ->
+    isAudioStarted = true
+
+  startVideo: ->
+    isVideoStarted = true
 
   handleRTMPTRequest: (req, callback) ->
     # /fcs/ident2 will be handled in another place
@@ -2051,6 +2089,8 @@ class RTMPServer
           rtmptSessions[session.id] = session
           rtmptSessionsCount++
           session.respondOpen req, callback
+        session.on 'stream_reset', (args...) =>
+          @emit 'stream_reset', args...
         session.on 'video_start', (args...) =>
           @emit 'video_start', args...
         session.on 'audio_start', (args...) =>
@@ -2127,6 +2167,8 @@ class RTMPTSession
     @rtmpSession.on 'data', (data) =>
       @scheduleTimeout()
       @pendingResponses.push data
+    @rtmpSession.on 'stream_reset', (args...) =>
+      @emit 'stream_reset', args...
     @rtmpSession.on 'video_start', (args...) =>
       @emit 'video_start', args...
     @rtmpSession.on 'audio_start', (args...) =>
