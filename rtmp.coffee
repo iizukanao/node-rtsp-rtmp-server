@@ -1316,12 +1316,6 @@ class RTMPSession
   receiveSetDataFrame: (requestData) ->
     if requestData.objects[1].value is 'onMetaData'
       console.log "[rtmp:receive] @setDataFrame onMetaData"
-      metadata = requestData.objects[2].value
-      # TODO: Are metadata keys always lowercase?
-      if metadata.audiocodecid?  # has audio stream
-        @emit 'audio_start'
-      if metadata.videocodecid?  # has video stream
-        @emit 'video_start'
     else
       throw new Error "Unknown @setDataFrame: #{requestData.objects[1].value}"
 
@@ -1377,6 +1371,8 @@ class RTMPSession
       streamName = publishingName
 
     @emit 'stream_reset'
+    @isFirstVideoReceived = false
+    @isFirstAudioReceived = false
 
     publishStart = createAMF0CommandMessage
       chunkStreamID: 4
@@ -1835,12 +1831,18 @@ class RTMPSession
             when 8  # Audio Message (incoming)
               audioData = parseAudioMessage rtmpMessage.body
               if audioData.adtsFrame?
+                if not @isFirstAudioReceived
+                  @emit 'audio_start'
+                  @isFirstAudioReceived = true
                 pts = dts = flv.convertMsToPTS rtmpMessage.timestamp
                 @emit 'audio_data', pts, dts, audioData.adtsFrame
               seq.done()
             when 9  # Video Message (incoming)
               videoData = parseVideoMessage rtmpMessage.body
               if videoData.nalUnitGlob?
+                if not @isFirstVideoReceived
+                  @emit 'video_start'
+                  @isFirstVideoReceived = true
                 dts = rtmpMessage.timestamp
                 pts = dts + videoData.info.videoDataTag.compositionTime
                 pts = flv.convertMsToPTS pts
