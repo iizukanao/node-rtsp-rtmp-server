@@ -1292,6 +1292,8 @@ respond = (socket, req, callback) ->
       if (match = /client_port=(\d+)-(\d+)/.exec req.headers.transport)?
         client.clientAudioRTPPort = parseInt match[1]
         client.clientAudioRTCPPort = parseInt match[2]
+      else
+        console.log "error: malformed transport header for audio: #{req.headers.transport}"
     else  # video
       track = 'video'
       if client.useHTTP
@@ -1302,6 +1304,8 @@ respond = (socket, req, callback) ->
       if (match = /client_port=(\d+)-(\d+)/.exec req.headers.transport)?
         client.clientVideoRTPPort = parseInt match[1]
         client.clientVideoRTCPPort = parseInt match[2]
+      else
+        console.log "error: malformed transport header for video: #{req.headers.transport}"
 
     if /\bTCP\b/.test req.headers.transport
       useTCPTransport = true
