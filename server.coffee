@@ -224,9 +224,10 @@ sendVideoSenderReport = (client) ->
     else
       sendDataByTCP client.socket, client.videoTCPControlChannel, buf
   else
-    videoRTCPSocket.send buf, 0, buf.length, client.clientVideoRTCPPort, client.ip, (err, bytes) ->
-      if err
-        console.error "[videoRTCPSend] error: #{err.message}"
+    if client.clientVideoRTCPPort?
+      videoRTCPSocket.send buf, 0, buf.length, client.clientVideoRTCPPort, client.ip, (err, bytes) ->
+        if err
+          console.error "[videoRTCPSend] error: #{err.message}"
 
 sendAudioSenderReport = (client) ->
   if not timeForAudioRTPZero?
@@ -247,9 +248,10 @@ sendAudioSenderReport = (client) ->
     else
       sendDataByTCP client.socket, client.audioTCPControlChannel, buf
   else
-    audioRTCPSocket.send buf, 0, buf.length, client.clientAudioRTCPPort, client.ip, (err, bytes) ->
-      if err
-        console.error "[audioRTCPSend] error: #{err.message}"
+    if client.clientAudioRTCPPort?
+      audioRTCPSocket.send buf, 0, buf.length, client.clientAudioRTCPPort, client.ip, (err, bytes) ->
+        if err
+          console.error "[audioRTCPSend] error: #{err.message}"
 
 stopSendingRTCP = (client) ->
   if client.timeoutID?
@@ -782,9 +784,10 @@ sendVideoPacketWithFragment = (nalUnit, timestamp) ->
           else
             sendDataByTCP client.socket, client.videoTCPDataChannel, rtpBuffer
         else
-          videoRTPSocket.send rtpBuffer, 0, rtpBuffer.length, client.clientVideoRTPPort, client.ip, (err, bytes) ->
-            if err
-              console.log "[videoRTPSend] error: #{err.message}"
+          if client.clientVideoRTPPort?
+            videoRTPSocket.send rtpBuffer, 0, rtpBuffer.length, client.clientVideoRTPPort, client.ip, (err, bytes) ->
+              if err
+                console.log "[videoRTPSend] error: #{err.message}"
 
   # last packet
   if ++videoSequenceNumber > 65535
@@ -825,9 +828,10 @@ sendVideoPacketWithFragment = (nalUnit, timestamp) ->
         else
           sendDataByTCP client.socket, client.videoTCPDataChannel, rtpBuffer
       else
-        videoRTPSocket.send rtpBuffer, 0, rtpBuffer.length, client.clientVideoRTPPort, client.ip, (err, bytes) ->
-          if err
-            console.log "[videoRTPSend] error: #{err.message}"
+        if client.clientVideoRTPPort?
+          videoRTPSocket.send rtpBuffer, 0, rtpBuffer.length, client.clientVideoRTPPort, client.ip, (err, bytes) ->
+            if err
+              console.log "[videoRTPSend] error: #{err.message}"
   return
 
 sendVideoPacketAsSingleNALUnit = (nalUnit, timestamp) ->
@@ -875,9 +879,10 @@ sendVideoPacketAsSingleNALUnit = (nalUnit, timestamp) ->
         else
           sendDataByTCP client.socket, client.videoTCPDataChannel, rtpBuffer
       else
-        videoRTPSocket.send rtpBuffer, 0, rtpBuffer.length, client.clientVideoRTPPort, client.ip, (err, bytes) ->
-          if err
-            console.error "[videoRTPSend] error: #{err.message}"
+        if client.clientVideoRTPPort?
+          videoRTPSocket.send rtpBuffer, 0, rtpBuffer.length, client.clientVideoRTPPort, client.ip, (err, bytes) ->
+            if err
+              console.error "[videoRTPSend] error: #{err.message}"
   return
 
 # Takes one H.264 NAL unit as argument
@@ -1036,9 +1041,10 @@ onReceiveAudioPacket = (adtsFrameGlob, pts, dts) ->
           else
             sendDataByTCP client.socket, client.audioTCPDataChannel, rtpBuffer
         else
-          audioRTPSocket.send rtpBuffer, 0, rtpBuffer.length, client.clientAudioRTPPort, client.ip, (err, bytes) ->
-            if err
-              console.error "[audioRTPSend] error: #{err.message}"
+          if client.clientAudioRTPPort?
+            audioRTPSocket.send rtpBuffer, 0, rtpBuffer.length, client.clientAudioRTPPort, client.ip, (err, bytes) ->
+              if err
+                console.error "[audioRTPSend] error: #{err.message}"
   return
 
 pad = (digits, n) ->
