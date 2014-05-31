@@ -80,6 +80,7 @@ isAudioStarted = false
 # Create RTMP server
 rtmpServer = new RTMPServer
 rtmpServer.on 'stream_reset', ->
+  console.log 'stream_reset from rtmp source'
   resetStreams()
 rtmpServer.on 'video_start', ->
   onReceiveVideoControlBuffer()
@@ -92,9 +93,9 @@ rtmpServer.on 'audio_data', (pts, dts, adtsFrame) ->
 
 # Reset audio/video streams
 resetStreams = ->
-  console.log "reset streams"
   isVideoStarted = false
   isAudioStarted = false
+  spropParameterSets = ''
   rtmpServer.resetStreams()
 
 rtmpServer.start ->
@@ -261,8 +262,10 @@ sendSenderReports = (client) ->
     stopSendingRTCP client
     return
 
-  sendAudioSenderReport client
-  sendVideoSenderReport client
+  if isAudioStarted
+    sendAudioSenderReport client
+  if isVideoStarted
+    sendVideoSenderReport client
 
   client.timeoutID = setTimeout ->
     sendSenderReports client
@@ -1209,26 +1212,34 @@ respond = (socket, req, callback) ->
       socket.isAuthenticated = true
       client.bandwidth = req.headers.bandwidth
 
-      body = sdp.createSDP
-        username: '-'
-        sessionID: client.sessionID
+      sdpData =
+        username      : '-'
+        sessionID     : client.sessionID
         sessionVersion: client.sessionID
-        addressType: 'IP4'
+        addressType   : 'IP4'
         unicastAddress: getMeaningfulIPTo socket
-        audioPayloadType: 96
-        audioEncodingName: 'mpeg4-generic'
-        audioClockRate: audioClockRate
-        audioChannels: config.audioChannels
-        audioSampleRate: config.audioSampleRate
-        audioObjectType: config.audioObjectType
-        videoPayloadType: 97
-        videoEncodingName: 'H264'  # must be H264
-        videoClockRate: 90000  # must be 90000
-        videoProfileLevelId: PROFILE_LEVEL_ID
-        videoSpropParameterSets: spropParameterSets
-        videoHeight: config.videoHeight
-        videoWidth: config.videoWidth
-        videoFrameRate: config.videoFrameRate.toFixed 1
+
+      if isAudioStarted
+        sdpData.hasAudio          = true
+        sdpData.audioPayloadType  = 96
+        sdpData.audioEncodingName = 'mpeg4-generic'
+        sdpData.audioClockRate    = audioClockRate
+        sdpData.audioChannels     = config.audioChannels
+        sdpData.audioSampleRate   = config.audioSampleRate
+        sdpData.audioObjectType   = config.audioObjectType
+
+      if isVideoStarted
+        sdpData.hasVideo                = true
+        sdpData.videoPayloadType        = 97
+        sdpData.videoEncodingName       = 'H264'  # must be H264
+        sdpData.videoClockRate          = 90000  # must be 90000
+        sdpData.videoProfileLevelId     = PROFILE_LEVEL_ID
+        sdpData.videoSpropParameterSets = spropParameterSets
+        sdpData.videoHeight             = config.videoHeight
+        sdpData.videoWidth              = config.videoWidth
+        sdpData.videoFrameRate          = config.videoFrameRate.toFixed 1
+
+      body = sdp.createSDP sdpData
 
       if /^HTTP\//.test req.protocol
         res = 'HTTP/1.0 200 OK\n'
@@ -1381,12 +1392,17 @@ respond = (socket, req, callback) ->
     #          the Range response header.
     # TODO: Send this response after the first packet for this stream arrives
     baseUrl = req.uri.replace /\/$/, ''
+    rtpInfos = []
+    if isAudioStarted
+      rtpInfos.push "url=#{baseUrl}/trackID=1;seq=#{getNextAudioSequenceNumber()};rtptime=#{getNextAudioRTPTimestamp()}"
+    if isVideoStarted
+      rtpInfos.push "url=#{baseUrl}/trackID=2;seq=#{getNextVideoSequenceNumber()};rtptime=#{getNextVideoRTPTimestamp()}"
     res = """
     RTSP/1.0 200 OK
     Range: npt=0.0-
     Session: #{client.sessionID};timeout=60
     CSeq: #{req.headers.cseq}
-    RTP-Info: url=#{baseUrl}/trackID=1;seq=#{getNextAudioSequenceNumber()};rtptime=#{getNextAudioRTPTimestamp()},url=#{baseUrl}/trackID=2;seq=#{getNextVideoSequenceNumber()};rtptime=#{getNextVideoRTPTimestamp()}
+    RTP-Info: #{rtpInfos.join ','}
     Server: #{config.serverName}
     Cache-Control: no-cache
 
@@ -1395,19 +1411,19 @@ respond = (socket, req, callback) ->
     if not preventFromPlaying
       if client.useHTTP
         console.log "[[[ start sending to #{client.getClient.id} through GET ]]]"
-        if ENABLE_START_PLAYING_FROM_KEYFRAME
+        if ENABLE_START_PLAYING_FROM_KEYFRAME and isVideoStarted
           client.getClient.isWaitingForKeyFrame = true
         else
           client.getClient.isPlaying = true
       else if client.useTCPForVideo  # or client.useTCPForAudio?
         console.log "[[[ start sending to #{client.id} by TCP ]]]"
-        if ENABLE_START_PLAYING_FROM_KEYFRAME
+        if ENABLE_START_PLAYING_FROM_KEYFRAME and isVideoStarted
           client.isWaitingForKeyFrame = true
         else
           client.isPlaying = true
       else
         console.log "[[[ start sending to #{client.id} by UDP ]]]"
-        if ENABLE_START_PLAYING_FROM_KEYFRAME
+        if ENABLE_START_PLAYING_FROM_KEYFRAME and isVideoStarted
           client.isWaitingForKeyFrame = true
         else
           client.isPlaying = true
