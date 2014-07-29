@@ -530,6 +530,9 @@ handlePOSTData = (client, data) ->
     console.log()
     return
   req = parseRequest decodedRequest
+  if not req?
+    console.warn "error: request can't be parsed: #{decodedRequest}"
+    return
   console.log "===request (decoded)==="
   process.stdout.write decodedRequest
   console.log "============="
@@ -594,6 +597,10 @@ handleOnData = (c, data) ->
     if bufString.indexOf('\r\n\r\n') is -1
       return
     req = parseRequest bufString
+    if not req?
+      console.warn "error: request can't be parsed: #{bufString}"
+      c.buf = null
+      return
     req.rawbody = c.buf[req.headerBytes+4..]
     req.socket = c
     if req.headers['content-length']?
@@ -1504,9 +1511,18 @@ parseRequest = (data) ->
     continue if /^\s*$/.test line
     params = line.split ": "
     headers[params[0].toLowerCase()] = params[1]
-  method: method
-  uri: decodeURIComponent uri
-  protocol: protocol
-  headers: headers
-  body: body
-  headerBytes: headerPart.length  # TODO
+
+  try
+    decodedURI = decodeURIComponent uri
+  catch e
+    console.log "error: failed to decode URI: #{uri}"
+    return null
+
+  return {
+    method: method
+    uri: decodedURI
+    protocol: protocol
+    headers: headers
+    body: body
+    headerBytes: headerPart.length  # TODO
+  }
