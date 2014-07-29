@@ -573,12 +573,22 @@ handleOnData = (c, data) ->
     c.buf = Buffer.concat [c.buf, data], c.buf.length + data.length
   else
     c.buf = data
-  if c.buf[0] is 0x24  # dollar sign '$'
-    console.log "Received an RTP packet (#{c.buf.length} bytes), ignored."
-    for b in c.buf
-      process.stdout.write b.toString(16) + ' '
+  if c.buf[0] is 0x24  # dollar sign '$' (RFC 2326 - 10.12)
+    rtpHeaderLen = 4
+    channelIdentifier = c.buf[1]
+    if c.buf.length < rtpHeaderLen  # not enough header received
+      return
+    rtpDataLength = (c.buf[2] << 8) | c.buf[3]
+    if c.buf.length < rtpHeaderLen + rtpDataLength  # not enough payload received
+      return
+    console.log "Received an RTP packet (#{rtpHeaderLen} bytes header, #{rtpDataLength} bytes payload), ignored."
+    for i in [0...rtpHeaderLen+rtpDataLength]
+      process.stdout.write c.buf[i].toString(16) + ' '
     console.log()
-    c.buf = null
+    if c.buf.length > rtpHeaderLen + rtpDataLength
+      c.buf = c.buf[rtpHeaderLen+rtpDataLength..]
+    else
+      c.buf = null
     return
   if c.ongoingRequest?
     req = c.ongoingRequest
