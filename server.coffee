@@ -530,6 +530,9 @@ handlePOSTData = (client, data) ->
     console.log()
     return
   req = parseRequest decodedRequest
+  if not req?
+    console.warn "error: request can't be parsed: #{decodedRequest}"
+    return
   console.log "===request (decoded)==="
   process.stdout.write decodedRequest
   console.log "============="
@@ -570,12 +573,22 @@ handleOnData = (c, data) ->
     c.buf = Buffer.concat [c.buf, data], c.buf.length + data.length
   else
     c.buf = data
-  if c.buf[0] is 0x24  # dollar sign '$'
-    console.log "Received an RTP packet (#{c.buf.length} bytes), ignored."
-    for b in c.buf
-      process.stdout.write b.toString(16) + ' '
+  if c.buf[0] is 0x24  # dollar sign '$' (RFC 2326 - 10.12)
+    rtpHeaderLen = 4
+    channelIdentifier = c.buf[1]
+    if c.buf.length < rtpHeaderLen  # not enough header received
+      return
+    rtpDataLength = (c.buf[2] << 8) | c.buf[3]
+    if c.buf.length < rtpHeaderLen + rtpDataLength  # not enough payload received
+      return
+    console.log "Received an RTP packet (#{rtpHeaderLen} bytes header, #{rtpDataLength} bytes payload), ignored."
+    for i in [0...rtpHeaderLen+rtpDataLength]
+      process.stdout.write c.buf[i].toString(16) + ' '
     console.log()
-    c.buf = null
+    if c.buf.length > rtpHeaderLen + rtpDataLength
+      c.buf = c.buf[rtpHeaderLen+rtpDataLength..]
+    else
+      c.buf = null
     return
   if c.ongoingRequest?
     req = c.ongoingRequest
@@ -594,6 +607,10 @@ handleOnData = (c, data) ->
     if bufString.indexOf('\r\n\r\n') is -1
       return
     req = parseRequest bufString
+    if not req?
+      console.warn "error: request can't be parsed: #{bufString}"
+      c.buf = null
+      return
     req.rawbody = c.buf[req.headerBytes+4..]
     req.socket = c
     if req.headers['content-length']?
@@ -1298,8 +1315,6 @@ respond = (socket, req, callback) ->
       if (match = /client_port=(\d+)-(\d+)/.exec req.headers.transport)?
         client.clientAudioRTPPort = parseInt match[1]
         client.clientAudioRTCPPort = parseInt match[2]
-      else
-        console.log "error: malformed transport header for audio: #{req.headers.transport}"
     else  # video
       track = 'video'
       if client.useHTTP
@@ -1310,8 +1325,6 @@ respond = (socket, req, callback) ->
       if (match = /client_port=(\d+)-(\d+)/.exec req.headers.transport)?
         client.clientVideoRTPPort = parseInt match[1]
         client.clientVideoRTCPPort = parseInt match[2]
-      else
-        console.log "error: malformed transport header for video: #{req.headers.transport}"
 
     if /\bTCP\b/.test req.headers.transport
       useTCPTransport = true
@@ -1504,9 +1517,18 @@ parseRequest = (data) ->
     continue if /^\s*$/.test line
     params = line.split ": "
     headers[params[0].toLowerCase()] = params[1]
-  method: method
-  uri: decodeURIComponent uri
-  protocol: protocol
-  headers: headers
-  body: body
-  headerBytes: headerPart.length  # TODO
+
+  try
+    decodedURI = decodeURIComponent uri
+  catch e
+    console.log "error: failed to decode URI: #{uri}"
+    return null
+
+  return {
+    method: method
+    uri: decodedURI
+    protocol: protocol
+    headers: headers
+    body: body
+    headerBytes: headerPart.length  # TODO
+  }
