@@ -53,6 +53,10 @@ DEBUG_RTSP = false
 # printed to the console
 DEBUG_HTTP_TUNNEL = false
 
+# If true, UDP transport will always be disabled and
+# clients will be forced to use TCP transport.
+DEBUG_DISABLE_UDP_TRANSPORT = false
+
 detectedVideoWidth = null
 detectedVideoHeight = null
 detectedAudioSampleRate = null
@@ -1356,12 +1360,12 @@ respond = (socket, req, callback) ->
     serverPort = null
     track = null
 
-    # Check tranpsort
-    # Disable UDP transport over the internet
-#    if client.isGlobal and not /\bTCP\b/.test req.headers.transport
-#      console.log "Unsupported transport: UDP is temporarily disabled"
-#      respondWithUnsupportedTransport callback, {CSeq: req.headers.cseq}
-#      return
+    if DEBUG_DISABLE_UDP_TRANSPORT and
+    (not /\bTCP\b/.test req.headers.transport)
+      # Disable UDP transport and force the client to switch to TCP transport
+      console.log "Unsupported transport: UDP is disabled"
+      respondWithUnsupportedTransport callback, {CSeq: req.headers.cseq}
+      return
 
     if /trackID=1/.test req.uri  # audio
       track = 'audio'
@@ -1465,6 +1469,7 @@ respond = (socket, req, callback) ->
       return
 
     preventFromPlaying = false
+
 #    if (req.headers['user-agent']?.indexOf('QuickTime') > -1) and
 #    not client.getClient?.useTCPForVideo
 #      # QuickTime produces poor quality image over UDP.
