@@ -46,6 +46,9 @@ MONTH_NAMES = [
   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
 ]
 
+# If true, RTSP requests/response will be printed to the console
+DEBUG_RTSP = false
+
 # If true, RTSP requests/responses tunneled in HTTP will be
 # printed to the console
 DEBUG_HTTP_TUNNEL = false
@@ -561,7 +564,7 @@ handlePOSTData = (client, data='', callback) ->
     callback? new Error "malformed request"
     return
   if DEBUG_HTTP_TUNNEL
-    console.log "===request (decoded)==="
+    console.log "===request (HTTP tunneled/decoded)==="
     process.stdout.write decodedRequest
     console.log "============="
   respond client.socket, req, (err, output) ->
@@ -570,7 +573,7 @@ handlePOSTData = (client, data='', callback) ->
       callback? err
       return
     if DEBUG_HTTP_TUNNEL
-      console.log "===response==="
+      console.log "===response (HTTP tunneled)==="
       process.stdout.write output
       console.log "============="
     client.getClient.socket.write output
@@ -639,6 +642,10 @@ handleOnData = (c, data) ->
     bufString = c.buf.toString 'utf8'
     if bufString.indexOf('\r\n\r\n') is -1
       return
+    if DEBUG_RTSP
+      console.log "===RTSP request==="
+      process.stdout.write bufString
+      console.log "=================="
     req = parseRequest bufString
     if not req?
       console.warn "error: request can't be parsed: #{bufString}"
@@ -671,11 +678,19 @@ handleOnData = (c, data) ->
       console.error "[respond] Error: #{err}"
       return
     # Write the response
+    if DEBUG_RTSP
+      console.log "===RTSP response==="
     if output instanceof Array
       for out, i in output
+        if DEBUG_RTSP
+          console.log out
         c.write out
     else
+      if DEBUG_RTSP
+        process.stdout.write output
       c.write output
+    if DEBUG_RTSP
+      console.log "==================="
     if resultOpts?.close
       console.log "[#{c.clientID}] end"
       c.end()
