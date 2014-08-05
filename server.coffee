@@ -17,11 +17,13 @@ codec_utils = require './codec_utils'
 config      = require './config'
 RTMPServer  = require './rtmp'
 HTTPHandler = require './http'
+rtsp        = require './rtsp'
 rtp         = require './rtp'
 sdp         = require './sdp'
 h264        = require './h264'
 aac         = require './aac'
 hybrid_udp  = require './hybrid_udp'
+bits        = require './bits'
 
 # Clock rate for audio stream
 audioClockRate = null
@@ -56,6 +58,9 @@ DEBUG_HTTP_TUNNEL = false
 # If true, UDP transport will always be disabled and
 # clients will be forced to use TCP transport.
 DEBUG_DISABLE_UDP_TRANSPORT = false
+
+# Two CRLFs
+CRLF_CRLF = [ 0x0d, 0x0a, 0x0d, 0x0a ]
 
 detectedVideoWidth = null
 detectedVideoHeight = null
@@ -526,62 +531,114 @@ listClients = ->
 
 sendDataByTCP = (socket, channel, rtpBuffer) ->
   rtpLen = rtpBuffer.length
-  tcpHeader = new Buffer [
-    0x24, channel, rtpLen >> 8, rtpLen & 0xff,
-  ]
-  socket.write Buffer.concat [tcpHeader, rtpBuffer], 4 + rtpBuffer.length
+  tcpHeader = rtsp.createInterleavedHeader
+    channel: channel
+    payloadLength: rtpLen
+  socket.write Buffer.concat [tcpHeader, rtpBuffer],
+    rtsp.INTERLEAVED_HEADER_LEN + rtpBuffer.length
 
 # Process incoming RTSP data that is tunneled in HTTP POST
 handlePOSTData = (client, data='', callback) ->
-  if client.postBuf?
-    postData = client.postBuf + data
-    client.postBuf = null
+  # Concatenate outstanding base64 string
+  if client.postBase64Buf?
+    base64Buf = client.postBase64Buf + data
   else
-    postData = data
-  # Decode Base64-encoded data
-  decodedRequest = new Buffer(data[0...delimiterPos], 'base64').toString 'utf8'
-  delimiterPos = data.indexOf "\r\n"
-  if (delimiterPos isnt -1) and (data.length > delimiterPos + 2)
-    # data contains two or more commands
-    # and we process them one by one.
-    client.postBuf = data[delimiterPos+2..]
-  else
-    client.postBuf = null
+    base64Buf = data
 
+  if base64Buf.length > 0
+    # Length of base64-encoded string is always divisible by 4
+    div = base64Buf.length % 4
+    if div isnt 0
+      # extract last div characters
+      client.postBase64Buf = base64Buf[-div..]
+      base64Buf = base64Buf[0...-div]
+    else
+      client.postBase64Buf = null
+
+    # Decode base64-encoded data
+    decodedBuf = new Buffer(base64Buf, 'base64')
+  else  # no base64 input
+    decodedBuf = new Buffer []
+
+  # Concatenate outstanding buffer
+  if client.postBuf?
+    postData = Buffer.concat [client.postBuf, decodedBuf]
+    client.postBuf = null
+  else
+    postData = decodedBuf
+
+  if postData.length is 0  # no data to process
+    callback? null
+    return
+
+  # Will be called before return
   processRemainingBuffer = ->
-    if client.postBuf?
+    if client.postBase64Buf? or client.postBuf?
       handlePOSTData client, '', callback
     else
       callback? null
     return
 
-  if decodedRequest[0] is 0x24  # dollar sign '$'
-    console.log "[POST] Received an RTP packet (#{decodedRequest.length} bytes), ignored."
-    for c in decodedRequest
-      process.stdout.write c.toString(16) + ' '
-    console.log()
-    processRemainingBuffer()
-    return
-  req = parseRequest decodedRequest
-  if not req?
-    console.warn "error: request can't be parsed: #{decodedRequest}"
-    callback? new Error "malformed request"
-    return
-  if DEBUG_HTTP_TUNNEL
-    console.log "===request (HTTP tunneled/decoded)==="
-    process.stdout.write decodedRequest
-    console.log "============="
-  respond client.socket, req, (err, output) ->
-    if err
-      console.log "[respond] Error: #{err}"
-      callback? err
+  if postData[0] is rtsp.INTERLEAVED_SIGN  # interleaved data
+    interleavedData = rtsp.getInterleavedData postData
+    if not interleavedData?
+      # not enough buffer for an interleaved data
+      client.postBuf = postData
+      callback? null
       return
-    if DEBUG_HTTP_TUNNEL
-      console.log "===response (HTTP tunneled)==="
-      process.stdout.write output
-      console.log "============="
-    client.getClient.socket.write output
+    # At this point, postData has enough buffer for this interleaved data.
+
+    # We don't have to process the RTP packets
+
+    if postData.length > interleavedData.totalLength
+      client.postBuf = client.buf[interleavedData.totalLength..]
+
     processRemainingBuffer()
+  else
+    delimiterPos = bits.searchBytesInArray postData, CRLF_CRLF
+    if delimiterPos is -1  # not found (not enough buffer)
+      client.postBuf = postData
+      callback? null
+      return
+
+    decodedRequest = postData[0...delimiterPos].toString 'utf8'
+    remainingPostData = postData[delimiterPos+CRLF_CRLF.length..]
+    req = parseRequest decodedRequest
+    if not req?  # parse error
+      console.error "Error: request can't be parsed: #{decodedRequest}"
+      callback? new Error "malformed request"
+      return
+
+    if req.headers['content-length']?
+      req.contentLength = parseInt req.headers['content-length']
+      if remainingPostData.length < req.contentLength
+        # not enough buffer for the body
+        client.postBuf = postData
+        callback? null
+        return
+      if remainingPostData.length > req.contentLength
+        req.rawbody = remainingPostData[0...req.contentLength]
+        client.postBuf = remainingPostData[req.contentLength..]
+      else # remainingPostData.length == req.contentLength
+        req.rawbody = remainingPostData
+    else if remainingPostData.length > 0
+      client.postBuf = remainingPostData
+
+    if DEBUG_HTTP_TUNNEL
+      console.log "===request (HTTP tunneled/decoded)==="
+      process.stdout.write decodedRequest
+      console.log "============="
+    respond client.socket, req, (err, output) ->
+      if err
+        console.error "[respond] Error: #{err}"
+        callback? err
+        return
+      if DEBUG_HTTP_TUNNEL
+        console.log "===response (HTTP tunneled)==="
+        process.stdout.write output
+        console.log "============="
+      client.getClient.socket.write output
+      processRemainingBuffer()
 
 clearTimeout = (socket) ->
   if socket.timeoutTimer?
@@ -613,22 +670,20 @@ handleOnData = (c, data) ->
     c.buf = Buffer.concat [c.buf, data], c.buf.length + data.length
   else
     c.buf = data
-  if c.buf[0] is 0x24  # dollar sign '$' (RFC 2326 - 10.12)
-    rtpHeaderLen = 4
-    channelIdentifier = c.buf[1]
-    if c.buf.length < rtpHeaderLen  # not enough header received
+  if c.buf[0] is rtsp.INTERLEAVED_SIGN # dollar sign '$' (RFC 2326 - 10.12)
+    interleavedData = rtsp.getInterleavedData c.buf
+    if not interleavedData?
+      # not enough buffer for an interleaved data
       return
-    rtpDataLength = (c.buf[2] << 8) | c.buf[3]
-    if c.buf.length < rtpHeaderLen + rtpDataLength  # not enough payload received
-      return
-    console.log "Received an RTP packet (#{rtpHeaderLen} bytes header, #{rtpDataLength} bytes payload), ignored."
-    for i in [0...rtpHeaderLen+rtpDataLength]
-      process.stdout.write c.buf[i].toString(16) + ' '
-    console.log()
-    if c.buf.length > rtpHeaderLen + rtpDataLength
-      c.buf = c.buf[rtpHeaderLen+rtpDataLength..]
+    # At this point, c.buf has enough buffer for this interleaved data.
+
+    # We don't have to process RTP packets
+
+    if c.buf.length > interleavedData.totalLength
+      c.buf = c.buf[interleavedData.totalLength..]
     else
       c.buf = null
+
     return
   if c.ongoingRequest?
     req = c.ongoingRequest
