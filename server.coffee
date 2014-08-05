@@ -707,7 +707,7 @@ handleOnData = (c, data) ->
       console.log "=================="
     req = parseRequest bufString
     if not req?
-      console.warn "error: request can't be parsed: #{bufString}"
+      console.error "Error: request can't be parsed: #{bufString}"
       c.buf = null
       return
     req.rawbody = c.buf[req.headerBytes+4..]
