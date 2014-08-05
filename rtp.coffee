@@ -9,6 +9,8 @@
 # TODO: Use DON (decoding order number) to carry B-frames.
 #       DON is to RTP what DTS is to MPEG-TS.
 
+bits = require './bits'
+
 # Number of seconds from 1900-01-01 to 1970-01-01
 EPOCH = 2208988800
 
@@ -16,6 +18,7 @@ EPOCH = 2208988800
 NTP_SCALE_FRAC = 4294.967295
 TIMESTAMP_ROUNDOFF = 4294967296  # 32 bits
 
+# Minimum length of an RTP header
 RTP_HEADER_LEN = 12
 
 MAX_PAYLOAD_SIZE = 1360
@@ -23,6 +26,241 @@ MAX_PAYLOAD_SIZE = 1360
 api =
   # Number of bytes in RTP header
   RTP_HEADER_LEN: RTP_HEADER_LEN
+
+  RTCP_PACKET_TYPE_SENDER_REPORT      : 200  # SR
+  RTCP_PACKET_TYPE_RECEIVER_REPORT    : 201  # RR
+  RTCP_PACKET_TYPE_SOURCE_DESCRIPTION : 202  # SDES
+  RTCP_PACKET_TYPE_GOODBYE            : 203  # BYE
+  RTCP_PACKET_TYPE_APPLICATION_DEFINED: 204  # APP
+
+  readRTCPSenderReport: ->
+    # RFC 3550 - 6.4.1 SR: Sender Report RTCP Packet
+    startBytePos = bits.current_position().byte
+    info = {}
+    info.version = bits.read_bits 2
+    info.padding = bits.read_bit()
+    info.reportCount = bits.read_bits 5
+    info.payloadType = bits.read_byte()  # == 200
+    if info.payloadType isnt api.RTCP_PACKET_TYPE_SENDER_REPORT
+      throw new Error "payload type must be #{api.RTCP_PACKET_TYPE_SENDER_REPORT}"
+    info.wordsMinusOne = bits.read_bits 16
+    info.totalBytes = (info.wordsMinusOne + 1) * 4
+    info.ssrc = bits.read_bits 32
+    info.ntpTimestamp = bits.read_bits 64  # loses some precision
+    info.rtpTimestamp = bits.read_bits 32
+    info.senderPacketCount = bits.read_bits 32
+    info.senderOctetCount = bits.read_bits 32
+
+    info.reportBlocks = []
+    for i in [0...info.reportCount]
+      reportBlock = {}
+      reportBlock.ssrc = bits.read_bits 32
+      reportBlock.fractionLost = bits.read_byte()
+      reportBlock.packetsLost = bits.read_int 24
+      reportBlock.highestSequenceNumber = bits.read_bits 32
+      reportBlock.jitter = bits.read_bits 32
+      reportBlock.lastSR = bits.read_bits 32
+      reportBlock.delaySinceLastSR = bits.read_bits 32
+      info.reportBlocks.push reportBlock
+
+    # skip padding bytes
+    readBytes = bits.current_position().byte - startBytePos
+    if readBytes < info.totalBytes
+      bits.skip_bytes info.totalBytes - readBytes
+
+    return info
+
+  readRTCPReceiverReport: ->
+    # RFC 3550 - 6.4.2 RR: Receiver Report RTCP Packet
+    startBytePos = bits.current_position().byte
+    info = {}
+    info.version = bits.read_bits 2
+    info.padding = bits.read_bit()
+    info.reportCount = bits.read_bits 5
+    info.payloadType = bits.read_byte()  # == 201
+    if info.payloadType isnt api.RTCP_PACKET_TYPE_RECEIVER_REPORT
+      throw new Error "payload type must be #{api.RTCP_PACKET_TYPE_RECEIVER_REPORT}"
+    info.wordsMinusOne = bits.read_bits 16
+    info.totalBytes = (info.wordsMinusOne + 1) * 4
+    info.ssrc = bits.read_bits 32
+    info.reportBlocks = []
+    for i in [0...info.reportCount]
+      reportBlock = {}
+      reportBlock.ssrc = bits.read_bits 32
+      reportBlock.fractionLost = bits.read_byte()
+      reportBlock.packetsLost = bits.read_int 24
+      reportBlock.highestSequenceNumber = bits.read_bits 32
+      reportBlock.jitter = bits.read_bits 32
+      reportBlock.lastSR = bits.read_bits 32
+      reportBlock.delaySinceLastSR = bits.read_bits 32
+      info.reportBlocks.push reportBlock
+
+    # skip padding bytes
+    readBytes = bits.current_position().byte - startBytePos
+    if readBytes < info.totalBytes
+      bits.skip_bytes info.totalBytes - readBytes
+
+    return info
+
+  readRTCPSourceDescription: ->
+    # RFC 3550 - 6.5 SDES: Source Description RTCP Packet
+    startBytePos = bits.current_position().byte
+    info = {}
+    info.version = bits.read_bits 2
+    info.padding = bits.read_bit()
+    info.sourceCount = bits.read_bits 5
+    info.payloadType = bits.read_byte()  # == 202
+    if info.payloadType isnt api.RTCP_PACKET_TYPE_SOURCE_DESCRIPTION
+      throw new Error "payload type must be #{api.RTCP_PACKET_TYPE_SOURCE_DESCRIPTION}"
+    info.wordsMinusOne = bits.read_bits 16
+    info.totalBytes = (info.wordsMinusOne + 1) * 4
+    info.chunks = []
+    for i in [0...info.sourceCount]
+      chunk = {}
+      chunk.ssrc_csrc = bits.read_bits 32
+      chunk.sdesItems = []
+      chunk.sdes = {}
+      moreSDESItems = true
+      while moreSDESItems
+        sdesItem = {}
+        sdesItem.type = bits.read_byte()
+        sdesItem.octetCount = bits.read_byte()
+        if sdesItem.octetCount > 255
+          throw new Error "octet count too large: #{sdesItem.octetCount} <= 255"
+        sdesItem.text = bits.read_bytes(sdesItem.octetCount).toString 'utf8'
+        switch sdesItem.type
+          when 0  # terminate the list
+            # skip until the next 32-bit boundary
+            bytesPastBoundary = (bits.current_position().byte - startBytePos) % 4
+            if bytesPastBoundary > 0
+              while bytesPastBoundary < 4
+                nullOctet = bits.read_byte()
+                if nullOctet isnt 0x00
+                  throw new Error "padding octet must be 0x00: #{nullOctet}"
+                bytesPastBoundary++
+
+            moreSDESItems = false  # end the loop
+          when 1  # Canonical End-Point Identifier
+            chunk.sdes.cname = sdesItem.text
+          when 2  # User Name
+            chunk.sdes.name = sdesItem.text
+          when 3  # Electronic Mail Address
+            chunk.sdes.email = sdesItem.text
+          when 4  # Phone Number
+            chunk.sdes.phone = sdesItem.text
+          when 5  # Geographic User Location
+            chunk.sdes.loc = sdesItem.text
+          when 6  # Application or Tool Name
+            chunk.sdes.tool = sdesItem.text
+          when 7  # Notice/Status
+            chunk.sdes.note = sdesItem.text
+          when 8  # Private Extensions
+            chunk.sdes.priv = sdesItem.text
+          else
+            throw new Error "unknown SDES item type in source description " +
+              "RTCP packet: #{chunk.type} (maybe not implemented yet)"
+        chunk.sdesItems.push sdesItem
+      info.chunks.push chunk
+
+    # skip padding bytes
+    readBytes = bits.current_position().byte - startBytePos
+    if readBytes < info.totalBytes
+      bits.skip_bytes info.totalBytes - readBytes
+
+    return info
+
+  readRTCPGoodbye: ->
+    # RFC 3550 - 6.6 BYE: Goodbye RTCP Packet
+    startBytePos = bits.current_position().byte
+    info = {}
+    info.version = bits.read_bits 2
+    info.padding = bits.read_bit()
+    info.sourceCount = bits.read_bits 5
+    info.payloadType = bits.read_byte()  # == 203
+    if info.payloadType isnt api.RTCP_PACKET_TYPE_GOODBYE
+      throw new Error "payload type must be #{api.RTCP_PACKET_TYPE_GOODBYE}"
+    info.wordsMinusOne = bits.read_bits 16
+    info.totalBytes = (info.wordsMinusOne + 1) * 4
+    info.ssrc = bits.read_bits 32
+
+    if bits.has_more_data()
+      info.reasonOctetCount = bits.read_byte()
+      reason = bits.read_bytes info.reasonOctetCount
+
+    # skip padding bytes
+    readBytes = bits.current_position().byte - startBytePos
+    if readBytes < info.totalBytes
+      bits.skip_bytes info.totalBytes - readBytes
+
+    return info
+
+  readRTCPApplicationDefined: ->
+    # RFC 3550 - 6.7 APP: Application-Defined RTCP Packet
+    startBytePos = bits.current_position().byte
+    info = {}
+    info.version = bits.read_bits 2
+    info.padding = bits.read_bit()
+    info.subtype = bits.read_bits 5
+    info.payloadType = bits.read_byte()  # == 204
+    if info.payloadType isnt api.RTCP_PACKET_TYPE_APPLICATION_DEFINED
+      throw new Error "payload type must be #{api.RTCP_PACKET_TYPE_APPLICATION_DEFINED}"
+    info.wordsMinusOne = bits.read_bits 16
+    info.totalBytes = (info.wordsMinusOne + 1) * 4
+    info.ssrc_csrc = bits.read_bits 32
+    info.name = bits.read_bytes(4).toString 'ascii'
+
+    # read the application-dependent data (remaining bytes)
+    readBytes = bits.current_position().byte - startBytePos
+    if readBytes < info.totalBytes
+      info.applicationData = bits.read_bytes info.totalBytes - readBytes
+    else
+      info.applicationData = null
+
+    return info
+
+  readRTPFixedHeader: ->
+    # RFC 3550 - 5.1 RTP Fixed Header Fields
+    info = {}
+    info.version = bits.read_bits 2
+    info.padding = bits.read_bit()
+    info.extension = bits.read_bit()
+    info.csrcCount = bits.read_bits 4
+    info.marker = bits.read_bit()
+    info.payloadType = bits.read_bits 7
+    info.sequenceNumber = bits.read_bits 16
+    info.timestamp = bits.read_bits 32
+    info.ssrc = bits.read_bits 32
+    info.csrc = []
+    for i in [0...info.csrcCount]
+      info.csrc.push bits.read_bits 32
+    return info
+
+  parsePackets: (buf) ->
+    bits.push_stash()
+    bits.set_data buf
+
+    packets = []
+    while bits.has_more_data()
+      packet = {}
+      packet.payloadValue = bits.get_byte_at 1
+      switch packet.payloadValue
+        when api.RTCP_PACKET_TYPE_SENDER_REPORT
+          packet.rtcpSenderReport = api.readRTCPSenderReport()
+        when api.RTCP_PACKET_TYPE_RECEIVER_REPORT
+          packet.rtcpReceiverReport = api.readRTCPReceiverReport()
+        when api.RTCP_PACKET_TYPE_SOURCE_DESCRIPTION
+          packet.rtcpSourceDescription = api.readRTCPSourceDescription()
+        when api.RTCP_PACKET_TYPE_GOODBYE
+          packet.rtcpGoodbye = api.readRTCPGoodbye()
+        when api.RTCP_PACKET_TYPE_APPLICATION_DEFINED
+          packet.rtcpApplicationDefined = api.readRTCPApplicationDefined()
+        else  # RTP data transfer protocol - fixed header
+          packet.rtpHeader = api.readRTPFixedHeader()
+      packets.push packet
+
+    bits.pop_stash()
+
+    return packets
 
   # Replace SSRC in-place in the given RTP header
   replaceSSRCInRTP: (buf, ssrc) ->
