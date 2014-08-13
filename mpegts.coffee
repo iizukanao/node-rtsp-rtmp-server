@@ -167,9 +167,11 @@ api =
     if not pesPacket?  # maybe reached EOF
       return
     pesInfo = @parsePESPacket pesPacket.pid, pesPacket.packet, pesPacket.opts
-    if pesInfo.program_map?
+    if pesInfo.program_map?  # received a program map
+      # parse and consume unparsedPESPackets
       @consumeUnparsedPESPackets()
     if pesInfo.not_parsed
+      # postpone the parsing process after received a program map
       unparsedPESPackets.push pesPacket
     if not pesInfo.pes?  # not an video/audio packet
       # such as program association section or program map section
