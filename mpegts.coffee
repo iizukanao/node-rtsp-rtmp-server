@@ -162,7 +162,7 @@ api =
           @consumeAudio doNotReadNext
         , timeDiff
 
-  readNext: (nocache=false) ->
+  readNext: ->
     pesPacket = @getNextPESPacket()
     if not pesPacket?  # maybe reached EOF
       return
@@ -172,7 +172,8 @@ api =
     if pesInfo.not_parsed
       unparsedPESPackets.push pesPacket
     if not pesInfo.pes?  # not an video/audio packet
-      return @readNext true
+      # such as program association section or program map section
+      return @readNext()
     if not pesInfo.pes.PTS?
       throw new Error "PES packet doesn't have PTS"
     if not pesInfo.pes.DTS?
