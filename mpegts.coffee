@@ -117,10 +117,10 @@ api =
       else
         timeDiff = Math.round @getTimeUntilDTS(pendingVideoPesPackets[0].pes.DTS) - SETTIMEOUT_ADVANCE_TIME
         if timeDiff <= 0
-          @consumeVideo()
+          @consumeVideo doNotReadNext
         else
           setTimeout =>
-            @consumeVideo()
+            @consumeVideo doNotReadNext
           , timeDiff
 
   consumeAudio: (doNotReadNext=false) ->
