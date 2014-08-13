@@ -115,7 +115,7 @@ api =
         if (not doNotReadNext) and (not @checkEnd())
           @readNext()
       else
-        timeDiff = @getTimeUntilDTS(pendingVideoPesPackets[0].pes.DTS) - SETTIMEOUT_ADVANCE_TIME
+        timeDiff = Math.round @getTimeUntilDTS(pendingVideoPesPackets[0].pes.DTS) - SETTIMEOUT_ADVANCE_TIME
         if timeDiff <= 0
           @consumeVideo()
         else
@@ -132,7 +132,7 @@ api =
         if (not doNotReadNext) and (not @checkEnd())
           @readNext()
       else
-        timeDiff = @getTimeUntilDTS(pendingAudioPesPackets[0].pes.DTS) - SETTIMEOUT_ADVANCE_TIME
+        timeDiff = Math.round @getTimeUntilDTS(pendingAudioPesPackets[0].pes.DTS) - SETTIMEOUT_ADVANCE_TIME
         if timeDiff <= 0
           @consumeAudio doNotReadNext
         else
@@ -143,7 +143,7 @@ api =
   queueVideo: (pesInfo, doNotReadNext=false) ->
     pendingVideoPesPackets.push pesInfo
     if pendingVideoPesPackets.length is 1
-      timeDiff = @getTimeUntilDTS(pesInfo.pes.DTS) - SETTIMEOUT_ADVANCE_TIME
+      timeDiff = Math.round @getTimeUntilDTS(pesInfo.pes.DTS) - SETTIMEOUT_ADVANCE_TIME
       if timeDiff <= 0
         @consumeVideo doNotReadNext
       else
@@ -154,7 +154,7 @@ api =
   queueAudio: (pesInfo, doNotReadNext=false) ->
     pendingAudioPesPackets.push pesInfo
     if pendingAudioPesPackets.length is 1
-      timeDiff = @getTimeUntilDTS(pesInfo.pes.DTS) - SETTIMEOUT_ADVANCE_TIME
+      timeDiff = Math.round @getTimeUntilDTS(pesInfo.pes.DTS) - SETTIMEOUT_ADVANCE_TIME
       if timeDiff <= 0
         @consumeAudio doNotReadNext
       else
