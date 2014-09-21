@@ -97,6 +97,21 @@ api =
            (api.read_byte() << 8) +
            api.read_byte()
 
+  # Read a signed number represented by two's complement.
+  # bits argument is the length of the signed number including
+  # the sign bit.
+  read_int: (bits) ->
+    if bits < 0
+      throw new Error "read_int: bits argument must be positive: #{bits}"
+    if bits is 1
+      return api.read_bit()
+    sign_bit = api.read_bit()
+    value = api.read_bits bits - 1
+    if sign_bit is 1  # negative number
+      return -Math.pow(2, bits - 1) + value
+    else  # positive number
+      return value
+
   # unsigned integer Exp-Golomb-coded syntax element
   # see clause 9.1
   read_ue: ->

@@ -115,12 +115,12 @@ api =
         if (not doNotReadNext) and (not @checkEnd())
           @readNext()
       else
-        timeDiff = @getTimeUntilDTS(pendingVideoPesPackets[0].pes.DTS) - SETTIMEOUT_ADVANCE_TIME
+        timeDiff = Math.round @getTimeUntilDTS(pendingVideoPesPackets[0].pes.DTS) - SETTIMEOUT_ADVANCE_TIME
         if timeDiff <= 0
-          @consumeVideo()
+          @consumeVideo doNotReadNext
         else
           setTimeout =>
-            @consumeVideo()
+            @consumeVideo doNotReadNext
           , timeDiff
 
   consumeAudio: (doNotReadNext=false) ->
@@ -132,7 +132,7 @@ api =
         if (not doNotReadNext) and (not @checkEnd())
           @readNext()
       else
-        timeDiff = @getTimeUntilDTS(pendingAudioPesPackets[0].pes.DTS) - SETTIMEOUT_ADVANCE_TIME
+        timeDiff = Math.round @getTimeUntilDTS(pendingAudioPesPackets[0].pes.DTS) - SETTIMEOUT_ADVANCE_TIME
         if timeDiff <= 0
           @consumeAudio doNotReadNext
         else
@@ -143,7 +143,7 @@ api =
   queueVideo: (pesInfo, doNotReadNext=false) ->
     pendingVideoPesPackets.push pesInfo
     if pendingVideoPesPackets.length is 1
-      timeDiff = @getTimeUntilDTS(pesInfo.pes.DTS) - SETTIMEOUT_ADVANCE_TIME
+      timeDiff = Math.round @getTimeUntilDTS(pesInfo.pes.DTS) - SETTIMEOUT_ADVANCE_TIME
       if timeDiff <= 0
         @consumeVideo doNotReadNext
       else
@@ -154,7 +154,7 @@ api =
   queueAudio: (pesInfo, doNotReadNext=false) ->
     pendingAudioPesPackets.push pesInfo
     if pendingAudioPesPackets.length is 1
-      timeDiff = @getTimeUntilDTS(pesInfo.pes.DTS) - SETTIMEOUT_ADVANCE_TIME
+      timeDiff = Math.round @getTimeUntilDTS(pesInfo.pes.DTS) - SETTIMEOUT_ADVANCE_TIME
       if timeDiff <= 0
         @consumeAudio doNotReadNext
       else
@@ -162,17 +162,20 @@ api =
           @consumeAudio doNotReadNext
         , timeDiff
 
-  readNext: (nocache=false) ->
+  readNext: ->
     pesPacket = @getNextPESPacket()
     if not pesPacket?  # maybe reached EOF
       return
     pesInfo = @parsePESPacket pesPacket.pid, pesPacket.packet, pesPacket.opts
-    if pesInfo.program_map?
+    if pesInfo.program_map?  # received a program map
+      # parse and consume unparsedPESPackets
       @consumeUnparsedPESPackets()
     if pesInfo.not_parsed
+      # postpone the parsing process after received a program map
       unparsedPESPackets.push pesPacket
     if not pesInfo.pes?  # not an video/audio packet
-      return @readNext true
+      # such as program association section or program map section
+      return @readNext()
     if not pesInfo.pes.PTS?
       throw new Error "PES packet doesn't have PTS"
     if not pesInfo.pes.DTS?

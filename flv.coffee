@@ -69,6 +69,16 @@ api =
       soundType: api.SOUND_TYPE_STEREO  # ignored by Flash Player
       aacPacketType: opts.aacPacketType
 
+  videoCodecID2Str: (codecID) ->
+    switch codecID
+      when 2 then "Sorenson H.263"
+      when 3 then "Screen video"
+      when 4 then "On2 VP6"
+      when 5 then "On2 VP6 with alpha channel"
+      when 6 then "Screen video version 2"
+      when 7 then "AVC"
+      else "unknown"
+
   parseVideo: (buf) ->
     info = {}
     bits.push_stash()
@@ -77,7 +87,8 @@ api =
 
     # Reject if the codec is not H.264
     if info.videoDataTag.codecID isnt 7
-      throw new Error "flv: Video codec ID #{info.videoDataTag.codecID} is not supported"
+      throw new Error "flv: Video codec ID #{info.videoDataTag.codecID} " +
+        "(#{api.videoCodecID2Str info.videoDataTag.codecID}) is not supported. Use H.264."
 
     switch info.videoDataTag.avcPacketType
       when api.AVC_PACKET_TYPE_SEQUENCE_HEADER
@@ -100,6 +111,24 @@ api =
     bits.pop_stash()
     return nalUnits
 
+  soundFormat2Str: (soundFormat) ->
+    switch soundFormat
+      when 0 then "Linear PCM, platform endian"
+      when 1 then "ADPCM"
+      when 2 then "MP3"
+      when 3 then "Linear PCM, little endian"
+      when 4 then "Nellymoser 16 kHz mono"
+      when 5 then "Nellymoser 8 kHz mono"
+      when 6 then "Nellymoser"
+      when 7 then "G.711 A-law logarithmic PCM"
+      when 8 then "G.711 mu-law logarithmic PCM"
+      when 9 then "reserved"
+      when 10 then "AAC"
+      when 11 then "Speex"
+      when 14 then "MP3 8 kHz"
+      when 15 then "Device-specific sound"
+      else "unknown"
+
   parseAudio: (buf) ->
     info = {}
     bits.push_stash()
@@ -108,7 +137,8 @@ api =
 
     # Reject if the sound format is not AAC
     if info.audioDataTag.soundFormat isnt api.SOUND_FORMAT_AAC
-      throw new Error "flv: Sound format #{info.audioDataTag.soundFormat} is not supported"
+      throw new Error "flv: Sound format #{info.audioDataTag.soundFormat} " +
+        "(#{api.soundFormat2Str info.audioDataTag.soundFormat}) is not supported. Use AAC."
 
     switch info.audioDataTag.aacPacketType
       when api.AAC_PACKET_TYPE_SEQUENCE_HEADER

@@ -4,7 +4,6 @@
   "author": "Nao Iizuka <iizuka@kyu-mu.net>",
   "dependencies": {
     "ejs"    : "0.8.x",
-    "zlib"   : "1.0.x",
     "sequent": ">= 0.1.2"
   },
   "engine": "node = 0.10.x"
