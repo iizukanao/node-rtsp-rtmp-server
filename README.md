@@ -2,7 +2,7 @@
 
 - Supports RTSP, RTMP/RTMPE/RTMPT/RTMPTE, and HTTP.
 - Supports only H.264 video and AAC audio.
-- Supports only a single pair of audio/video streams.
+- Supports only a single pair of audio/video streams (you can't publish multiple streams simultaneously).
 
 ### Installation
 
