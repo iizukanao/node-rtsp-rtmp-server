@@ -201,9 +201,9 @@ api =
     stash_bit_index.push bit_index
 
   pop_stash: ->
-    buf = stash_buf.shift()
-    byte_index = stash_byte_index.shift()
-    bit_index = stash_bit_index.shift()
+    buf = stash_buf.pop()
+    byte_index = stash_byte_index.pop()
+    bit_index = stash_bit_index.pop()
 
   set_data: (bytes) ->
     buf = bytes
