@@ -186,13 +186,20 @@ api =
   # }
   # @return array
   createAudioDataTag: (opts) ->
+    soundType = opts.soundType
+    soundRate = opts.soundRate
+    # If AAC, SoundType and SoundRate should be 1 (stereo) and 3 (44 kHz),
+    # respectively. Flash Player ignores these values.
+    if opts.soundFormat is api.SOUND_FORMAT_AAC
+      soundType = 1
+      soundRate = api.SOUND_RATE_44KHZ
+
     # AUDIODATA tag: Adobe's Video File Format Spec v10.1 E.4.2.1 AUDIODATA
-    # TODO: If AAC, SoundType and SoundRate should be 1 and 44 kHz, respectively.
     buf = [
       (opts.soundFormat << 4) \ # SoundFormat (4 bits)
-      | (opts.soundRate << 2) \ # SoundRate (2 bits): ignored by Flash Player if AAC
+      | (soundRate << 2) \      # SoundRate (2 bits): ignored by Flash Player if AAC
       | (opts.soundSize << 1) \ # SoundSize (1 bit)
-      | opts.soundType  # SoundType (1 bit): ignored by Flash Player if AAC
+      | soundType               # SoundType (1 bit): ignored by Flash Player if AAC
     ]
     if opts.soundFormat is api.SOUND_FORMAT_AAC
       buf.push opts.aacPacketType  # AACPacketType (1 bit)
