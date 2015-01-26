@@ -348,6 +348,14 @@ api =
     return info
 
   # ISO 14496-3 1.6.2.1 AudioSpecificConfig
+  parseAudioSpecificConfig: (buf) ->
+    bits.push_stash()
+    bits.set_data buf
+    asc = api.readAudioSpecificConfig()
+    bits.pop_stash()
+    return asc
+
+  # ISO 14496-3 1.6.2.1 AudioSpecificConfig
   readAudioSpecificConfig: ->
     info = {}
     info.audioObjectType = api.readGetAudioObjectType()
