@@ -1050,4 +1050,12 @@ api =
       info.pps.push bits.read_bytes ppsLen
     return info
 
+  # Parse sprop-parameter-sets which is
+  # appeared in RTP payload (RFC 6184)
+  parseSpropParameterSets: (str) ->
+    nalUnits = []
+    for base64String in str.split ','
+      nalUnits.push new Buffer base64String, 'base64'
+    return nalUnits
+
 module.exports = api
