@@ -73,8 +73,7 @@ api =
     #
     # rtpmap:96 mpeg4-generic/<audio clock rate>/<audio channels>
     #
-    # TODO: How to determine profile-level-id?
-    #   1: Main Audio Profile Level 1
+    # TODO: Use appropriate profile-level-id
     sdpBody = """
     v=0
     o=#{opts.username} #{opts.sessionID} #{opts.sessionVersion} IN #{opts.addressType} #{opts.unicastAddress}
@@ -96,6 +95,7 @@ api =
         frameLength: 1024  # TODO: How to detect 960?
       configspec = configspec.toString 'hex'
 
+      # profile-level-id=1: Main Profile Level 1
       sdpBody += """
       m=audio 0 RTP/AVP #{opts.audioPayloadType}
       a=rtpmap:#{opts.audioPayloadType} #{opts.audioEncodingName}/#{opts.audioClockRate}/#{opts.audioChannels}
