@@ -317,6 +317,12 @@ api =
     else
       throw new Error "Unknown tag: #{tag}"
 
+  clearAllUnorderedPacketBuffers: ->
+    packetBuffers = {}
+
+  clearUnorderedPacketBuffer: (tag) ->
+    delete packetBuffers[tag]
+
   feedUnorderedPacket: (tag, packet) ->
     if not packetBuffers[tag]?
       packetBuffers[tag] =
@@ -363,9 +369,9 @@ api =
             if discardedSequenceNumber < 0
               discardedSequenceNumber += MAX_SEQUENCE_NUMBER
             if packetBuffer.nextSequenceNumber isnt discardedSequenceNumber
-              console.warn "rtp: #{tag}: discarded packets #{packetBuffer.nextSequenceNumber}-#{discardedSequenceNumber}"
+              console.warn "rtp: #{tag}: UDP packet loss: sequence number #{packetBuffer.nextSequenceNumber}-#{discardedSequenceNumber}"
             else
-              console.warn "rtp: #{tag}: discarded packet #{discardedSequenceNumber}"
+              console.warn "rtp: #{tag}: UDP packet loss: sequence number #{discardedSequenceNumber}"
           # consume the first packet
           api.onOrderedPacket tag, firstPacket
 

@@ -98,3 +98,9 @@ module.exports =
   debug:
     # If true, all incoming data are ignored
     dropAllData: false
+
+  # UDP port numbers to receive incoming RTP data
+  rtspVideoDataUDPListenPort   : 5004
+  rtspVideoControlUDPListenPort: 5005
+  rtspAudioDataUDPListenPort   : 5006
+  rtspAudioControlUDPListenPort: 5007
