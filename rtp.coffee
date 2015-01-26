@@ -10,6 +10,7 @@
 #       DON is to RTP what DTS is to MPEG-TS.
 
 bits = require './bits'
+aac = require './aac'
 
 # Number of seconds from 1900-01-01 to 1970-01-01
 EPOCH = 2208988800
@@ -23,6 +24,15 @@ RTP_HEADER_LEN = 12
 
 MAX_PAYLOAD_SIZE = 1360
 
+MAX_SEQUENCE_NUMBER = 65535
+UNORDERED_PACKET_BUFFER_SIZE = 10
+
+eventListeners = {}
+packetBuffers = {}
+fragmentedH264PacketBuffer = []
+h264NALUnitBuffer = {}
+aacAccessUnitBuffer = {}
+
 api =
   # Number of bytes in RTP header
   RTP_HEADER_LEN: RTP_HEADER_LEN
@@ -32,6 +42,26 @@ api =
   RTCP_PACKET_TYPE_SOURCE_DESCRIPTION : 202  # SDES
   RTCP_PACKET_TYPE_GOODBYE            : 203  # BYE
   RTCP_PACKET_TYPE_APPLICATION_DEFINED: 204  # APP
+
+  H264_NAL_UNIT_TYPE_STAP_A: 24
+  H264_NAL_UNIT_TYPE_STAP_B: 25
+  H264_NAL_UNIT_TYPE_MTAP16: 26
+  H264_NAL_UNIT_TYPE_MTAP24: 27
+  H264_NAL_UNIT_TYPE_FU_A  : 28
+  H264_NAL_UNIT_TYPE_FU_B  : 29
+
+  emit: (name, data...) ->
+    if eventListeners[name]?
+      for listener in eventListeners[name]
+        listener data...
+    return
+
+  on: (name, listener) ->
+    if eventListeners[name]?
+      eventListeners[name].push listener
+    else
+      eventListeners[name] = [ listener ]
+
 
   readRTCPSenderReport: ->
     # RFC 3550 - 6.4.1 SR: Sender Report RTCP Packet
@@ -46,7 +76,8 @@ api =
     info.wordsMinusOne = bits.read_bits 16
     info.totalBytes = (info.wordsMinusOne + 1) * 4
     info.ssrc = bits.read_bits 32
-    info.ntpTimestamp = bits.read_bits 64  # loses some precision
+    info.ntpTimestamp = [ bits.read_bits(32), bits.read_bits(32) ]
+    info.ntpTimestampInMs = api.ntpTimestampToTime info.ntpTimestamp
     info.rtpTimestamp = bits.read_bits 32
     info.senderPacketCount = bits.read_bits 32
     info.senderOctetCount = bits.read_bits 32
@@ -235,6 +266,188 @@ api =
       info.csrc.push bits.read_bits 32
     return info
 
+  parseAACPacket: (buf, params) ->
+    bits.push_stash()
+    bits.set_data buf
+    packet = {}
+    packet.rtpHeader = api.readRTPFixedHeader()
+    packet.aac = api.readAACPayload params
+    bits.pop_stash()
+    return packet
+
+  onH264NALUnit: (clientId, nalUnit, packet, timestamp) ->
+    if not h264NALUnitBuffer[clientId]?
+      h264NALUnitBuffer[clientId] = []
+    h264NALUnitBuffer[clientId].push nalUnit
+    if packet.rtpHeader.marker
+      api.emit 'h264_nal_units', clientId, h264NALUnitBuffer[clientId], timestamp
+      h264NALUnitBuffer[clientId] = []
+
+  onAACAccessUnits: (clientId, accessUnits, packet, timestamp) ->
+    if not aacAccessUnitBuffer[clientId]?
+      aacAccessUnitBuffer[clientId] = []
+    aacAccessUnitBuffer[clientId] = aacAccessUnitBuffer[clientId].concat accessUnits
+    if packet.rtpHeader.marker
+      api.emit 'aac_access_units', clientId, aacAccessUnitBuffer[clientId], timestamp
+      aacAccessUnitBuffer[clientId] = []
+
+  onOrderedPacket: (tag, packet) ->
+    if (match = /^h264:(.*)$/.exec tag)?
+      clientId = match[1]
+      if packet.h264.fu_a?  # fragmentation unit
+        # startBit and endBit won't both be set to 1 in the same FU header
+        if packet.h264.fu_a.fuHeader.startBit
+          fragmentedH264PacketBuffer = [
+            new Buffer [ (packet.h264.nal_ref_idc << 5) | packet.h264.fu_a.fuHeader.nal_unit_payload_type ]
+            packet.h264.fu_a.nal_unit_fragment
+          ]
+        else if fragmentedH264PacketBuffer?
+          fragmentedH264PacketBuffer.push packet.h264.fu_a.nal_unit_fragment
+        else
+          console.warn "rtp: #{tag}: discarded fragmented buffer: #{packet.rtpHeader.sequenceNumber}"
+          return
+        if packet.h264.fu_a.fuHeader.endBit
+          api.onH264NALUnit clientId, Buffer.concat(fragmentedH264PacketBuffer), packet, packet.rtpHeader.timestamp
+          fragmentedH264PacketBuffer = null
+      else # single nal unit
+        api.onH264NALUnit clientId, packet.h264.nal_unit, packet, packet.rtpHeader.timestamp
+    else if (match = /^aac:(.*)$/.exec tag)?
+      clientId = match[1]
+      api.onAACAccessUnits clientId, packet.aac.accessUnits, packet, packet.rtpHeader.timestamp
+    else
+      throw new Error "Unknown tag: #{tag}"
+
+  feedUnorderedPacket: (tag, packet) ->
+    if not packetBuffers[tag]?
+      packetBuffers[tag] =
+        nextSequenceNumber: packet.rtpHeader.sequenceNumber
+        minSequenceNumberInBuffer: null
+        buffer: []
+    packetBuffer = packetBuffers[tag]
+    if packetBuffer.nextSequenceNumber is packet.rtpHeader.sequenceNumber
+      api.onOrderedPacket tag, packet
+      packetBuffer.nextSequenceNumber++
+      if packetBuffer.nextSequenceNumber > MAX_SEQUENCE_NUMBER
+        packetBuffer.nextSequenceNumber = 0
+    else
+      # stash packet in buffer
+      buffers = packetBuffer.buffer
+      buffers.push packet
+      if buffers.length >= 2
+        buffers.sort (a, b) ->
+          numberA = a.rtpHeader.sequenceNumber
+          numberB = b.rtpHeader.sequenceNumber
+          if numberA - numberB >= 60000  # large enough gap
+            return -1  # a comes first
+          else if numberB - numberA >= 60000  # large enough gap
+            return 1   # b comes first
+          else
+            return numberA - numberB
+        while (buffers.length) > 0 and
+        (buffers[0].rtpHeader.sequenceNumber is packetBuffer.nextSequenceNumber)
+          api.onOrderedPacket tag, buffers.shift()
+          packetBuffer.nextSequenceNumber++
+          if packetBuffer.nextSequenceNumber > MAX_SEQUENCE_NUMBER
+            packetBuffer.nextSequenceNumber = 0
+        while buffers.length >= 2
+          latestSequenceNumber = buffers[buffers.length-1].rtpHeader.sequenceNumber
+          diff = latestSequenceNumber - packetBuffer.nextSequenceNumber
+          if diff < 0
+            diff += MAX_SEQUENCE_NUMBER + 1
+          if diff < UNORDERED_PACKET_BUFFER_SIZE
+            break
+
+          firstPacket = buffers.shift()
+          if packetBuffer.nextSequenceNumber isnt firstPacket.rtpHeader.sequenceNumber
+            discardedSequenceNumber = firstPacket.rtpHeader.sequenceNumber - 1
+            if discardedSequenceNumber < 0
+              discardedSequenceNumber += MAX_SEQUENCE_NUMBER
+            if packetBuffer.nextSequenceNumber isnt discardedSequenceNumber
+              console.warn "rtp: #{tag}: discarded packets #{packetBuffer.nextSequenceNumber}-#{discardedSequenceNumber}"
+            else
+              console.warn "rtp: #{tag}: discarded packet #{discardedSequenceNumber}"
+          # consume the first packet
+          api.onOrderedPacket tag, firstPacket
+
+          packetBuffer.nextSequenceNumber = firstPacket.rtpHeader.sequenceNumber + 1
+          if packetBuffer.nextSequenceNumber > MAX_SEQUENCE_NUMBER
+            packetBuffer.nextSequenceNumber = 0
+
+  feedUnorderedAACBuffer: (buf, clientId, params) ->
+    packet = api.parseAACPacket buf, params
+    api.feedUnorderedPacket "aac:#{clientId}", packet
+
+  feedUnorderedH264Buffer: (buf, clientId) ->
+    packet = api.parseH264Packet buf
+    api.feedUnorderedPacket "h264:#{clientId}", packet
+
+  parseH264Packet: (buf) ->
+    bits.push_stash()
+    bits.set_data buf
+    packet = {}
+    packet.rtpHeader = api.readRTPFixedHeader()
+    packet.h264 = api.readH264Payload()
+    bits.pop_stash()
+    return packet
+
+  readH264Payload: ->
+    info = {}
+    info.forbidden_zero_bit = bits.read_bit()  # 1 indicates error
+    if info.forbidden_zero_bit isnt 0
+      throw new Error "forbidden_zero_bit must be 0 (got #{info.forbidden_zero_bit})"
+    info.nal_ref_idc = bits.read_bits 2  # == 00: not important, > 00: important
+    info.nal_unit_type = bits.read_bits 5
+    if 1 <= info.nal_unit_type <= 23  # Single NAL unit packet
+      bits.push_back_byte()
+      info.nal_unit = bits.remaining_buffer()
+    else if 24 <= info.nal_unit_type <= 29
+      switch info.nal_unit_type
+        when api.H264_NAL_UNIT_TYPE_FU_A  # FU-A
+          info.fu_a = api.readH264FragmentationUnitA()
+        else
+          throw new Error "Not implemented: nal_unit_type=#{info.nal_unit_type}"
+    else
+      throw new Error "Invalid nal_unit_type=#{info.nal_unit_type}"
+    return info
+
+  readH264FragmentationUnitA: ->
+    info = {}
+    info.fuHeader = api.readH264FragmentationUnitHeader()
+    info.nal_unit_fragment = bits.remaining_buffer()
+    return info
+
+  # FU header
+  readH264FragmentationUnitHeader: ->
+    info = {}
+    info.startBit = bits.read_bit()
+    info.endBit = bits.read_bit()
+    reservedBit = bits.read_bit()
+    if reservedBit isnt 0
+      throw new Error "reserved bit must be 0 (got #{reservedBit})"
+    info.nal_unit_payload_type = bits.read_bits 5
+    return info
+
+  parsePacket: (buf) ->
+    bits.push_stash()
+    bits.set_data buf
+    packet = {}
+    payloadValue = bits.get_byte_at 1  # including marker bit
+    switch payloadValue
+      when api.RTCP_PACKET_TYPE_SENDER_REPORT
+        packet.rtcpSenderReport = api.readRTCPSenderReport()
+      when api.RTCP_PACKET_TYPE_RECEIVER_REPORT
+        packet.rtcpReceiverReport = api.readRTCPReceiverReport()
+      when api.RTCP_PACKET_TYPE_SOURCE_DESCRIPTION
+        packet.rtcpSourceDescription = api.readRTCPSourceDescription()
+      when api.RTCP_PACKET_TYPE_GOODBYE
+        packet.rtcpGoodbye = api.readRTCPGoodbye()
+      when api.RTCP_PACKET_TYPE_APPLICATION_DEFINED
+        packet.rtcpApplicationDefined = api.readRTCPApplicationDefined()
+      else  # RTP data transfer protocol - fixed header
+        packet.rtpHeader = api.readRTPFixedHeader()
+    bits.pop_stash()
+    return packet
+
   parsePackets: (buf) ->
     bits.push_stash()
     bits.set_data buf
@@ -242,8 +455,8 @@ api =
     packets = []
     while bits.has_more_data()
       packet = {}
-      packet.payloadValue = bits.get_byte_at 1
-      switch packet.payloadValue
+      payloadValue = bits.get_byte_at 1  # including marker bit
+      switch payloadValue
         when api.RTCP_PACKET_TYPE_SENDER_REPORT
           packet.rtcpSenderReport = api.readRTCPSenderReport()
         when api.RTCP_PACKET_TYPE_RECEIVER_REPORT
@@ -270,6 +483,12 @@ api =
     buf[11] = ssrc & 0xff
     return
 
+  # ntpTimestamp: [ <32-bit second part>, <32-bit fractional second part> ]
+  ntpTimestampToTime: (ntpTimestamp) ->
+    sec = ntpTimestamp[0] - EPOCH
+    ms = ntpTimestamp[1] / NTP_SCALE_FRAC / 1000
+    return sec * 1000 + ms
+
   # Get NTP timestamp for a time
   # time is expressed the same as Date.now()
   getNTPTimestamp: (time) ->
@@ -278,6 +497,41 @@ api =
     ntp_sec = sec + EPOCH
     ntp_usec = Math.round(ms * 1000 * NTP_SCALE_FRAC)
     return [ntp_sec, ntp_usec]
+
+  readAACPayload: (params) ->
+    info = {}
+    info.auHeadersLengthBits = bits.read_bits 16  # in bits
+    info.numAUHeaders = info.auHeadersLengthBits / 16
+    auHeaders = []
+    for i in [0...info.numAUHeaders]
+      params.index = i
+      auHeaders.push api.readAACAUHeader params
+    info.auHeaders = auHeaders
+    info.accessUnits = []
+    for auHeader in auHeaders
+      info.accessUnits.push bits.read_bytes auHeader.auSize
+      accessUnit = info.accessUnits[info.accessUnits.length-1]
+    return info
+
+  readAACAUHeader: (params) ->
+    if not params.sizelength?
+      throw new Error "sizelength is not defined in params"
+    info = {}
+    # size in octets of the associated Access Unit in the
+    # Access Unit Data Section in the same RTP packet
+    info.auSize = bits.read_bits params.sizelength
+    # serial number of the associated Access Unit (fragment).
+    if not params.index?
+      throw new Error "index is not defined in params"
+    if params.index > 0
+      if not params.indexdeltalength?
+        throw new Error "indexdeltalength is not defined in params"
+      info.auIndexDelta = bits.read_bits params.indexdeltalength
+    else
+      if not params.indexlength?
+        throw new Error "indexlength is not defined in params"
+      info.auIndex = bits.read_bits params.indexlength
+    return info
 
   # Used for encapsulating AAC audio data
   # opts:
@@ -456,5 +710,13 @@ api =
       (octetCount >>> 8) & 0xff,
       octetCount & 0xff,
     ]
+
+  # Parse config parameter for AAC
+  # see: RFC 3640, 4.1. MIME Type Registration
+  parseAACConfig: (str) ->
+    if str is '""'  # empty string
+      return null
+    buf = new Buffer str, 'hex'
+    return aac.parseAudioSpecificConfig buf
 
 module.exports = api
