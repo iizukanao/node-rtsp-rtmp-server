@@ -2007,6 +2007,10 @@ class RTMPServer
       ]
       message.push nalUnit
 
+    if message.length is 0
+      # message is empty
+      return
+
     # Add VIDEODATA tag
     if hasKeyFrame  # IDR picture (key frame)
       firstByte = (1 << 4) | config.flv.videocodecid
