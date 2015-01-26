@@ -55,6 +55,12 @@ Or if you have an MP4 file that contains other audio/video codecs:
 
 Replace `input.mp4` with live audio/video sources.
 
+#### From RTSP client
+
+You can publish streams from RTSP client such as FFmpeg.
+
+    $ ffmpeg -re -i input.mp4 -c:v libx264 -preset fast -c:a libfdk_aac -ab 128k -ar 44100 -f rtsp rtsp://localhost:80/live
+
 #### From GStreamer
 
 For an MP4 file with H.264 video and AAC audio:
