@@ -1,6 +1,6 @@
 {
   "name": "node-rtsp-rtmp-server",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "RTSP, RTMP/RTMPE/RTMPT/RTMPTE, and HTTP server implementation",
   "author": "Nao Iizuka <iizuka@kyu-mu.net>",
   "dependencies": {

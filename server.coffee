@@ -29,7 +29,7 @@ bits        = require './bits'
 audioClockRate = null
 
 # Default server name for RTSP and HTTP responses
-DEFAULT_SERVER_NAME = 'node-rtsp-rtmp-server/0.2.1'
+DEFAULT_SERVER_NAME = 'node-rtsp-rtmp-server/0.2.2'
 
 serverName = config.serverName ? DEFAULT_SERVER_NAME
 
