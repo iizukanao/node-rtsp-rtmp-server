@@ -206,30 +206,26 @@ getDateHeader = ->
   ":#{zeropad 2, d.getUTCSeconds()} UTC"
 
 getLocalIP = ->
+  ifacePrecedence = [ 'wlan', 'eth', 'en' ]
+
+  # compare function for sort
+  getPriority = (ifaceName) ->
+    for name, i in ifacePrecedence
+      if ifaceName.indexOf(name) is 0
+        return i
+    return ifacePrecedence.length
+
   ifaces = os.networkInterfaces()
+  ifaceNames = Object.keys(ifaces)
+  ifaceNames.sort (a, b) ->
+    getPriority(a) - getPriority(b)
 
-  # wlan0, wlan1, ...
-  for name, info of ifaces
-    if /^wlan\d+$/.test name
-      for addr in ifaces[name]
-        if addr.family is 'IPv4'
-          return addr.address
+  for ifaceName in ifaceNames
+    for addr in ifaces[ifaceName]
+      if (not addr.internal) and (addr.family is 'IPv4')
+        return addr.address
 
-  # eth0, eth1, ...
-  for name, info of ifaces
-    if /^eth\d+$/.test name
-      for addr in ifaces[name]
-        if addr.family is 'IPv4'
-          return addr.address
-
-  # en0, en1, ...
-  for name, info of ifaces
-    if /^en\d+$/.test name
-      for addr in ifaces[name]
-        if addr.family is 'IPv4'
-          return addr.address
-
-  "127.0.0.1"
+  return "127.0.0.1"
 
 getExternalIP = ->
   "127.0.0.1" # TODO: Fetch this from UPnP or something
