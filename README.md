@@ -49,7 +49,7 @@ If you have an MP4 file with H.264 video and AAC audio:
 
     $ ffmpeg -re -i input.mp4 -c:v copy -c:a copy -f flv rtmp://localhost/live/myStream
 
-Or if you have an MP4 file that contains other audio/video codecs:
+Or if you have an MP4 file that is encoded in other audio/video format:
 
     $ ffmpeg -re -i input.mp4 -c:v libx264 -preset fast -c:a libfdk_aac -ab 128k -ar 44100 -f flv rtmp://localhost/live/myStream
 
