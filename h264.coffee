@@ -1,7 +1,7 @@
 # H.264 parser
 
 fs   = require 'fs'
-bits = require './bits'
+Bits = require './bits'
 
 videoBuf = null
 pps = {}
@@ -136,7 +136,7 @@ api =
   splitIntoNALUnits: (buffer) ->
     nalUnits = []
     loop
-      startCodePos = bits.searchBytesInArray buffer, [0x00, 0x00, 0x01], 0
+      startCodePos = Bits.searchBytesInArray buffer, [0x00, 0x00, 0x01], 0
 
       if startCodePos isnt -1
         nalUnit = buffer[0...startCodePos]
@@ -166,7 +166,7 @@ api =
 
     nalUnits = []
     loop
-      startCodePos = bits.searchBytesInArray videoBuf, [0x00, 0x00, 0x01], 0
+      startCodePos = Bits.searchBytesInArray videoBuf, [0x00, 0x00, 0x01], 0
 
       if startCodePos is -1
         break
@@ -203,7 +203,7 @@ api =
 
     nalUnits = []
     loop
-      startCodePos = bits.searchBytesInArray videoBuf, [0x00, 0x00, 0x01], 0
+      startCodePos = Bits.searchBytesInArray videoBuf, [0x00, 0x00, 0x01], 0
 
       if startCodePos is -1
         break
@@ -248,7 +248,7 @@ api =
   getPPS: ->
     return pps
 
-  readScalingList: (scalingList, sizeOfScalingList, useDefaultScalingMatrixFlag) ->
+  readScalingList: (bits, scalingList, sizeOfScalingList, useDefaultScalingMatrixFlag) ->
     lastScale = 8
     nextScale = 8
     for j in [0...sizeOfScalingList]
@@ -260,16 +260,16 @@ api =
       lastScale = scalingList[j]
     return
 
-  read_user_data_unregistered: (payloadSize) ->
+  read_user_data_unregistered: (bits, payloadSize) ->
     uuid_iso_iec_11578 = bits.read_bits 128
     for i in [16...payloadSize]
       user_data_payload_byte = bits.read_byte()
 
-  read_reserved_sei_message: (payloadSize) ->
+  read_reserved_sei_message: (bits, payloadSize) ->
     for i in [0...payloadSize]
       reserved_sei_message_payload_byte = bits.read_byte()
 
-  read_sei_payload: (payloadType, payloadSize) ->
+  read_sei_payload: (bits, payloadType, payloadSize) ->
     # ignore contents
     bits.read_bytes payloadSize
 
@@ -281,18 +281,18 @@ api =
 #      when 2 then api.read_pan_scan_rect payloadSize
 #      when 3 then api.read_filler_payload payloadSize
 #      when 4 then api.read_user_data_registered_itu_t_t35 payloadSize
-#      when 5 then api.read_user_data_unregistered payloadSize
+#      when 5 then api.read_user_data_unregistered bits, payloadSize
 #      when 6 then api.read_recovery_point payloadSize
 #      when 7 then api.read_dec_ref_pic_marking_repetition payloadSize
 #      when 8 then api.read_spare_pic payloadSize
 #      when 9 then api.read_scene_info payloadSize
 #      when 10 then api.read_sub_seq_info payloadSize
 #      ...
-#      else api.read_reserved_sei_message payloadSize
+#      else api.read_reserved_sei_message bits, payloadSize
 
     bits.read_until_byte_aligned()
 
-  read_sei_message: ->
+  read_sei_message: (bits) ->
     payloadType = 0
     while (byte = bits.read_byte()) is 0xff
       payloadType += 255
@@ -303,28 +303,26 @@ api =
       payloadSize += 255
     last_payload_size_byte = byte
     payloadSize += last_payload_size_byte
-    api.read_sei_payload(payloadType, payloadSize)
+    api.read_sei_payload(bits, payloadType, payloadSize)
 
   readSEI: (nalUnit) ->
     nalUnitCopy = new Buffer nalUnit.length
     nalUnit.copy nalUnitCopy
     api.removeEmulationPreventionByte nalUnitCopy
-    bits.push_stash()
-    bits.set_data nalUnitCopy
-    api.read_nal_header()
+    bits = new Bits nalUnitCopy
+    api.read_nal_header bits
     loop
-      api.read_sei_message()
-      if not api.more_rbsp_data()
+      api.read_sei_message bits
+      if not api.more_rbsp_data bits
         break
-    bits.pop_stash()
+    return
 
   readPPS: (nalUnit) ->
     nalUnitCopy = new Buffer nalUnit.length
     nalUnit.copy nalUnitCopy
     api.removeEmulationPreventionByte nalUnitCopy
-    bits.push_stash()
-    bits.set_data nalUnitCopy
-    api.read_nal_header()
+    bits = new Bits nalUnitCopy
+    api.read_nal_header bits
     pic_parameter_set_id = bits.read_ue()
     seq_parameter_set_id = bits.read_ue()
     pps.entropy_coding_mode_flag = bits.read_bit()
@@ -358,7 +356,7 @@ api =
     pps.deblocking_filter_control_present_flag = bits.read_bit()
     constrained_intra_pred_flag = bits.read_bit()
     pps.redundant_pic_cnt_present_flag = bits.read_bit()
-    if api.more_rbsp_data()
+    if api.more_rbsp_data bits
       transform_8x8_mode_flag = bits.read_bit()
       pic_scaling_matrix_present_flag = bits.read_bit()
       if pic_scaling_matrix_present_flag is 1
@@ -368,16 +366,16 @@ api =
             if i < 6
               scalingList4x4 = []
               useDefaultScalingMatrix4x4Flag = []
-              api.readScalingList(scalingList4x4, 16,
+              api.readScalingList(bits, scalingList4x4, 16,
                 useDefaultScalingMatrix4x4Flag)
             else
               scalingList8x8 = []
               useDefaultScalingMatrix8x8Flag = []
-              api.readScalingList(scalingList8x8, 64,
+              api.readScalingList(bits, scalingList8x8, 64,
                 useDefaultScalingMatrix8x8Flag)
       second_chroma_qp_index_offset = bits.read_se()
     # rbsp_trailing_bits()
-    bits.pop_stash()
+    return
 
   # Get width and height of video frame
   # @param sps (object): SPS object
@@ -413,9 +411,8 @@ api =
     nalUnitCopy = new Buffer nalUnit.length
     nalUnit.copy nalUnitCopy
     api.removeEmulationPreventionByte nalUnitCopy
-    bits.push_stash()
-    bits.set_data nalUnitCopy
-    api.read_nal_header()
+    bits = new Bits nalUnitCopy
+    api.read_nal_header bits
     sps.profile_idc = bits.read_byte()
     sps.constraint_set0_flag = bits.read_bit()
     sps.constraint_set1_flag = bits.read_bit()
@@ -452,12 +449,12 @@ api =
             if i < 6
               scalingList4x4 = []
               useDefaultScalingMatrix4x4Flag = []
-              api.readScalingList(scalingList4x4, 16,
+              api.readScalingList(bits, scalingList4x4, 16,
                 useDefaultScalingMatrix4x4Flag)
             else
               scalingList8x8 = []
               useDefaultScalingMatrix8x8Flag = []
-              api.readScalingList(scalingList8x8, 64,
+              api.readScalingList(bits, scalingList8x8, 64,
                 useDefaultScalingMatrix8x8Flag)
     else
       sps.chromaArrayType = sps.chroma_format_idc = 1  # 4:2:0 chroma format
@@ -504,7 +501,7 @@ api =
       sps.frame_crop_bottom_offset = 0
     vui_parameters_present_flag = bits.read_bit()
     if vui_parameters_present_flag
-      api.read_vui_parameters()
+      api.read_vui_parameters bits
 
     # rbsp_trailing_bits
     rbsp_stop_one_bit = bits.read_bit()
@@ -517,9 +514,8 @@ api =
 
     if bits.get_remaining_bits() isnt 0
       console.warn "warning: malformed SPS length"
-    bits.pop_stash()
 
-  read_slice_data: (opts) ->
+  read_slice_data: (bits, opts) ->
     if pps.entropy_coding_mode_flag
       bits.read_until_byte_aligned()  # cabac_alignment_one_bit
     currMbAddr = opts.sliceHeader.first_mb_in_slice * (1 + opts.sliceHeader.mbaffFrameFlag)
@@ -534,16 +530,16 @@ api =
 #          for i in [0...mb_skip_run]
 #            currMbAddr = nextMbAddress(currMbAddr)
 #          if mb_skip_run > 0
-#            moreDataFlag = api.more_rbsp_data()
+#            moreDataFlag = api.more_rbsp_data bits
 #        else
 #          sliceQPy = 26 + pps.pic_init_qp_minus26 + opts.sliceHeader.slice_qp_delta
-#          mb_skip_flag = bits.read_ae
+#          mb_skip_flag = api.read_ae bits
 #            sliceQPy: sliceQPy
 
   read_ref_pic_list_mvc_modification: (opts) ->
     throw new Error "Not implemented"
 
-  read_ref_pic_list_modification: (opts) ->
+  read_ref_pic_list_modification: (bits, opts) ->
     sliceHeader = opts.sliceHeader
 
     if sliceHeader.slice_type % 5 not in [2, 4]
@@ -574,7 +570,7 @@ api =
             break
     return
 
-  read_pred_weight_table: (opts) ->
+  read_pred_weight_table: (bits, opts) ->
     sliceHeader = opts.sliceHeader
 
     luma_log2_weight_denom = bits.read_ue()
@@ -618,7 +614,7 @@ api =
               chroma_weight_11[i][j] = bits.read_se()
               chroma_offset_11[i][j] = bits.read_se()
 
-  read_dec_ref_pic_marking: (opts) ->
+  read_dec_ref_pic_marking: (bits, opts) ->
     sliceHeader = opts.sliceHeader
 
     if sliceHeader.idrPicFlag
@@ -640,7 +636,7 @@ api =
           if memory_management_control_operation is 0
             break
 
-  read_slice_header: (opts) ->
+  read_slice_header: (bits, opts) ->
     sliceHeader = opts.sliceHeader = {}
 
     if opts.nalHeader.nal_unit_type is api.NAL_UNIT_TYPE_IDR_PICTURE
@@ -688,12 +684,12 @@ api =
     if opts.nalHeader.nal_unit_type is 20
       api.read_ref_pic_list_mvc_modification opts
     else
-      api.read_ref_pic_list_modification opts
+      api.read_ref_pic_list_modification bits, opts
     if (pps.weighted_pred_flag and sliceTypeString in ['P', 'SP']) or
     (pps.weighted_bipred_idc is 1 and sliceTypeString is 'B')
-      api.read_pred_weight_table opts
+      api.read_pred_weight_table bits, opts
     if opts.nalHeader.nal_ref_idc isnt 0
-      api.read_dec_ref_pic_marking opts
+      api.read_dec_ref_pic_marking bits, opts
     if pps.entropy_coding_mode_flag and (sliceTypeString not in ['I', 'SI'])
       cabac_init_idc = bits.read_ue()
     sliceHeader.slice_qp_delta = bits.read_se()
@@ -745,22 +741,20 @@ api =
     nalUnitCopy = new Buffer nalUnit.length
     nalUnit.copy nalUnitCopy
     api.removeEmulationPreventionByte nalUnitCopy
-    bits.push_stash()
-    bits.set_data nalUnitCopy
-    data.nalHeader = api.read_nal_header()
+    bits = new Bits nalUnitCopy
+    data.nalHeader = api.read_nal_header bits
     if data.nalHeader.nal_unit_type in [
       api.NAL_UNIT_TYPE_NON_IDR_PICTURE
       api.NAL_UNIT_TYPE_IDR_PICTURE
     ]
-      api.read_slice_header data
-    bits.pop_stash()
+      api.read_slice_header bits, data
     return data
 
   # Removes emulation prevention byte (0x000003)
   removeEmulationPreventionByte: (nalUnit) ->
     searchPos = 0
     loop
-      emulPos = bits.searchBytesInArray nalUnit, [0x00, 0x00, 0x03], searchPos
+      emulPos = Bits.searchBytesInArray nalUnit, [0x00, 0x00, 0x03], searchPos
       if emulPos is -1
         break
       nalUnit[emulPos+2..emulPos+2] = []  # Remove 0x03
@@ -780,7 +774,7 @@ api =
     # prevention byte" (0x03) which is used to prevent a
     # occurrence of 0x000001 in a NAL unit. Therefore a
     # byte-aligned 0x000001 is always a start code prefix.
-    startCodePos = bits.searchBytesInArray videoBuf, [0x00, 0x00, 0x01], 0
+    startCodePos = Bits.searchBytesInArray videoBuf, [0x00, 0x00, 0x01], 0
     if startCodePos is -1  # last NAL unit
       nalUnit = videoBuf
       videoBuf = []
@@ -814,7 +808,7 @@ api =
     return z
 
   # 9.3.3.2.3
-  decodeBypass: (vars) ->
+  decodeBypass: (bits, vars) ->
     vars.codIOffset <<= 1
     vars.codIOffset |= bits.read_bit()
     if vars.codIOffset >= vars.codIRange
@@ -837,20 +831,20 @@ api =
     }
 
   # 9.3.3.2.2
-  renormD: (vars) ->
+  renormD: (bits, vars) ->
     while vars.codIRange < 256
       vars.codIRange <<= 1
       vars.codIOffset <<= 1  # TODO: correct?
       vars.codIOffset |= bits.read_bit()
 
   # 9.3.3.2.4
-  decodeTerminate: (vars) ->
+  decodeTerminate: (bits, vars) ->
     vars.codIRange -= 2
     if vars.codIOffset >= vars.codIRange
       vars.binVal = 1
     else
       vars.binVal = 0
-      api.renormD()
+      api.renormD bits
 
   # 9.3.3.2.1
   decodeDecision: (vars) ->
@@ -874,7 +868,7 @@ api =
 
     api.renormD vars
 
-  read_ae: (opts) ->
+  read_ae: (bits, opts) ->
     # TODO
     throw new Error "Not implemented"
 
@@ -903,7 +897,7 @@ api =
 #    if bypassFlag is 1
 #      decodeBypass vars
 #    else if bypassFlag is 0 and ctxIdx is 276
-#      decodeTerminate()
+#      decodeTerminate bits
 #    else
 #      decodeDecision()
 
@@ -915,7 +909,7 @@ api =
     # TODO
     throw new Error "Not implemented"
 
-  read_nal_header: ->
+  read_nal_header: (bits) ->
     nalHeader = {}
     forbidden_zero_bit = bits.read_bit()
     nalHeader.nal_ref_idc = bits.read_bits 2
@@ -928,7 +922,7 @@ api =
         api.read_nal_unit_header_mvc_extension()
     return nalHeader
 
-  read_hrd_parameters: ->
+  read_hrd_parameters: (bits) ->
     cpb_cnt_minus1 = bits.read_ue()
     bit_rate_scale = bits.read_bits 4
     cpb_size_scale = bits.read_bits 4
@@ -944,7 +938,7 @@ api =
     dpb_output_delay_length_minus1 = bits.read_bits 5
     time_offset_length = bits.read_bits 5
 
-  read_vui_parameters: ->
+  read_vui_parameters: (bits) ->
     vui = {}
     vui.aspect_ratio_info_present_flag = bits.read_bit()
     if vui.aspect_ratio_info_present_flag
@@ -975,10 +969,10 @@ api =
       vui.fixed_frame_rate_flag = bits.read_bit()
     vui.nal_hrd_parameters_present_flag = bits.read_bit()
     if vui.nal_hrd_parameters_present_flag
-      api.read_hrd_parameters()
+      api.read_hrd_parameters bits
     vui.vcl_hrd_parameters_present_flag = bits.read_bit()
     if vui.vcl_hrd_parameters_present_flag
-      api.read_hrd_parameters()
+      api.read_hrd_parameters bits
     if vui.nal_hrd_parameters_present_flag or vui.vcl_hrd_parameters_present_flag
       vui.low_delay_hrd_flag = bits.read_bit()
     vui.pic_struct_present_flag = bits.read_bit()
@@ -996,14 +990,14 @@ api =
   #   byte: byte index (starts from 0)
   #   bit : bit index (starts from 0)
   # }. If it is not found, returns null.
-  search_rbsp_stop_one_bit: ->
+  search_rbsp_stop_one_bit: (bits) ->
     return bits.lastIndexOfBit 1
 
-  more_rbsp_data: ->
+  more_rbsp_data: (bits) ->
     remaining_bits = bits.get_remaining_bits()
     if remaining_bits is 0
       return false  # no more data
-    stop_bit_pos = api.search_rbsp_stop_one_bit()
+    stop_bit_pos = api.search_rbsp_stop_one_bit bits
     if not stop_bit_pos?
       throw new Error "stop_one_bit is not found"
     currPos = bits.current_position()
@@ -1023,7 +1017,7 @@ api =
     return Buffer.concat nalUnitsWithStartCodePrefix, totalLen
 
   # ISO 14496-15 5.2.4.1.1
-  readAVCDecoderConfigurationRecord: ->
+  readAVCDecoderConfigurationRecord: (bits) ->
     info = {}
     info.configurationVersion = bits.read_byte()
     if info.configurationVersion isnt 1

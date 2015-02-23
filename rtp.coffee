@@ -9,7 +9,7 @@
 # TODO: Use DON (decoding order number) to carry B-frames.
 #       DON is to RTP what DTS is to MPEG-TS.
 
-bits = require './bits'
+Bits = require './bits'
 aac = require './aac'
 
 # Number of seconds from 1900-01-01 to 1970-01-01
@@ -63,7 +63,7 @@ api =
       eventListeners[name] = [ listener ]
 
 
-  readRTCPSenderReport: ->
+  readRTCPSenderReport: (bits) ->
     # RFC 3550 - 6.4.1 SR: Sender Report RTCP Packet
     startBytePos = bits.current_position().byte
     info = {}
@@ -101,7 +101,7 @@ api =
 
     return info
 
-  readRTCPReceiverReport: ->
+  readRTCPReceiverReport: (bits) ->
     # RFC 3550 - 6.4.2 RR: Receiver Report RTCP Packet
     startBytePos = bits.current_position().byte
     info = {}
@@ -133,7 +133,7 @@ api =
 
     return info
 
-  readRTCPSourceDescription: ->
+  readRTCPSourceDescription: (bits) ->
     # RFC 3550 - 6.5 SDES: Source Description RTCP Packet
     startBytePos = bits.current_position().byte
     info = {}
@@ -200,7 +200,7 @@ api =
 
     return info
 
-  readRTCPGoodbye: ->
+  readRTCPGoodbye: (bits) ->
     # RFC 3550 - 6.6 BYE: Goodbye RTCP Packet
     startBytePos = bits.current_position().byte
     info = {}
@@ -225,7 +225,7 @@ api =
 
     return info
 
-  readRTCPApplicationDefined: ->
+  readRTCPApplicationDefined: (bits) ->
     # RFC 3550 - 6.7 APP: Application-Defined RTCP Packet
     startBytePos = bits.current_position().byte
     info = {}
@@ -249,7 +249,7 @@ api =
 
     return info
 
-  readRTPFixedHeader: ->
+  readRTPFixedHeader: (bits) ->
     # RFC 3550 - 5.1 RTP Fixed Header Fields
     info = {}
     info.version = bits.read_bits 2
@@ -267,12 +267,10 @@ api =
     return info
 
   parseAACPacket: (buf, params) ->
-    bits.push_stash()
-    bits.set_data buf
+    bits = new Bits buf
     packet = {}
-    packet.rtpHeader = api.readRTPFixedHeader()
-    packet.aac = api.readAACPayload params
-    bits.pop_stash()
+    packet.rtpHeader = api.readRTPFixedHeader bits
+    packet.aac = api.readAACPayload bits, params
     return packet
 
   onH264NALUnit: (clientId, nalUnit, packet, timestamp) ->
@@ -388,15 +386,13 @@ api =
     api.feedUnorderedPacket "h264:#{clientId}", packet
 
   parseH264Packet: (buf) ->
-    bits.push_stash()
-    bits.set_data buf
+    bits = new Bits buf
     packet = {}
-    packet.rtpHeader = api.readRTPFixedHeader()
-    packet.h264 = api.readH264Payload()
-    bits.pop_stash()
+    packet.rtpHeader = api.readRTPFixedHeader bits
+    packet.h264 = api.readH264Payload bits
     return packet
 
-  readH264Payload: ->
+  readH264Payload: (bits) ->
     info = {}
     info.forbidden_zero_bit = bits.read_bit()  # 1 indicates error
     if info.forbidden_zero_bit isnt 0
@@ -409,21 +405,21 @@ api =
     else if 24 <= info.nal_unit_type <= 29
       switch info.nal_unit_type
         when api.H264_NAL_UNIT_TYPE_FU_A  # FU-A
-          info.fu_a = api.readH264FragmentationUnitA()
+          info.fu_a = api.readH264FragmentationUnitA bits
         else
           throw new Error "Not implemented: nal_unit_type=#{info.nal_unit_type}"
     else
       throw new Error "Invalid nal_unit_type=#{info.nal_unit_type}"
     return info
 
-  readH264FragmentationUnitA: ->
+  readH264FragmentationUnitA: (bits) ->
     info = {}
-    info.fuHeader = api.readH264FragmentationUnitHeader()
+    info.fuHeader = api.readH264FragmentationUnitHeader bits
     info.nal_unit_fragment = bits.remaining_buffer()
     return info
 
   # FU header
-  readH264FragmentationUnitHeader: ->
+  readH264FragmentationUnitHeader: (bits) ->
     info = {}
     info.startBit = bits.read_bit()
     info.endBit = bits.read_bit()
@@ -434,29 +430,26 @@ api =
     return info
 
   parsePacket: (buf) ->
-    bits.push_stash()
-    bits.set_data buf
+    bits = new Bits buf
     packet = {}
     payloadValue = bits.get_byte_at 1  # including marker bit
     switch payloadValue
       when api.RTCP_PACKET_TYPE_SENDER_REPORT
-        packet.rtcpSenderReport = api.readRTCPSenderReport()
+        packet.rtcpSenderReport = api.readRTCPSenderReport bits
       when api.RTCP_PACKET_TYPE_RECEIVER_REPORT
-        packet.rtcpReceiverReport = api.readRTCPReceiverReport()
+        packet.rtcpReceiverReport = api.readRTCPReceiverReport bits
       when api.RTCP_PACKET_TYPE_SOURCE_DESCRIPTION
-        packet.rtcpSourceDescription = api.readRTCPSourceDescription()
+        packet.rtcpSourceDescription = api.readRTCPSourceDescription bits
       when api.RTCP_PACKET_TYPE_GOODBYE
-        packet.rtcpGoodbye = api.readRTCPGoodbye()
+        packet.rtcpGoodbye = api.readRTCPGoodbye bits
       when api.RTCP_PACKET_TYPE_APPLICATION_DEFINED
-        packet.rtcpApplicationDefined = api.readRTCPApplicationDefined()
+        packet.rtcpApplicationDefined = api.readRTCPApplicationDefined bits
       else  # RTP data transfer protocol - fixed header
-        packet.rtpHeader = api.readRTPFixedHeader()
-    bits.pop_stash()
+        packet.rtpHeader = api.readRTPFixedHeader bits
     return packet
 
   parsePackets: (buf) ->
-    bits.push_stash()
-    bits.set_data buf
+    bits = new Bits buf
 
     packets = []
     while bits.has_more_data()
@@ -464,20 +457,18 @@ api =
       payloadValue = bits.get_byte_at 1  # including marker bit
       switch payloadValue
         when api.RTCP_PACKET_TYPE_SENDER_REPORT
-          packet.rtcpSenderReport = api.readRTCPSenderReport()
+          packet.rtcpSenderReport = api.readRTCPSenderReport bits
         when api.RTCP_PACKET_TYPE_RECEIVER_REPORT
-          packet.rtcpReceiverReport = api.readRTCPReceiverReport()
+          packet.rtcpReceiverReport = api.readRTCPReceiverReport bits
         when api.RTCP_PACKET_TYPE_SOURCE_DESCRIPTION
-          packet.rtcpSourceDescription = api.readRTCPSourceDescription()
+          packet.rtcpSourceDescription = api.readRTCPSourceDescription bits
         when api.RTCP_PACKET_TYPE_GOODBYE
-          packet.rtcpGoodbye = api.readRTCPGoodbye()
+          packet.rtcpGoodbye = api.readRTCPGoodbye bits
         when api.RTCP_PACKET_TYPE_APPLICATION_DEFINED
-          packet.rtcpApplicationDefined = api.readRTCPApplicationDefined()
+          packet.rtcpApplicationDefined = api.readRTCPApplicationDefined bits
         else  # RTP data transfer protocol - fixed header
-          packet.rtpHeader = api.readRTPFixedHeader()
+          packet.rtpHeader = api.readRTPFixedHeader bits
       packets.push packet
-
-    bits.pop_stash()
 
     return packets
 
@@ -504,14 +495,14 @@ api =
     ntp_usec = Math.round(ms * 1000 * NTP_SCALE_FRAC)
     return [ntp_sec, ntp_usec]
 
-  readAACPayload: (params) ->
+  readAACPayload: (bits, params) ->
     info = {}
     info.auHeadersLengthBits = bits.read_bits 16  # in bits
     info.numAUHeaders = info.auHeadersLengthBits / 16
     auHeaders = []
     for i in [0...info.numAUHeaders]
       params.index = i
-      auHeaders.push api.readAACAUHeader params
+      auHeaders.push api.readAACAUHeader bits, params
     info.auHeaders = auHeaders
     info.accessUnits = []
     for auHeader in auHeaders
@@ -519,7 +510,7 @@ api =
       accessUnit = info.accessUnits[info.accessUnits.length-1]
     return info
 
-  readAACAUHeader: (params) ->
+  readAACAUHeader: (bits, params) ->
     if not params.sizelength?
       throw new Error "sizelength is not defined in params"
     info = {}

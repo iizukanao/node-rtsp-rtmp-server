@@ -23,7 +23,7 @@ sdp         = require './sdp'
 h264        = require './h264'
 aac         = require './aac'
 hybrid_udp  = require './hybrid_udp'
-bits        = require './bits'
+Bits        = require './bits'
 
 # Clock rate for audio stream
 audioClockRate = null
@@ -617,7 +617,7 @@ handlePOSTData = (client, data='', callback) ->
 
     processRemainingBuffer()
   else
-    delimiterPos = bits.searchBytesInArray postData, CRLF_CRLF
+    delimiterPos = Bits.searchBytesInArray postData, CRLF_CRLF
     if delimiterPos is -1  # not found (not enough buffer)
       client.postBuf = postData
       callback? null

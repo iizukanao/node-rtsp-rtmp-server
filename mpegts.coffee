@@ -1,7 +1,7 @@
 # MPEG-TS parser
 
 fs   = require 'fs'
-bits = require './bits'
+Bits = require './bits'
 
 TS_PACKET_SIZE = 188
 SYNC_BYTE = 0x47
@@ -39,6 +39,7 @@ MAX_PES_PAYLOAD_SIZE = 200 * 1024
 
 SETTIMEOUT_ADVANCE_TIME = 20
 
+tsBits = null
 tsBuf = null
 isSyncByteDetermined = false
 programTable = {}
@@ -76,7 +77,7 @@ api =
 
   startStreaming: ->
     @resetState()
-    bits.set_data tsBuf
+    tsBits = new Bits tsBuf
     streamingStartTime = Date.now()
     @readNext()
 
@@ -194,48 +195,49 @@ api =
   startReading: ->
     api.read_transport_stream tsBuf
 
+  # TODO: Check if old API is no longer used
   # Described in Table 5: Service description section
-  read_service_description_section: ->
-    pointer_field = read_byte()
-    table_id = read_byte()
-    section_syntax_indicator = read_bit()
+  read_service_description_section: (bits) ->
+    pointer_field = bits.read_byte()
+    table_id = bits.read_byte()
+    section_syntax_indicator = bits.read_bit()
     if section_syntax_indicator isnt 1
       throw new Error "section_syntax_indicator must be 1"
-    reserved_future_use = read_bit()
-    reserved = read_bits 2
-    section_length = read_bits 12
+    reserved_future_use = bits.read_bit()
+    reserved = bits.read_bits 2
+    section_length = bits.read_bits 12
     if section_length > 0x3ff
       throw new Error "The first two bits of section_length must be 00: #{section_length}"
-    transport_stream_id = read_bits 16
-    reserved = read_bits 2
-    version_number = read_bits 5
-    current_next_indicator = read_bit()
-    section_number = read_byte()
-    last_section_number = read_byte()
-    original_network_id = read_bits 16
-    reserved_future_use = read_byte()
+    transport_stream_id = bits.read_bits 16
+    reserved = bits.read_bits 2
+    version_number = bits.read_bits 5
+    current_next_indicator = bits.read_bit()
+    section_number = bits.read_byte()
+    last_section_number = bits.read_byte()
+    original_network_id = bits.read_bits 16
+    reserved_future_use = bits.read_byte()
 
     remaining_section_length = section_length - 8 - 4  # 4 is for CRC
     while remaining_section_length > 0
-      service_id = read_bits 16
+      service_id = bits.read_bits 16
       # service_id is the same as the program_number in the corresponding program_map_section
-      reserved_future_use = read_bits 6
-      EIT_schedule_flag = read_bit()
-      EIT_present_following_flag = read_bit()
-      running_status = read_bits 3
-      free_CA_mode = read_bit()
-      descriptors_loop_length = read_bits 12
+      reserved_future_use = bits.read_bits 6
+      EIT_schedule_flag = bits.read_bit()
+      EIT_present_following_flag = bits.read_bit()
+      running_status = bits.read_bits 3
+      free_CA_mode = bits.read_bit()
+      descriptors_loop_length = bits.read_bits 12
       remaining_descriptors_loop_length = descriptors_loop_length
       descriptors = []
       while remaining_descriptors_loop_length > 0
-        descriptor = read_descriptor()
+        descriptor = api.read_descriptor bits
         descriptors.push descriptor
         remaining_descriptors_loop_length -= descriptor.total_length
       remaining_section_length -= 5 + descriptors_loop_length
 
-    CRC_32 = read_bits 32
+    CRC_32 = bits.read_bits 32
 
-  read_CA_descriptor: ->
+  read_CA_descriptor: (bits) ->
     info = {}
     info.descriptor_tag = bits.read_byte()
     info.descriptor_length = bits.read_byte()
@@ -246,7 +248,7 @@ api =
     info.private_data = bits.read_bytes remainingLen
     return info
 
-  read_ISO_639_language_descriptor: ->
+  read_ISO_639_language_descriptor: (bits) ->
     info = {}
     info.descriptor_tag = bits.read_byte()
     info.descriptor_length = bits.read_byte()
@@ -263,7 +265,7 @@ api =
     return info
 
   # DVB service_descriptor, described in Table 12 in DVB spec
-  read_DVB_service_descriptor: ->
+  read_DVB_service_descriptor: (bits) ->
     info = {}
     info.descriptor_tag = bits.read_byte()
     info.descriptor_length = bits.read_byte()
@@ -274,14 +276,14 @@ api =
     info.service_name = bits.read_bytes(service_name_length).toString 'utf-8'
     return info
 
-  read_unknown_descriptor: ->
+  read_unknown_descriptor: (bits) ->
     info = {}
     info.descriptor_tag = bits.read_byte()
     info.descriptor_length = bits.read_byte()
     bits.skip_bytes info.descriptor_length
     return info
 
-  read_DVB_stream_identifier_descriptor: ->
+  read_DVB_stream_identifier_descriptor: (bits) ->
     info = {}
     info.descriptor_tag = bits.read_byte()
     info.descriptor_length = bits.read_byte()
@@ -289,23 +291,23 @@ api =
     return info
 
   # Described in Section 2.6
-  read_descriptor: ->
+  read_descriptor: (bits) ->
     descriptor_tag = bits.read_byte()
     bits.push_back_byte()
     # descriptor_tag table is described in Table 2-45
     info = switch descriptor_tag
-      when 9 then api.read_CA_descriptor()
-      when 10 then api.read_ISO_639_language_descriptor()
-      when 0x48 then api.read_DVB_service_descriptor()  # 72
-      when 0x52 then api.read_DVB_stream_identifier_descriptor()  # 82
-      when 193, 200, 246, 253 then api.read_unknown_descriptor()
+      when 9 then api.read_CA_descriptor bits
+      when 10 then api.read_ISO_639_language_descriptor bits
+      when 0x48 then api.read_DVB_service_descriptor bits  # 72
+      when 0x52 then api.read_DVB_stream_identifier_descriptor bits  # 82
+      when 193, 200, 246, 253 then api.read_unknown_descriptor bits
       else
         throw new Error "descriptor_tag #{descriptor_tag} is not implemented"
     info.total_length = info.descriptor_length + 2
     return info
 
   # Described in Table 2-33
-  read_program_map_section: ->
+  read_program_map_section: (bits) ->
     info = {}
     info.pointer_field = bits.read_byte()
     bits.skip_bytes info.pointer_field
@@ -339,7 +341,7 @@ api =
     remaining_program_info_length = info.program_info_length
     info.descriptors = []
     while remaining_program_info_length > 0
-      descriptor = api.read_descriptor()
+      descriptor = api.read_descriptor bits
       info.descriptors.push descriptor
       remaining_program_info_length -= descriptor.total_length
 
@@ -359,7 +361,7 @@ api =
       remaining_ES_info_length = ES_info_length
       descriptors = []
       while remaining_ES_info_length > 0
-        descriptor = api.read_descriptor()
+        descriptor = api.read_descriptor bits
         descriptors.push descriptor
         remaining_ES_info_length -= descriptor.total_length
       remaining_section_length -= 5 + ES_info_length
@@ -374,7 +376,7 @@ api =
     return info
 
   # Described in Table-2-29 and Table 2-30
-  read_program_association_section: ->
+  read_program_association_section: (bits) ->
     info = {}
     info.pointer_field = bits.read_byte()
     info.table_id = bits.read_byte()
@@ -442,33 +444,27 @@ api =
     # Described in Table 2-3 - PID table
     switch pid
       when PID_PROGRAM_ASSOCIATION_TABLE  # 0
-        bits.push_stash()
-        bits.set_data pes_data
-        info.program_association = api.read_program_association_section()
-        bits.pop_stash()
+        bits = new Bits pes_data
+        info.program_association = api.read_program_association_section bits
       when videoPID, audioPID
-        bits.push_stash()
-        bits.set_data pes_data
+        bits = new Bits pes_data
         if not opts?
           opts = {}
         opts.pid = pid
-        info.pes = api.read_pes_packet opts
-        bits.pop_stash()
+        info.pes = api.read_pes_packet bits, opts
       else
         isParsed = false
         for programNumber, pidInfo of programTable
           if pid is pidInfo.program_map_PID
-            bits.push_stash()
-            bits.set_data pes_data
-            info.program_map = api.read_program_map_section()
-            bits.pop_stash()
+            bits = new Bits pes_data
+            info.program_map = api.read_program_map_section bits
             programMap = info.program_map
             isParsed = true
         if not isParsed
           info.not_parsed = true
     return info
 
-  read_system_header: ->
+  read_system_header: (bits) ->
     info = {}
     system_header_start_code = bits.read_bits 32
     if system_header_start_code isnt 0x000001BB
@@ -503,7 +499,7 @@ api =
     return info
 
   # pack_header()
-  read_pack_header: ->
+  read_pack_header: (bits) ->
     info = {}
     pack_start_code = bits.read_bits 32
     if pack_start_code isnt 0x000001BA
@@ -534,13 +530,13 @@ api =
     system_header_start_code = bits.read_bits 32
     if system_header_start_code is 0x000001BB
       bits.push_back_bits 32
-      info.system_header = api.read_system_header()
+      info.system_header = api.read_system_header bits
       info.total_length += info.system_header.total_length
 
     return info
 
   # PES_packet()
-  read_pes_packet: (opts) ->
+  read_pes_packet: (bits, opts) ->
     info = {}
     # Start code emulation is not possible in video elementary streams.
     # It is possible in audio and data elementary streams.
@@ -695,7 +691,7 @@ api =
           remaining_header_len -= 16
         if info.pack_header_field_flag is 1
           info.pack_field_length = bits.read_byte()
-          info.pack_header = api.read_pack_header()
+          info.pack_header = api.read_pack_header bits
           remaining_pes_len -= info.pack_header.total_length
           remaining_header_len -= info.pack_header.total_length
         if info.program_packet_sequence_counter_flag is 1
@@ -762,7 +758,7 @@ api =
   # According to the spec, emulation of the sync byte is permitted
   # to occur in the same position of the packet header for a maximum of
   # 4-consecutive transport packets, though this is a recommendation.
-  search_sync_byte: ->
+  search_sync_byte: (bits) ->
     if isSyncByteDetermined
       if not bits.is_byte_aligned()
         throw new Error "search_sync_byte: byte is not aligned"
@@ -786,7 +782,7 @@ api =
           return
         read_len++
 
-  read_adaptation_field: ->
+  read_adaptation_field: (bits) ->
     info = {}
     info.adaptation_field_length = bits.read_byte()
     consumed_bytes = 0
@@ -858,9 +854,9 @@ api =
     return info
 
   # Table 2-2 transport_packet()
-  read_transport_packet: ->
+  read_transport_packet: (bits) ->
     info = {}
-    api.search_sync_byte()
+    api.search_sync_byte bits
     sync_byte = bits.read_byte()
     info.transport_error_indicator = bits.read_bit()
     info.payload_unit_start_indicator = bits.read_bit()
@@ -881,7 +877,7 @@ api =
     remaining_bytes = TS_PACKET_SIZE - 4
 
     if info.adaptation_field_control in [2, 3]
-      info.adaptation_field = api.read_adaptation_field()
+      info.adaptation_field = api.read_adaptation_field bits
       remaining_bytes -= info.adaptation_field.adaptation_field_length + 1
 
     if info.adaptation_field_control in [1, 3]
@@ -891,6 +887,7 @@ api =
     return info
 
   getNextPESPacket: ->
+    bits = tsBits
     pesPacket = null
     if not isEOF
       loop
@@ -898,7 +895,7 @@ api =
           if not bits.has_more_data()
             isEOF = true
             break
-          ts_packet = api.read_transport_packet()
+          ts_packet = api.read_transport_packet bits
           if bufferingPESData[ts_packet.pid]?
             pid_pes = bufferingPESData[ts_packet.pid]
             if ts_packet.payload_unit_start_indicator
