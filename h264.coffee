@@ -515,6 +515,8 @@ api =
     if bits.get_remaining_bits() isnt 0
       console.warn "warning: malformed SPS length"
 
+    return sps
+
   read_slice_data: (bits, opts) ->
     if pps.entropy_coding_mode_flag
       bits.read_until_byte_aligned()  # cabac_alignment_one_bit

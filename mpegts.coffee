@@ -75,10 +75,10 @@ api =
     else
       eventListeners[name] = [ listener ]
 
-  startStreaming: ->
+  startStreaming: (initialSkipTimeMs=0) ->
     @resetState()
     tsBits = new Bits tsBuf
-    streamingStartTime = Date.now()
+    streamingStartTime = Date.now() - initialSkipTimeMs
     @readNext()
 
   resetState: ->
@@ -146,7 +146,8 @@ api =
     if pendingVideoPesPackets.length is 1
       timeDiff = Math.round @getTimeUntilDTS(pesInfo.pes.DTS) - SETTIMEOUT_ADVANCE_TIME
       if timeDiff <= 0
-        @consumeVideo doNotReadNext
+        setImmediate =>
+          @consumeVideo doNotReadNext
       else
         setTimeout =>
           @consumeVideo doNotReadNext
@@ -157,7 +158,8 @@ api =
     if pendingAudioPesPackets.length is 1
       timeDiff = Math.round @getTimeUntilDTS(pesInfo.pes.DTS) - SETTIMEOUT_ADVANCE_TIME
       if timeDiff <= 0
-        @consumeAudio doNotReadNext
+        setImmediate =>
+          @consumeAudio doNotReadNext
       else
         setTimeout =>
           @consumeAudio doNotReadNext

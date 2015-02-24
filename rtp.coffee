@@ -319,7 +319,8 @@ api =
     packetBuffers = {}
 
   clearUnorderedPacketBuffer: (tag) ->
-    delete packetBuffers[tag]
+    delete packetBuffers["h264:#{tag}"]
+    delete packetBuffers["aac:#{tag}"]
 
   feedUnorderedPacket: (tag, packet) ->
     if not packetBuffers[tag]?
@@ -367,9 +368,9 @@ api =
             if discardedSequenceNumber < 0
               discardedSequenceNumber += MAX_SEQUENCE_NUMBER
             if packetBuffer.nextSequenceNumber isnt discardedSequenceNumber
-              console.warn "rtp: #{tag}: UDP packet loss: sequence number #{packetBuffer.nextSequenceNumber}-#{discardedSequenceNumber}"
+              console.warn "rtp: #{tag}: packet loss: sequence number #{packetBuffer.nextSequenceNumber}-#{discardedSequenceNumber}"
             else
-              console.warn "rtp: #{tag}: UDP packet loss: sequence number #{discardedSequenceNumber}"
+              console.warn "rtp: #{tag}: packet loss: sequence number #{discardedSequenceNumber}"
           # consume the first packet
           api.onOrderedPacket tag, firstPacket
 

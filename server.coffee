@@ -25,8 +25,10 @@ aac         = require './aac'
 hybrid_udp  = require './hybrid_udp'
 Bits        = require './bits'
 
+Bits.set_warning_fatal true
+
 # Clock rate for audio stream
-audioClockRate = null
+#audioClockRate = null
 
 # Default server name for RTSP and HTTP responses
 DEFAULT_SERVER_NAME = 'node-rtsp-rtmp-server/0.2.2'
@@ -49,9 +51,13 @@ MONTH_NAMES = [
 ]
 
 # If true, RTSP requests/response will be printed to the console
-DEBUG_RTSP = false
+DEBUG_RTSP = true
 
-DEBUG_PACKET_DATA = false
+# If true, incoming video/audio packets are printed to the console
+DEBUG_INCOMING_PACKET_DATA = false
+
+# If true, outgoing video/audio packets are printed to the console
+DEBUG_OUTGOING_PACKET_DATA = false
 
 # If true, RTSP requests/responses tunneled in HTTP will be
 # printed to the console
@@ -64,11 +70,17 @@ DEBUG_DISABLE_UDP_TRANSPORT = false
 # Two CRLFs
 CRLF_CRLF = [ 0x0d, 0x0a, 0x0d, 0x0a ]
 
-detectedVideoWidth = null
-detectedVideoHeight = null
-detectedAudioSampleRate = null
-detectedAudioChannels = null
-detectedAudioPeriodSize = null
+numTotalClients = 0
+streams = {}
+clients = {}
+httpSessions = {}
+rtspUploadingClients = {}
+
+#detectedVideoWidth = null
+#detectedVideoHeight = null
+#detectedAudioSampleRate = null
+#detectedAudioChannels = null
+#detectedAudioPeriodSize = null
 
 # Delete UNIX domain sockets
 deleteReceiverSocketsSync = ->
@@ -97,43 +109,62 @@ deleteReceiverSocketsSync = ->
 
 deleteReceiverSocketsSync()
 
-isVideoStarted = false
-isAudioStarted = false
+#isVideoStarted = false
+#isAudioStarted = false
 
-uploadingClient = null
+#uploadingClient = null
 
 # For debug
-lastSentVideoTimestamp = 0
+#lastSentVideoTimestamp = 0
 
-getVideoSendTimeForUploadingRTPTimestamp = (rtpTimestamp) ->
-  if uploadingClient.uploadingTimestampInfo.video?
-    rtpDiff = rtpTimestamp - uploadingClient.uploadingTimestampInfo.video.rtpTimestamp # 90 kHz clock
+getVideoSendTimeForUploadingRTPTimestamp = (stream, rtpTimestamp) ->
+  videoTimestampInfo = stream.uploadingClient?.uploadingTimestampInfo.video
+  if videoTimestampInfo?
+    rtpDiff = rtpTimestamp - videoTimestampInfo.rtpTimestamp # 90 kHz clock
     timeDiff = rtpDiff / 90
-    return uploadingClient.uploadingTimestampInfo.video.time + timeDiff
+    return videoTimestampInfo.time + timeDiff
   else
     return Date.now()
 
-getAudioSendTimeForUploadingRTPTimestamp = (rtpTimestamp) ->
-  if uploadingClient.uploadingTimestampInfo.audio?
-    rtpDiff = rtpTimestamp - uploadingClient.uploadingTimestampInfo.audio.rtpTimestamp
-    timeDiff = rtpDiff * 1000 / audioClockRate
-    return uploadingClient.uploadingTimestampInfo.audio.time + timeDiff
+getAudioSendTimeForUploadingRTPTimestamp = (stream, rtpTimestamp) ->
+  audioTimestampInfo = stream.uploadingClient?.uploadingTimestampInfo.audio
+  if audioTimestampInfo?
+    rtpDiff = rtpTimestamp - audioTimestampInfo.rtpTimestamp
+    timeDiff = rtpDiff * 1000 / stream.audioClockRate
+    return audioTimestampInfo.time + timeDiff
   else
     return Date.now()
 
 # Create RTMP server
 rtmpServer = new RTMPServer
-rtmpServer.on 'stream_reset', ->
+rtmpServer.on 'stream_reset', (streamId) ->
+  stream = streams[streamId]
+  if not stream?
+    stream = createStream streamId
   console.log 'stream_reset from rtmp source'
-  resetStreams()
-rtmpServer.on 'video_start', ->
-  onReceiveVideoControlBuffer()
-rtmpServer.on 'video_data', (pts, dts, nalUnits) ->
-  onReceiveVideoPacket nalUnits, pts, dts
-rtmpServer.on 'audio_start', ->
-  onReceiveAudioControlBuffer()
-rtmpServer.on 'audio_data', (pts, dts, adtsFrame) ->
-  onReceiveAudioPacket adtsFrame, pts, dts
+  resetStreams stream
+rtmpServer.on 'video_start', (streamId) ->
+  stream = streams[streamId]
+  if not stream?
+    stream = createStream streamId
+  onReceiveVideoControlBuffer stream
+rtmpServer.on 'video_data', (streamId, pts, dts, nalUnits) ->
+  stream = streams[streamId]
+  if stream?
+    onReceiveVideoPacket stream, nalUnits, pts, dts
+  else
+    console.warn "warning: invalid streamId received from rtmp: #{streamId}"
+rtmpServer.on 'audio_start', (streamId) ->
+  stream = streams[streamId]
+  if not stream?
+    stream = createStream streamId
+  onReceiveAudioControlBuffer stream
+rtmpServer.on 'audio_data', (streamId, pts, dts, adtsFrame) ->
+  stream = streams[streamId]
+  if stream?
+    onReceiveAudioPacket stream, adtsFrame, pts, dts
+  else
+    console.warn "warning: invalid streamId received from rtmp: #{streamId}"
 
 rtmpServer.start ->
   # RTMP server is ready
@@ -141,8 +172,8 @@ rtmpServer.start ->
 httpHandler = new HTTPHandler
 httpHandler.setServerName serverName
 
-updateConfig = ->
-  rtmpServer.updateConfig config
+#updateConfig = ->
+#  rtmpServer.updateConfig config
 
 # profile-level-id is defined in RFC 6184.
 # profile_idc, constraint flags for Baseline profile are
@@ -161,37 +192,134 @@ updateConfig = ->
 #     constraint_set5_flag: Must be 0 (ignored by decoders in this case); Main=1 (B frames are not present)
 #     reserved_zero_2bits : both 0
 #   3) level_idc = 31 (Level 3.1)
-PROFILE_LEVEL_ID = '42C01F'  # Baseline Profile, Level 3.1
+#PROFILE_LEVEL_ID = '42C01F'  # Baseline Profile, Level 3.1
 # PROFILE_LEVEL_ID will be replaced with incoming SPS packet (NAL unit type 7), from byte 1 to 3
 
-spropParameterSets = ''  # will be populated later
-spsString = ''
-ppsString = ''
-spsNALUnit = null
-ppsNALUnit = null
+# moved to streams
+#spropParameterSets = ''  # will be populated later
+#spsString = ''
+#ppsString = ''
+#spsNALUnit = null
+#ppsNALUnit = null
 
 # Reset audio/video streams
-resetStreams = ->
-  isVideoStarted = false
-  isAudioStarted = false
-  uploadingClient = null
-  spropParameterSets = ''
-  rtmpServer.resetStreams()
+resetStreams = (stream) ->
+  stream.isVideoStarted = false
+  stream.isAudioStarted = false
+  stream.uploadingClient = null
+  stream.spropParameterSets = ''
+  rtmpServer.resetStreams stream
 
 # Update spropParameterSets based on NAL unit
-updateSpropParam = (buf) ->
+updateSpropParam = (stream, buf) ->
   nalUnitType = buf[0] & 0x1f
   if nalUnitType is 7  # SPS packet
-    spsString = buf.toString 'base64'
-    PROFILE_LEVEL_ID = buf[1..3].toString('hex').toUpperCase()
+    stream.spsString = buf.toString 'base64'
+    stream.videoProfileLevelId = buf[1..3].toString('hex').toUpperCase()
   else if nalUnitType is 8  # PPS packet
-    ppsString = buf.toString 'base64'
+    stream.ppsString = buf.toString 'base64'
 
-  spropParameterSets = spsString + ',' + ppsString
+  stream.spropParameterSets = stream.spsString + ',' + stream.ppsString
 
-clientsCount = 0
-clients = {}
-httpSessions = {}
+createStream = (streamId) ->
+  console.log "createStream: #{streamId}"
+  if streams[streamId]?
+    console.log "warning: overwriting existing stream #{streamId}"
+  stream = streams[streamId] =
+    id: streamId  # string
+    numClients: 0  # int
+    clients: {}  # array
+    audioClockRate: null  # int
+    audioSampleRate: null  # int
+    audioChannels: null  # int
+    audioPeriodSize: 1024  # TODO: detect from stream?
+    audioObjectType: null  # int
+    videoWidth: null  # int
+    videoHeight: null  # int
+    videoProfileLevelId: '42C01F'  # Baseline Profile, Level 3.1
+    videoFrameRate: 30.0  # float  # TODO
+    flvAVCLevel: null  # int
+    flvAVCProfile: null  # int
+    isVideoStarted: false  # boolean
+    isAudioStarted: false  # boolean
+    uploadingClient: null  # client object
+    lastSentVideoTimestamp: 0  # int
+    timeForVideoRTPZero: null  # int
+    timeForAudioRTPZero: null  # int
+#    videoFrames: 0  # int
+#    audioFrames: 0  # int
+    videoSequenceNumber: 0  # int
+    audioSequenceNumber: 0  # int
+    lastVideoRTPTimestamp: null  # int
+    lastAudioRTPTimestamp: null  # int
+    spropParameterSets: ''  # string
+    spsString: ''  # string
+    ppsString: ''  # string
+    spsNALUnit: null  # buffer
+    ppsNALUnit: null  # buffer
+
+  stream.videoRTPTimestampInterval = Math.round(90000 / stream.videoFrameRate) # int
+  stream.audioRTPTimestampInterval = stream.audioPeriodSize
+  rtmpServer.updateStreamConfig stream
+  return stream
+
+getStreamIdFromUri = (uri) ->
+  try
+    pathname = url.parse(uri).pathname
+  catch e
+    return null
+  if pathname.indexOf('/live/') is 0  # starts with /live/
+    pathname = pathname[6..]
+  slashPos = pathname.indexOf '/'
+  if slashPos isnt -1  # remove / and after
+    pathname = pathname[0...slashPos]
+  return pathname
+
+internalStream = null
+
+setInternalStreamId = (streamId) ->
+  console.log "internal stream name has been set to: #{streamId}"
+  if streams[streamId]?
+    deleteStream streamId
+  internalStream = createStream streamId
+
+deleteStream = (streamId) ->
+  delete streams[streamId]
+
+getInternalStream = ->
+  if not internalStream?
+    console.log 'warning: Internal stream name not known; using default "public"'
+    streamId = 'public'  # TODO: Default value or error?
+    internalStream = streams[streamId]
+    if not internalStream?
+      internalStream = createStream streamId
+  return internalStream
+
+getStreamByRTSPUDPAddress = (addr, port, channelType) ->
+  client = rtspUploadingClients[addr + ':' + port]
+  if client?
+    return client.uploadingStream
+  return null
+
+getStreamByUDPAddress = (addr, port) ->
+  streamId = "udp-#{addr}-#{port}"
+  stream = streams[streamId]
+  if not stream?
+    stream = createStream streamId
+  return stream
+
+getStreamByUri = (uri) ->
+  streamId = getStreamIdFromUri uri
+  if streamId?
+    return streams[streamId]
+  else
+    return null
+
+getStreamByClientId = (clientId) ->
+  client = clients[clientId]
+  if client?.streamId?
+    return streams[client.streamId]
+  return null
 
 zeropad = (columns, num) ->
   num += ''
@@ -205,6 +333,8 @@ getDateHeader = ->
   " #{d.getUTCFullYear()} #{zeropad 2, d.getUTCHours()}:#{zeropad 2, d.getUTCMinutes()}" +
   ":#{zeropad 2, d.getUTCSeconds()} UTC"
 
+# Returns this machine's IP address which is attached to network interface
+# TODO: Get IP address from socket
 getLocalIP = ->
   ifacePrecedence = [ 'wlan', 'eth', 'en' ]
 
@@ -228,35 +358,37 @@ getLocalIP = ->
   return "127.0.0.1"
 
 getExternalIP = ->
-  "127.0.0.1" # TODO: Fetch this from UPnP or something
+  return "127.0.0.1" # TODO: Fetch this from UPnP or something
 
 # Get local IP address which is meaningful to the
 # partner of the given socket
 getMeaningfulIPTo = (socket) ->
-  if isPrivateNetwork socket
+  if isLoopbackAddress socket
+    return '127.0.0.1'
+  else if isPrivateNetwork socket
     return getLocalIP()
   else
     return getExternalIP()
 
-timeForVideoRTPZero = null
-timeForAudioRTPZero = null
+#timeForVideoRTPZero = null
+#timeForAudioRTPZero = null
 
-getVideoRTPTimestamp = (time) ->
+getVideoRTPTimestamp = (stream, time) ->
   return Math.round time * 90 % TIMESTAMP_ROUNDOFF
 
-getAudioRTPTimestamp = (time) ->
-  if not audioClockRate?
+getAudioRTPTimestamp = (stream, time) ->
+  if not stream.audioClockRate?
     throw new Error "audioClockRate is null"
-  return Math.round time * (audioClockRate / 1000) % TIMESTAMP_ROUNDOFF
+  return Math.round time * (stream.audioClockRate / 1000) % TIMESTAMP_ROUNDOFF
 
-sendVideoSenderReport = (client) ->
-  if not timeForVideoRTPZero?
+sendVideoSenderReport = (stream, client) ->
+  if not stream.timeForVideoRTPZero?
     return
 
   time = new Date().getTime()
   buf = new Buffer rtp.createSenderReport
     time: time
-    rtpTime: getVideoRTPTimestamp time - timeForVideoRTPZero
+    rtpTime: getVideoRTPTimestamp stream, time - stream.timeForVideoRTPZero
     ssrc: client.videoSSRC
     packetCount: client.videoPacketCount
     octetCount: client.videoOctetCount
@@ -273,14 +405,14 @@ sendVideoSenderReport = (client) ->
         if err
           console.error "[videoRTCPSend] error: #{err.message}"
 
-sendAudioSenderReport = (client) ->
-  if not timeForAudioRTPZero?
+sendAudioSenderReport = (stream, client) ->
+  if not stream.timeForAudioRTPZero?
     return
 
   time = new Date().getTime()
   buf = new Buffer rtp.createSenderReport
     time: time
-    rtpTime: getAudioRTPTimestamp time - timeForAudioRTPZero
+    rtpTime: getAudioRTPTimestamp stream, time - stream.timeForAudioRTPZero
     ssrc: client.audioSSRC
     packetCount: client.audioPacketCount
     octetCount: client.audioOctetCount
@@ -303,24 +435,24 @@ stopSendingRTCP = (client) ->
     client.timeoutID = null
 
 # Send RTCP sender report packets for audio and video streams
-sendSenderReports = (client) ->
+sendSenderReports = (stream, client) ->
   if not clients[client.socket.clientID]? # socket is already closed
     stopSendingRTCP client
     return
 
-  if isAudioStarted
-    sendAudioSenderReport client
-  if isVideoStarted
-    sendVideoSenderReport client
+  if stream.isAudioStarted
+    sendAudioSenderReport stream, client
+  if stream.isVideoStarted
+    sendVideoSenderReport stream, client
 
   client.timeoutID = setTimeout ->
-    sendSenderReports client
+    sendSenderReports stream, client
   , config.rtcpSenderReportIntervalMs
 
-startSendingRTCP = (client) ->
+startSendingRTCP = (stream, client) ->
   stopSendingRTCP client
 
-  sendSenderReports client
+  sendSenderReports stream, client
 
 onReceiveVideoRTCP = (buf) ->
   # TODO: handle BYE message
@@ -328,39 +460,42 @@ onReceiveVideoRTCP = (buf) ->
 onReceiveAudioRTCP = (buf) ->
   # TODO: handle BYE message
 
-videoFrames = 0
-audioFrames = 0
+#videoFrames = 0
+#audioFrames = 0
 
-onReceiveBuffer = (buf) ->
-  packetType = buf[0]
-  switch packetType
-    when 0x00 then onReceiveVideoControlBuffer buf
-    when 0x01 then onReceiveAudioControlBuffer buf
-    when 0x02 then onReceiveVideoDataBuffer buf
-    when 0x03 then onReceiveAudioDataBuffer buf
-    when 0x04 then onReceiveVideoDataBufferWithDTS buf
-    when 0x05 then onReceiveAudioDataBufferWithDTS buf
-    else
-      console.log "unknown packet type: #{packetType}"
-      # ignore
-  return
+#onReceiveBuffer = (buf) ->
+#  packetType = buf[0]
+#  switch packetType
+#    when 0x00 then onReceiveVideoControlBuffer getInternalStream(), buf
+#    when 0x01 then onReceiveAudioControlBuffer getInternalStream(), buf
+#    when 0x02 then onReceiveVideoDataBuffer getInternalStream(), buf
+#    when 0x03 then onReceiveAudioDataBuffer getInternalStream(), buf
+#    when 0x04 then onReceiveVideoDataBufferWithDTS getInternalStream(), buf
+#    when 0x05 then onReceiveAudioDataBufferWithDTS getInternalStream(), buf
+#    else
+#      console.log "unknown packet type: #{packetType}"
+#      # ignore
+#  return
 
-onReceiveVideoControlBuffer = (buf) ->
+# buf argument can be null (not used)
+onReceiveVideoControlBuffer = (stream, buf) ->
   console.log "video start"
-  isVideoStarted = true
-  timeForVideoRTPZero = Date.now()
-  timeForAudioRTPZero = timeForVideoRTPZero
-  spropParameterSets = ''
-  rtmpServer.startVideo()
+  resetFrameRate stream
+  stream.isVideoStarted = true
+  stream.timeForVideoRTPZero = Date.now()
+  stream.timeForAudioRTPZero = stream.timeForVideoRTPZero
+  stream.spropParameterSets = ''
+#  rtmpServer.startVideo stream.id
 
-onReceiveAudioControlBuffer = (buf) ->
+# buf argument can be null (not used)
+onReceiveAudioControlBuffer = (stream, buf) ->
   console.log "audio start"
-  isAudioStarted = true
-  timeForAudioRTPZero = Date.now()
-  timeForVideoRTPZero = timeForAudioRTPZero
-  rtmpServer.startAudio()
+  stream.isAudioStarted = true
+  stream.timeForAudioRTPZero = Date.now()
+  stream.timeForVideoRTPZero = stream.timeForAudioRTPZero
+#  rtmpServer.startAudio stream.id
 
-onReceiveVideoDataBuffer = (buf) ->
+onReceiveVideoDataBuffer = (stream, buf) ->
   pts = buf[1] * 0x010000000000 + \
         buf[2] * 0x0100000000   + \
         buf[3] * 0x01000000     + \
@@ -369,25 +504,25 @@ onReceiveVideoDataBuffer = (buf) ->
         buf[6]
   dts = pts
   nalUnit = buf[7..]
-  onReceiveVideoPacket nalUnit, pts, dts
+  onReceiveVideoPacket stream, nalUnit, pts, dts
 
-onReceiveVideoDataBufferWithDTS = (buf) ->
-  pts = buf[1] * 0x010000000000 + \
-        buf[2] * 0x0100000000   + \
-        buf[3] * 0x01000000     + \
-        buf[4] * 0x010000       + \
-        buf[5] * 0x0100         + \
-        buf[6]
-  dts = buf[7]  * 0x010000000000 + \
-        buf[8]  * 0x0100000000   + \
-        buf[9]  * 0x01000000     + \
-        buf[10] * 0x010000       + \
-        buf[11] * 0x0100         + \
-        buf[12]
-  nalUnit = buf[13..]
-  onReceiveVideoPacket nalUnit, pts, dts
+#onReceiveVideoDataBufferWithDTS = (stream, buf) ->
+#  pts = buf[1] * 0x010000000000 + \
+#        buf[2] * 0x0100000000   + \
+#        buf[3] * 0x01000000     + \
+#        buf[4] * 0x010000       + \
+#        buf[5] * 0x0100         + \
+#        buf[6]
+#  dts = buf[7]  * 0x010000000000 + \
+#        buf[8]  * 0x0100000000   + \
+#        buf[9]  * 0x01000000     + \
+#        buf[10] * 0x010000       + \
+#        buf[11] * 0x0100         + \
+#        buf[12]
+#  nalUnit = buf[13..]
+#  onReceiveVideoPacket stream, nalUnit, pts, dts
 
-onReceiveAudioDataBuffer = (buf) ->
+onReceiveAudioDataBuffer = (stream, buf) ->
   pts = buf[1] * 0x010000000000 + \
         buf[2] * 0x0100000000   + \
         buf[3] * 0x01000000     + \
@@ -396,23 +531,23 @@ onReceiveAudioDataBuffer = (buf) ->
         buf[6]
   dts = pts
   adtsFrame = buf[7..]
-  onReceiveAudioPacket adtsFrame, pts, dts
+  onReceiveAudioPacket stream, adtsFrame, pts, dts
 
-onReceiveAudioDataBufferWithDTS = (buf) ->
-  pts = buf[1] * 0x010000000000 + \
-        buf[2] * 0x0100000000   + \
-        buf[3] * 0x01000000     + \
-        buf[4] * 0x010000       + \
-        buf[5] * 0x0100         + \
-        buf[6]
-  dts = buf[7]  * 0x010000000000 + \
-        buf[8]  * 0x0100000000   + \
-        buf[9]  * 0x01000000     + \
-        buf[10] * 0x010000       + \
-        buf[11] * 0x0100         + \
-        buf[12]
-  adtsFrame = buf[13..]
-  onReceiveAudioPacket adtsFrame, pts, dts
+#onReceiveAudioDataBufferWithDTS = (stream, buf) ->
+#  pts = buf[1] * 0x010000000000 + \
+#        buf[2] * 0x0100000000   + \
+#        buf[3] * 0x01000000     + \
+#        buf[4] * 0x010000       + \
+#        buf[5] * 0x0100         + \
+#        buf[6]
+#  dts = buf[7]  * 0x010000000000 + \
+#        buf[8]  * 0x0100000000   + \
+#        buf[9]  * 0x01000000     + \
+#        buf[10] * 0x010000       + \
+#        buf[11] * 0x0100         + \
+#        buf[12]
+#  adtsFrame = buf[13..]
+#  onReceiveAudioPacket stream, adtsFrame, pts, dts
 
 createReceiver = (name, callback) ->
   return net.createServer (c) ->
@@ -432,7 +567,15 @@ createReceiver = (name, callback) ->
           payloadSize = buf[0] * 0x10000 + buf[1] * 0x100 + buf[2]
           totalSize = payloadSize + 3  # 3 bytes for payload size
           if buf.length >= totalSize
-            callback buf.slice 3, totalSize  # 3 bytes for payload size
+            if name is 'VideoControl'  # parse stream name
+              if buf.length >= 5
+                streamId = buf.toString 'utf8', 4
+              else
+                streamId = "public"  # TODO: Default value or error?
+              setInternalStreamId streamId
+
+            # 3 bytes for payload size
+            callback getInternalStream(), buf.slice(3, totalSize)
             if buf.length > totalSize
               buf = buf.slice totalSize
             else
@@ -456,20 +599,25 @@ if config.receiverType in ['unix', 'tcp']
 else if config.receiverType is 'udp'
   videoControlReceiver = new hybrid_udp.UDPServer
   videoControlReceiver.name = 'VideoControl'
-  videoControlReceiver.on 'packet', (buf) ->
-    onReceiveVideoControlBuffer buf[3..]
+  videoControlReceiver.on 'packet', (buf, addr, port) ->
+    if buf.length >= 5
+      streamId = buf.toString 'utf8', 4
+    else
+      streamId = "public"  # TODO: Default value or error?
+    setInternalStreamId streamId
+    onReceiveVideoControlBuffer getInternalStream(), buf[3..]
   audioControlReceiver = new hybrid_udp.UDPServer
   audioControlReceiver.name = 'AudioControl'
-  audioControlReceiver.on 'packet', (buf) ->
-    onReceiveAudioControlBuffer buf[3..]
+  audioControlReceiver.on 'packet', (buf, addr, port) ->
+    onReceiveAudioControlBuffer getInternalStream(), buf[3..]
   videoDataReceiver = new hybrid_udp.UDPServer
   videoDataReceiver.name = 'VideoData'
-  videoDataReceiver.on 'packet', (buf) ->
-    onReceiveVideoDataBuffer buf[3..]
+  videoDataReceiver.on 'packet', (buf, addr, port) ->
+    onReceiveVideoDataBuffer getInternalStream(), buf[3..]
   audioDataReceiver = new hybrid_udp.UDPServer
   audioDataReceiver.name = 'AudioData'
-  audioDataReceiver.on 'packet', (buf) ->
-    onReceiveAudioDataBuffer buf[3..]
+  audioDataReceiver.on 'packet', (buf, addr, port) ->
+    onReceiveAudioDataBuffer getInternalStream(), buf[3..]
 else
   throw new Error "unknown receiverType in config: #{config.receiverType}"
 
@@ -543,7 +691,14 @@ teardownClient = (id) ->
     catch e
       console.error "socket.end() error: #{e}"
     delete clients[id]
-    clientsCount--
+    numTotalClients--
+
+    for streamName, streamInfo in streams
+      if streamInfo.clients[client.id]?
+        delete streamInfo.clients[client.id]
+        streamInfo.numClients--
+
+    return
 
 listClients = ->
   console.log "#{Object.keys(clients).length} clients"
@@ -601,6 +756,7 @@ handlePOSTData = (client, data='', callback) ->
       callback? null
     return
 
+  # TODO: Do we have to interpret interleaved data here?
   if postData[0] is rtsp.INTERLEAVED_SIGN  # interleaved data
     interleavedData = rtsp.getInterleavedData postData
     if not interleavedData?
@@ -680,20 +836,21 @@ scheduleTimeout = (socket) ->
 
 # Called when the server received an interleaved RTP packet
 onInterleavedRTPPacketFromClient = (client, interleavedData) ->
-  if client is uploadingClient
+  if client.uploadingStream?
+    stream = client.uploadingStream
     # TODO: Support multiple streams
     senderInfo =
       address: null
       port: null
     switch interleavedData.channel
-      when uploadingClient.uploadingChannels.videoData
-        onUploadVideoData interleavedData.data, senderInfo
-      when uploadingClient.uploadingChannels.videoControl
-        onUploadVideoControl interleavedData.data, senderInfo
-      when uploadingClient.uploadingChannels.audioData
-        onUploadAudioData interleavedData.data, senderInfo
-      when uploadingClient.uploadingChannels.audioControl
-        onUploadAudioControl interleavedData.data, senderInfo
+      when stream.uploadingClient.uploadingChannels.videoData
+        onUploadVideoData stream, interleavedData.data, senderInfo
+      when stream.uploadingClient.uploadingChannels.videoControl
+        onUploadVideoControl stream, interleavedData.data, senderInfo
+      when stream.uploadingClient.uploadingChannels.audioData
+        onUploadAudioData stream, interleavedData.data, senderInfo
+      when stream.uploadingClient.uploadingChannels.audioControl
+        onUploadAudioControl stream, interleavedData.data, senderInfo
       else
         console.error "Error: unknown interleaved channel: #{interleavedData.channel}"
   # Discard incoming RTP packets if the client is not uploading streams
@@ -825,7 +982,7 @@ onClientConnect = (c) ->
       sessionID: sessionID
       socket: c
       ip: c.remoteAddress
-      isGlobal: not isPrivateNetwork c
+#      isGlobal: not isPrivateNetwork c
       videoPacketCount: 0
       videoOctetCount: 0
       audioPacketCount: 0
@@ -835,7 +992,7 @@ onClientConnect = (c) ->
       videoSSRC: generateRandom32()
       audioSSRC: generateRandom32()
       supportsReliableRTP: false
-    clientsCount++
+    numTotalClients++
     listClients()
     c.setKeepAlive true, 120000
     c.clientID = id_str  # TODO: Is this safe?
@@ -861,53 +1018,67 @@ process.on 'uncaughtException', (err) ->
   deleteReceiverSocketsSync()
   throw err
 
-onUploadVideoData = (msg, senderInfo) ->
-  if not uploadingClient?
-    console.log "no client is uploading data"
+# Called when received video data over RTSP
+onUploadVideoData = (stream, msg, rinfo) ->
+  if not stream.uploadingClient?
+    console.log "no client is uploading video data to stream #{stream.id}"
     return
   packet = rtp.parsePacket msg
-  if not uploadingClient.videoRTPStartTimestamp?
+  if not stream.uploadingClient.videoRTPStartTimestamp?
     # TODO: Is this correct to set the start timestamp in this manner?
-    uploadingClient.videoRTPStartTimestamp = packet.rtpHeader.timestamp
-  if packet.rtpHeader.payloadType is uploadingClient.announceSDPInfo.video.fmt
-    rtp.feedUnorderedH264Buffer msg, 'upload-client'
+    stream.uploadingClient.videoRTPStartTimestamp = packet.rtpHeader.timestamp
+  if packet.rtpHeader.payloadType is stream.uploadingClient.announceSDPInfo.video.fmt
+    rtp.feedUnorderedH264Buffer msg, stream.id
   else
     console.error "Error: Unknown payload type: #{packet.rtpHeader.payloadType} as video"
 
-onUploadVideoControl = (msg, rinfo) ->
+onUploadVideoControl = (stream, msg, rinfo) ->
+  if not stream.uploadingClient?
+    console.log "no client is uploading audio data to stream #{stream.id}"
+    return
   packets = rtp.parsePackets msg
   for packet in packets
     if packet.rtcpSenderReport?
-      if not uploadingClient.uploadingTimestampInfo.video?
-        uploadingClient.uploadingTimestampInfo.video = {}
-      uploadingClient.uploadingTimestampInfo.video.rtpTimestamp = packet.rtcpSenderReport.rtpTimestamp
-      uploadingClient.uploadingTimestampInfo.video.time = packet.rtcpSenderReport.ntpTimestampInMs
+      if not stream.uploadingClient.uploadingTimestampInfo.video?
+        stream.uploadingClient.uploadingTimestampInfo.video = {}
+      stream.uploadingClient.uploadingTimestampInfo.video.rtpTimestamp = packet.rtcpSenderReport.rtpTimestamp
+      stream.uploadingClient.uploadingTimestampInfo.video.time = packet.rtcpSenderReport.ntpTimestampInMs
 
-onUploadAudioData = (msg, rinfo) ->
+onUploadAudioData = (stream, msg, rinfo) ->
+  if not stream.uploadingClient?
+    console.log "no client is uploading audio data to stream #{stream.id}"
+    return
   packet = rtp.parsePacket msg
-  if not uploadingClient.audioRTPStartTimestamp?
+  if not stream.uploadingClient.audioRTPStartTimestamp?
     # TODO: Is this correct to set the start timestamp in this manner?
-    uploadingClient.audioRTPStartTimestamp = packet.rtpHeader.timestamp
-  if packet.rtpHeader.payloadType is uploadingClient.announceSDPInfo.audio.fmt
-    rtp.feedUnorderedAACBuffer msg, 'upload-client', uploadingClient.announceSDPInfo.audio.fmtpParams
+    stream.uploadingClient.audioRTPStartTimestamp = packet.rtpHeader.timestamp
+  if packet.rtpHeader.payloadType is stream.uploadingClient.announceSDPInfo.audio.fmt
+    rtp.feedUnorderedAACBuffer msg, stream.id, stream.uploadingClient.announceSDPInfo.audio.fmtpParams
   else
     console.error "Error: Unknown payload type: #{packet.rtpHeader.payloadType} as audio"
 
-onUploadAudioControl = (msg, rinfo) ->
+onUploadAudioControl = (stream, msg, rinfo) ->
+  if not stream.uploadingClient?
+    console.log "no client is uploading audio data to stream #{stream.id}"
+    return
   packets = rtp.parsePackets msg
   for packet in packets
     if packet.rtcpSenderReport?
-      if not uploadingClient.uploadingTimestampInfo.audio?
-        uploadingClient.uploadingTimestampInfo.audio = {}
-      uploadingClient.uploadingTimestampInfo.audio.rtpTimestamp = packet.rtcpSenderReport.rtpTimestamp
-      uploadingClient.uploadingTimestampInfo.audio.time = packet.rtcpSenderReport.ntpTimestampInMs
+      if not stream.uploadingClient.uploadingTimestampInfo.audio?
+        stream.uploadingClient.uploadingTimestampInfo.audio = {}
+      stream.uploadingClient.uploadingTimestampInfo.audio.rtpTimestamp = packet.rtcpSenderReport.rtpTimestamp
+      stream.uploadingClient.uploadingTimestampInfo.audio.time = packet.rtcpSenderReport.ntpTimestampInMs
 
 udpVideoDataServer = dgram.createSocket 'udp4'
 udpVideoDataServer.on 'error', (err) ->
   console.log "udp video data receiver error: #{err.message}"
   throw err
 udpVideoDataServer.on 'message', (msg, rinfo) ->
-  onUploadVideoData msg, rinfo
+  stream = getStreamByRTSPUDPAddress rinfo.address, rinfo.port, 'video-data'
+  if stream?
+    onUploadVideoData stream, msg, rinfo
+  else
+    console.warn "warning: No uploading stream found for remote address #{rinfo.address}:#{rinfo.port}"
 udpVideoDataServer.on 'listening', ->
   addr = udpVideoDataServer.address()
   console.log "udp video data receiver is listening on port #{addr.port}"
@@ -918,7 +1089,11 @@ udpVideoControlServer.on 'error', (err) ->
   console.log "udp video control receiver error: #{err.message}"
   throw err
 udpVideoControlServer.on 'message', (msg, rinfo) ->
-  onUploadVideoControl msg, rinfo
+  stream = getStreamByRTSPUDPAddress rinfo.address, rinfo.port, 'video-control'
+  if stream?
+    onUploadVideoControl stream, msg, rinfo
+  else
+    console.warn "warning: No uploading stream found for remote address #{rinfo.address}:#{rinfo.port}"
 udpVideoControlServer.on 'listening', ->
   addr = udpVideoControlServer.address()
   console.log "udp video control receiver is listening on port #{addr.port}"
@@ -929,7 +1104,11 @@ udpAudioDataServer.on 'error', (err) ->
   console.log "udp audio data receiver error: #{err.message}"
   throw err
 udpAudioDataServer.on 'message', (msg, rinfo) ->
-  onUploadAudioData msg, rinfo
+  stream = getStreamByRTSPUDPAddress rinfo.address, rinfo.port, 'audio-data'
+  if stream?
+    onUploadAudioData stream, msg, rinfo
+  else
+    console.warn "warning: No uploading stream found for remote address #{rinfo.address}:#{rinfo.port}"
 udpAudioDataServer.on 'listening', ->
   addr = udpAudioDataServer.address()
   console.log "udp audio data receiver is listening on port #{addr.port}"
@@ -940,7 +1119,11 @@ udpAudioControlServer.on 'error', (err) ->
   console.log "udp audio control receiver error: #{err.message}"
   throw err
 udpAudioControlServer.on 'message', (msg, rinfo) ->
-  onUploadAudioControl msg, rinfo
+  stream = getStreamByRTSPUDPAddress rinfo.address, rinfo.port, 'audio-control'
+  if stream?
+    onUploadAudioControl stream, msg, rinfo
+  else
+    console.warn "warning: No uploading stream found for remote address #{rinfo.address}:#{rinfo.port}"
 udpAudioControlServer.on 'listening', ->
   addr = udpAudioControlServer.address()
   console.log "udp audio control receiver is listening on port #{addr.port}"
@@ -957,38 +1140,61 @@ console.log "starting rtsp/http server on port #{config.serverPort}"
 server.listen config.serverPort, '0.0.0.0', 511, ->
   console.log "server started"
 
-videoSequenceNumber = 0
-audioSequenceNumber = 0
+#videoSequenceNumber = 0
+#audioSequenceNumber = 0
 TIMESTAMP_ROUNDOFF = 4294967296  # 32 bits
 
-lastVideoRTPTimestamp = null
-lastAudioRTPTimestamp = null
-videoRTPTimestampInterval = Math.round(90000 / config.videoFrameRate)
-audioRTPTimestampInterval = config.audioPeriodSize
+#lastVideoRTPTimestamp = null
+#lastAudioRTPTimestamp = null
+#videoRTPTimestampInterval = Math.round(90000 / config.videoFrameRate)
+#audioRTPTimestampInterval = config.audioPeriodSize
 
-getNextVideoSequenceNumber = ->
-  num = videoSequenceNumber + 1
+getNextVideoSequenceNumber = (stream) ->
+  num = stream.videoSequenceNumber + 1
   if num > 65535
     num -= 65535
   num
 
-getNextAudioSequenceNumber = ->
-  num = audioSequenceNumber + 1
+getNextAudioSequenceNumber = (stream) ->
+  num = stream.audioSequenceNumber + 1
   if num > 65535
     num -= 65535
   num
 
-getNextVideoRTPTimestamp = ->
-  if lastVideoRTPTimestamp?
-    lastVideoRTPTimestamp + videoRTPTimestampInterval
+# TODO: Adjust RTP timestamp based on play start time
+getNextVideoRTPTimestamp = (stream) ->
+  if stream.lastVideoRTPTimestamp?
+    return stream.lastVideoRTPTimestamp + stream.videoRTPTimestampInterval
   else
-    0
+    return 0
 
-getNextAudioRTPTimestamp = ->
-  if lastAudioRTPTimestamp?
-    lastAudioRTPTimestamp + audioRTPTimestampInterval
+# TODO: Adjust RTP timestamp based on play start time
+getNextAudioRTPTimestamp = (stream) ->
+  if stream.lastAudioRTPTimestamp?
+    return stream.lastAudioRTPTimestamp + stream.audioRTPTimestampInterval
   else
-    0
+    return 0
+
+resetFrameRate = (stream) ->
+  stream.frameRateCalcBasePTS = null
+  stream.frameRateCalcNumFrames = null
+  stream.videoFrameRate = 30.0  # TODO: What value should we use?
+
+calcFrameRate = (stream, pts) ->
+  if stream.frameRateCalcBasePTS?
+    diffMs = (pts - stream.frameRateCalcBasePTS) / 90
+    stream.frameRateCalcNumFrames++
+    if (stream.frameRateCalcNumFrames >= 150) or (diffMs >= 5000)
+      frameRate = stream.frameRateCalcNumFrames * 1000 / diffMs
+      if frameRate isnt stream.videoFrameRate
+        console.log "[stream:#{stream.id}] frame rate: #{stream.videoFrameRate}"
+        stream.videoFrameRate = frameRate
+        stream.videoRTPTimestampInterval = Math.round(90000 / stream.videoFrameRate)
+      stream.frameRateCalcBasePTS = pts
+      stream.frameRateCalcNumFrames = 0
+  else
+    stream.frameRateCalcBasePTS = pts
+    stream.frameRateCalcNumFrames = 0
 
 videoRTPSocket = dgram.createSocket 'udp4'
 videoRTPSocket.bind config.videoRTPServerPort
@@ -1000,11 +1206,15 @@ audioRTPSocket.bind config.audioRTPServerPort
 audioRTCPSocket = dgram.createSocket 'udp4'
 audioRTCPSocket.bind config.audioRTCPServerPort
 
-sendVideoPacketWithFragment = (nalUnit, timestamp, marker=true) ->
+sendVideoPacketWithFragment = (stream, nalUnit, timestamp, marker=true) ->
   ts = timestamp % TIMESTAMP_ROUNDOFF
-  lastVideoRTPTimestamp = ts
+  stream.lastVideoRTPTimestamp = ts
 
-  if clientsCount is 0
+  if numTotalClients is 0
+    return
+
+  if stream.numClients is 0
+    # No clients connected to the stream
     return
 
   nalUnitType = nalUnit[0] & 0x1f
@@ -1015,8 +1225,8 @@ sendVideoPacketWithFragment = (nalUnit, timestamp, marker=true) ->
 
   fragmentNumber = 0
   while nalUnit.length > SINGLE_NAL_UNIT_MAX_SIZE
-    if ++videoSequenceNumber > 65535
-      videoSequenceNumber -= 65535
+    if ++stream.videoSequenceNumber > 65535
+      stream.videoSequenceNumber -= 65535
 
     fragmentNumber++
     thisNalUnit = nalUnit.slice 0, SINGLE_NAL_UNIT_MAX_SIZE
@@ -1026,7 +1236,7 @@ sendVideoPacketWithFragment = (nalUnit, timestamp, marker=true) ->
     rtpData = rtp.createRTPHeader
       marker: false
       payloadType: 97
-      sequenceNumber: videoSequenceNumber
+      sequenceNumber: stream.videoSequenceNumber
       timestamp: ts
       ssrc: null
 
@@ -1041,13 +1251,13 @@ sendVideoPacketWithFragment = (nalUnit, timestamp, marker=true) ->
     rtpBuffer = Buffer.concat [new Buffer(rtpData), thisNalUnit],
       rtp.RTP_HEADER_LEN + 2 + thisNalUnitLen
 
-    if DEBUG_PACKET_DATA
+    if DEBUG_INCOMING_PACKET_DATA
       md5 = crypto.createHash 'md5'
       md5.update thisNalUnit
-      tsDiff = ts - lastSentVideoTimestamp
+      tsDiff = ts - stream.lastSentVideoTimestamp
       console.log "video: ts #{tsDiff} md5 #{md5.digest('hex')[0..6]} fragment: #{rtpBuffer.length} bytes marker=false" + (if isKeyFrame then " isKeyFrame=#{isKeyFrame}" else "")
-      lastSentVideoTimestamp = ts
-    for clientID, client of clients
+      stream.lastSentVideoTimestamp = ts
+    for clientID, client of stream.clients
       if client.isWaitingForKeyFrame and isKeyFrame
         process.stdout.write "KeyFrame"
         client.isPlaying = true
@@ -1058,6 +1268,8 @@ sendVideoPacketWithFragment = (nalUnit, timestamp, marker=true) ->
 
         client.videoPacketCount++
         client.videoOctetCount += thisNalUnitLen
+        if DEBUG_OUTGOING_PACKET_DATA
+          console.log "send video: fragment"
         if client.useTCPForVideo
           if client.useHTTP
             if client.httpClientType is 'GET'
@@ -1071,14 +1283,14 @@ sendVideoPacketWithFragment = (nalUnit, timestamp, marker=true) ->
                 console.log "[videoRTPSend] error: #{err.message}"
 
   # last packet
-  if ++videoSequenceNumber > 65535
-    videoSequenceNumber -= 65535
+  if ++stream.videoSequenceNumber > 65535
+    stream.videoSequenceNumber -= 65535
 
   # TODO: sequence number should be started from a random number
   rtpData = rtp.createRTPHeader
     marker: marker
     payloadType: 97
-    sequenceNumber: videoSequenceNumber
+    sequenceNumber: stream.videoSequenceNumber
     timestamp: ts
     ssrc: null
 
@@ -1091,13 +1303,13 @@ sendVideoPacketWithFragment = (nalUnit, timestamp, marker=true) ->
   nalUnitLen = nalUnit.length
   rtpBuffer = Buffer.concat [new Buffer(rtpData), nalUnit],
     rtp.RTP_HEADER_LEN + 2 + nalUnitLen
-  if DEBUG_PACKET_DATA
+  if DEBUG_INCOMING_PACKET_DATA
     md5 = crypto.createHash 'md5'
     md5.update nalUnit
-    tsDiff = ts - lastSentVideoTimestamp
+    tsDiff = ts - stream.lastSentVideoTimestamp
     console.log "video: ts #{tsDiff} md5 #{md5.digest('hex')[0..6]} fragment-last: #{rtpBuffer.length} bytes marker=#{marker}" + (if isKeyFrame then " isKeyFrame=#{isKeyFrame}" else "")
-    lastSentVideoTimestamp = ts
-  for clientID, client of clients
+    stream.lastSentVideoTimestamp = ts
+  for clientID, client of stream.clients
     if client.isWaitingForKeyFrame and isKeyFrame
       process.stdout.write "KeyFrame"
       client.isPlaying = true
@@ -1108,6 +1320,8 @@ sendVideoPacketWithFragment = (nalUnit, timestamp, marker=true) ->
 
       client.videoPacketCount++
       client.videoOctetCount += nalUnitLen
+      if DEBUG_OUTGOING_PACKET_DATA
+        console.log "send video: fragment-last"
       if client.useTCPForVideo
         if client.useHTTP
           if client.httpClientType is 'GET'
@@ -1121,16 +1335,20 @@ sendVideoPacketWithFragment = (nalUnit, timestamp, marker=true) ->
               console.log "[videoRTPSend] error: #{err.message}"
   return
 
-sendVideoPacketAsSingleNALUnit = (nalUnit, timestamp, marker=true) ->
-  if ++videoSequenceNumber > 65535
-    videoSequenceNumber -= 65535
+sendVideoPacketAsSingleNALUnit = (stream, nalUnit, timestamp, marker=true) ->
+  if ++stream.videoSequenceNumber > 65535
+    stream.videoSequenceNumber -= 65535
 
   ts = timestamp % TIMESTAMP_ROUNDOFF
-  lastVideoRTPTimestamp = ts
+  stream.lastVideoRTPTimestamp = ts
 
   nalUnitType = nalUnit[0] & 0x1f
 
-  if clientsCount is 0
+  if numTotalClients is 0
+    return
+
+  if stream.numClients is 0
+    # No clients connected to the stream
     return
 
   isKeyFrame = nalUnitType is 5
@@ -1139,21 +1357,21 @@ sendVideoPacketAsSingleNALUnit = (nalUnit, timestamp, marker=true) ->
   rtpHeader = rtp.createRTPHeader
     marker: marker
     payloadType: 97
-    sequenceNumber: videoSequenceNumber
+    sequenceNumber: stream.videoSequenceNumber
     timestamp: ts
     ssrc: null
 
   nalUnitLen = nalUnit.length
   rtpBuffer = Buffer.concat [new Buffer(rtpHeader), nalUnit],
     rtp.RTP_HEADER_LEN + nalUnitLen
-  if DEBUG_PACKET_DATA
+  if DEBUG_INCOMING_PACKET_DATA
     md5 = crypto.createHash 'md5'
     md5.update nalUnit
-    tsDiff = ts - lastSentVideoTimestamp
+    tsDiff = ts - stream.lastSentVideoTimestamp
     console.log "video: ts #{tsDiff} md5 #{md5.digest('hex')[0..6]} single: #{rtpBuffer.length} bytes marker=#{marker}" + (if isKeyFrame then " isKeyFrame=#{isKeyFrame}" else "")
-    lastSentVideoTimestamp = ts
+    stream.lastSentVideoTimestamp = ts
 
-  for clientID, client of clients
+  for clientID, client of stream.clients
     if client.isWaitingForKeyFrame and isKeyFrame
       process.stdout.write "KeyFrame"
       client.isPlaying = true
@@ -1164,6 +1382,8 @@ sendVideoPacketAsSingleNALUnit = (nalUnit, timestamp, marker=true) ->
 
       client.videoPacketCount++
       client.videoOctetCount += nalUnitLen
+      if DEBUG_OUTGOING_PACKET_DATA
+        console.log "send video: single"
       if client.useTCPForVideo
         if client.useHTTP
           if client.httpClientType is 'GET'
@@ -1178,96 +1398,109 @@ sendVideoPacketAsSingleNALUnit = (nalUnit, timestamp, marker=true) ->
   return
 
 # nal_unit_type 7
-onSPSNALUnit = (nalUnit) ->
-  spsNALUnit = nalUnit
-  updateSpropParam nalUnit
-  rtmpServer.updateSPS nalUnit
+onSPSNALUnit = (stream, nalUnit) ->
+  stream.spsNALUnit = nalUnit
+  updateSpropParam stream, nalUnit
+  rtmpServer.updateStreamConfig stream
+#  rtmpServer.updateSPS stream.id, nalUnit
   try
-    h264.readSPS nalUnit
+    sps = h264.readSPS nalUnit
   catch e
-    console.error "video data error: failed to read SPS"
+    console.error "[stream:#{stream.id}] video data error: failed to read SPS"
     console.error e.stack
     return
-  sps = h264.getSPS()
   frameSize = h264.getFrameSize sps
   isConfigUpdated = false
-  if detectedVideoWidth isnt frameSize.width
-    detectedVideoWidth = frameSize.width
-    console.log "video width has been changed to #{detectedVideoWidth}"
-    config.videoWidth = detectedVideoWidth
+  if stream.videoWidth isnt frameSize.width
+    stream.videoWidth = frameSize.width
+    console.log "[stream:#{stream.id}] video width: #{stream.videoWidth}"
+#    config.videoWidth = detectedVideoWidth
     isConfigUpdated = true
-  if detectedVideoHeight isnt frameSize.height
-    detectedVideoHeight = frameSize.height
-    console.log "video height has been changed to #{detectedVideoHeight}"
-    config.videoHeight = detectedVideoHeight
+  if stream.videoHeight isnt frameSize.height
+    stream.videoHeight = frameSize.height
+    console.log "[stream:#{stream.id}] video height: #{stream.videoHeight}"
+#    config.videoHeight = detectedVideoHeight
     isConfigUpdated = true
-  if config.flv.avclevel isnt sps.level_idc
-    config.flv.avclevel = sps.level_idc
-    console.log "avclevel has been changed to #{config.flv.avclevel}"
+  if stream.flvAVCLevel isnt sps.level_idc
+    stream.flvAVCLevel = sps.level_idc
+#    config.flv.avclevel = sps.level_idc
+    console.log "[stream:#{stream.id}] avclevel: #{stream.flvAVCLevel}"
     isConfigUpdated = true
-  if config.flv.avcprofile isnt sps.profile_idc
-    config.flv.avcprofile = sps.profile_idc
-    console.log "avcprofile has been changed to #{config.flv.avcprofile}"
+  if stream.flvAVCProfile isnt sps.profile_idc
+    stream.flvAVCProfile = sps.profile_idc
+#    config.flv.avcprofile = sps.profile_idc
+    console.log "[stream:#{stream.id}] avcprofile: #{stream.flvAVCProfile}"
     isConfigUpdated = true
   if isConfigUpdated
-    updateConfig()
+    rtmpServer.updateStreamConfig stream
+#    updateConfig()
 
 # nal_unit_type 8
-onPPSNALUnit = (nalUnit) ->
-  ppsNALUnit = nalUnit
-  updateSpropParam nalUnit
-  rtmpServer.updatePPS nalUnit
+onPPSNALUnit = (stream, nalUnit) ->
+  stream.ppsNALUnit = nalUnit
+  updateSpropParam stream, nalUnit
+  rtmpServer.updateStreamConfig stream
+#  rtmpServer.updatePPS stream.id, nalUnit
 
-sendNALUnitOverRTSP = (nalUnit, pts, dts, marker) ->
+sendNALUnitOverRTSP = (stream, nalUnit, pts, dts, marker) ->
   if nalUnit.length >= SINGLE_NAL_UNIT_MAX_SIZE
-    sendVideoPacketWithFragment nalUnit, pts, marker  # TODO what about dts?
+    sendVideoPacketWithFragment stream, nalUnit, pts, marker  # TODO what about dts?
   else
-    sendVideoPacketAsSingleNALUnit nalUnit, pts, marker  # TODO what about dts?
+    sendVideoPacketAsSingleNALUnit stream, nalUnit, pts, marker  # TODO what about dts?
 
 # nal_unit_type 5 must not separated with 7 and 8 which
 # share the same timestamp as 5
-onReceiveVideoNALUnits = (nalUnits, pts, dts) ->
+onReceiveVideoNALUnits = (stream, nalUnits, pts, dts) ->
+  if DEBUG_INCOMING_PACKET_DATA
+    console.log "receive video: #{nalUnits.length} NAL units; pts=#{pts}"
+
   isSPSSent = false
   isPPSSent = false
+  hasVideoFrame = false
   for nalUnit, i in nalUnits
     isLastPacket = i is nalUnits.length - 1
     # detect configuration
     nalUnitType = h264.getNALUnitType nalUnit
+    if (nalUnitType is h264.NAL_UNIT_TYPE_IDR_PICTURE) or (nalUnitType is h264.NAL_UNIT_TYPE_NON_IDR_PICTURE)  # 5 (key frame) or 1 (inter frame)
+      hasVideoFrame = true
     if config.dropH264AccessUnitDelimiter and
     (nalUnitType is h264.NAL_UNIT_TYPE_ACCESS_UNIT_DELIMITER)
       # ignore access unit delimiters
       continue
     if nalUnitType is h264.NAL_UNIT_TYPE_SPS  # 7
       isSPSSent = true
-      onSPSNALUnit nalUnit
+      onSPSNALUnit stream, nalUnit
     else if nalUnitType is h264.NAL_UNIT_TYPE_PPS  # 8
       isPPSSent = true
-      onPPSNALUnit nalUnit
+      onPPSNALUnit stream, nalUnit
 
     # If this is keyframe but SPS and PPS do not exist in the
     # same timestamp, we insert them before the keyframe.
     # TODO: Send SPS and PPS as an aggregation packet (STAP-A).
     if nalUnitType is 5  # keyframe
       if not isSPSSent  # nal_unit_type 7
-        if spsNALUnit?
-          sendNALUnitOverRTSP spsNALUnit, pts, dts, false
+        if stream.spsNALUnit?
+          sendNALUnitOverRTSP stream, stream.spsNALUnit, pts, dts, false
           # there is a case where timestamps of two keyframes are identical
           # (i.e. nalUnits argument contains multiple keyframes)
           isSPSSent = true
         else
           console.error "Error: SPS is not set"
       if not isPPSSent  # nal_unit_type 8
-        if ppsNALUnit?
-          sendNALUnitOverRTSP ppsNALUnit, pts, dts, false
+        if stream.ppsNALUnit?
+          sendNALUnitOverRTSP stream, stream.ppsNALUnit, pts, dts, false
           # there is a case where timestamps of two keyframes are identical
           # (i.e. nalUnits argument contains multiple keyframes)
           isPPSSent = true
         else
           console.error "Error: PPS is not set"
 
-    sendNALUnitOverRTSP nalUnit, pts, dts, isLastPacket
+    sendNALUnitOverRTSP stream, nalUnit, pts, dts, isLastPacket
 
-  rtmpServer.sendVideoPacket nalUnits, pts, dts
+  rtmpServer.sendVideoPacket stream, nalUnits, pts, dts
+
+  if hasVideoFrame
+    calcFrameRate stream, pts
 
   return
 
@@ -1276,46 +1509,58 @@ onReceiveVideoNALUnits = (nalUnits, pts, dts) ->
 # arguments:
 #   nalUnit: Buffer
 #   pts: timestamp in 90 kHz clock rate (PTS)
-onReceiveVideoPacket = (nalUnitGlob, pts, dts) ->
+onReceiveVideoPacket = (stream, nalUnitGlob, pts, dts) ->
   nalUnits = h264.splitIntoNALUnits nalUnitGlob
   if nalUnits.length is 0
     return
-  onReceiveVideoNALUnits nalUnits, pts, dts
+  onReceiveVideoNALUnits stream, nalUnits, pts, dts
   return
 
-updateAudioSampleRate = (sampleRate) ->
-  audioClockRate = sampleRate
-  config.audioSampleRate = sampleRate
+#updateAudioSampleRate = (stream, sampleRate) ->
+#  stream.audioClockRate = sampleRate
+#  stream.audioSampleRate = sampleRate
+#  config.audioSampleRate = sampleRate
 
-updateAudioChannels = (channels) ->
-  config.audioChannels = channels
+#updateAudioChannels = (stream, channels) ->
+#  stream.audioChannels = channels
+#  config.audioChannels = channels
 
 # pts, dts: in 90KHz clock rate
-onReceiveAudioAccessUnits = (accessUnits, pts, dts) ->
-  if not config.audioSampleRate?
+onReceiveAudioAccessUnits = (stream, accessUnits, pts, dts) ->
+#  if not config.audioSampleRate?
+#    throw new Error "audio sample rate isn't detected"
+  if not stream.audioSampleRate?
     throw new Error "audio sample rate isn't detected"
 
-  ptsPerFrame = 90000 / (config.audioSampleRate / 1024)
+  if DEBUG_INCOMING_PACKET_DATA
+    console.log "receive audio: #{accessUnits.length} access units; pts=#{pts}"
+
+#  ptsPerFrame = 90000 / (config.audioSampleRate / 1024)
+  ptsPerFrame = 90000 / (stream.audioSampleRate / 1024)
 
   # timestamp: RTP timestamp in audioClockRate
   # pts: PTS in 90 kHz clock
-  if audioClockRate isnt 90000  # given pts is not in 90 kHz clock
-    timestamp = pts * audioClockRate / 90000
+  if stream.audioClockRate isnt 90000  # given pts is not in 90 kHz clock
+    timestamp = pts * stream.audioClockRate / 90000
   else
     timestamp = pts
 
   rtpTimePerFrame = 1024
 
   for accessUnit, i in accessUnits
-    if DEBUG_PACKET_DATA
+    if DEBUG_INCOMING_PACKET_DATA
       md5 = crypto.createHash 'md5'
       md5.update accessUnit
       console.log "audio: pts #{pts} md5 #{md5.digest('hex')[0..6]} #{accessUnit.length} bytes"
-    rtmpServer.sendAudioPacket accessUnit,
+    rtmpServer.sendAudioPacket stream, accessUnit,
       Math.round(pts + ptsPerFrame * i),
       Math.round(dts + ptsPerFrame * i)
 
-  if clientsCount is 0
+  if numTotalClients is 0
+    return
+
+  if stream.numClients is 0
+    # No clients connected to the stream
     return
 
   frameGroups = rtp.groupAudioFrames accessUnits
@@ -1323,18 +1568,18 @@ onReceiveAudioAccessUnits = (accessUnits, pts, dts) ->
   for group, i in frameGroups
     concatRawDataBlock = Buffer.concat group
 
-    if ++audioSequenceNumber > 65535
-      audioSequenceNumber -= 65535
+    if ++stream.audioSequenceNumber > 65535
+      stream.audioSequenceNumber -= 65535
 
     ts = Math.round((timestamp + rtpTimePerFrame * processedFrames) % TIMESTAMP_ROUNDOFF)
     processedFrames += group.length
-    lastAudioRTPTimestamp = (timestamp + rtpTimePerFrame * processedFrames) % TIMESTAMP_ROUNDOFF
+    stream.lastAudioRTPTimestamp = (timestamp + rtpTimePerFrame * processedFrames) % TIMESTAMP_ROUNDOFF
 
     # TODO dts
     rtpData = rtp.createRTPHeader
       marker: true
       payloadType: 96
-      sequenceNumber: audioSequenceNumber
+      sequenceNumber: stream.audioSequenceNumber
       timestamp: ts
       ssrc: null
 
@@ -1352,12 +1597,14 @@ onReceiveAudioAccessUnits = (accessUnits, pts, dts) ->
     rtpBuffer = Buffer.concat [new Buffer(rtpData), concatRawDataBlock],
       rtp.RTP_HEADER_LEN + audioHeader.length + accessUnitLength
 
-    for clientID, client of clients
+    for clientID, client of stream.clients
       if client.isPlaying
         rtp.replaceSSRCInRTP rtpBuffer, client.audioSSRC
 
         client.audioPacketCount++
         client.audioOctetCount += accessUnitLength
+        if DEBUG_OUTGOING_PACKET_DATA
+          console.log "send audio"
         if client.useTCPForAudio
           if client.useHTTP
             if client.httpClientType is 'GET'
@@ -1372,26 +1619,36 @@ onReceiveAudioAccessUnits = (accessUnits, pts, dts) ->
   return
 
 # pts, dts: in 90KHz clock rate
-onReceiveAudioPacket = (adtsFrameGlob, pts, dts) ->
+onReceiveAudioPacket = (stream, adtsFrameGlob, pts, dts) ->
   adtsFrames = aac.splitIntoADTSFrames adtsFrameGlob
   if adtsFrames.length is 0
     return
   adtsInfo = aac.parseADTSFrame adtsFrames[0]
 
-  if detectedAudioSampleRate isnt adtsInfo.sampleRate
-    detectedAudioSampleRate = adtsInfo.sampleRate
-    console.log "audio sample rate has been changed to #{detectedAudioSampleRate}"
-    updateAudioSampleRate adtsInfo.sampleRate
+  isConfigUpdated = false
 
-  if detectedAudioChannels isnt adtsInfo.channels
-    detectedAudioChannels = adtsInfo.channels
-    console.log "audio channels has been changed to #{detectedAudioChannels}"
-    updateAudioChannels adtsInfo.channels
+  if stream.audioSampleRate isnt adtsInfo.sampleRate
+    stream.audioSampleRate = adtsInfo.sampleRate
+    console.log "[stream:#{stream.id}] audio sample rate: #{stream.audioSampleRate}"
+#    updateAudioSampleRate stream, adtsInfo.sampleRate
+    stream.audioClockRate = adtsInfo.sampleRate
+    isConfigUpdated = true
 
-  if config.audioObjectType isnt adtsInfo.audioObjectType
-    config.audioObjectType = adtsInfo.audioObjectType
-    console.log "audio object type has been changed to #{config.audioObjectType}"
-    updateConfig()
+  if stream.audioChannels isnt adtsInfo.channels
+    stream.audioChannels = adtsInfo.channels
+    console.log "[stream:#{stream.id}] audio channels: #{stream.audioChannels}"
+#    updateAudioChannels stream, adtsInfo.channels
+    isConfigUpdated = true
+
+  if stream.audioObjectType isnt adtsInfo.audioObjectType
+    stream.audioObjectType = adtsInfo.audioObjectType
+    console.log "[stream:#{stream.id}] audio object type: #{stream.audioObjectType}"
+#    config.audioObjectType = adtsInfo.audioObjectType
+#    updateConfig()
+    isConfigUpdated = true
+
+  if isConfigUpdated
+    rtmpServer.updateStreamConfig stream
 
   rtpTimePerFrame = 1024
 
@@ -1400,35 +1657,49 @@ onReceiveAudioPacket = (adtsFrameGlob, pts, dts) ->
     rawDataBlock = adtsFrame[7..]
     rawDataBlocks.push rawDataBlock
 
-  onReceiveAudioAccessUnits rawDataBlocks, pts, dts
+  onReceiveAudioAccessUnits stream, rawDataBlocks, pts, dts
 
 h264Buffer = []
 
-rtp.on 'h264_nal_units', (clientId, nalUnits, rtpTimestamp) ->
-  if not uploadingClient?
+rtp.on 'h264_nal_units', (streamId, nalUnits, rtpTimestamp) ->
+  stream = streams[streamId]
+  if not stream?  # No matching stream
+    console.warn "warning: No matching stream to id #{streamId}"
     return
-  sendTime = getVideoSendTimeForUploadingRTPTimestamp rtpTimestamp
+
+  if not stream.uploadingClient?
+    # No uploading client associated with the stream
+    console.warn "warning: No uploading client associated with the stream #{stream.id}"
+    return
+  sendTime = getVideoSendTimeForUploadingRTPTimestamp stream, rtpTimestamp
   diffTimeInMs = sendTime - Date.now()
-  calculatedPTS = rtpTimestamp - uploadingClient.videoRTPStartTimestamp
+  calculatedPTS = rtpTimestamp - stream.uploadingClient.videoRTPStartTimestamp
   if diffTimeInMs >= 20  # later than 20 ms
     setTimeout ->
-      onReceiveVideoNALUnits nalUnits, calculatedPTS, calculatedPTS
+      onReceiveVideoNALUnits stream, nalUnits, calculatedPTS, calculatedPTS
     , diffTimeInMs
   else
-    onReceiveVideoNALUnits nalUnits, calculatedPTS, calculatedPTS
+    onReceiveVideoNALUnits stream, nalUnits, calculatedPTS, calculatedPTS
 
-rtp.on 'aac_access_units', (clientId, accessUnits, rtpTimestamp) ->
-  if not uploadingClient?
+rtp.on 'aac_access_units', (streamId, accessUnits, rtpTimestamp) ->
+  stream = streams[streamId]
+  if not stream?  # No matching stream
+    console.warn "warning: No matching stream to id #{streamId}"
     return
-  sendTime = getAudioSendTimeForUploadingRTPTimestamp rtpTimestamp
+
+  if not stream.uploadingClient?
+    # No uploading client associated with the stream
+    console.warn "warning: No uploading client associated with the stream #{stream.id}"
+    return
+  sendTime = getAudioSendTimeForUploadingRTPTimestamp stream, rtpTimestamp
   diffTimeInMs = sendTime - Date.now()
-  calculatedPTS = Math.round (rtpTimestamp - uploadingClient.audioRTPStartTimestamp) * 90000 / audioClockRate
+  calculatedPTS = Math.round (rtpTimestamp - stream.uploadingClient.audioRTPStartTimestamp) * 90000 / stream.audioClockRate
   if diffTimeInMs >= 20  # later than 20ms
     setTimeout ->
-      onReceiveAudioAccessUnits accessUnits, calculatedPTS, calculatedPTS
+      onReceiveAudioAccessUnits stream, accessUnits, calculatedPTS, calculatedPTS
     , diffTimeInMs
   else
-    onReceiveAudioAccessUnits accessUnits, calculatedPTS, calculatedPTS
+    onReceiveAudioAccessUnits stream, accessUnits, calculatedPTS, calculatedPTS
 
 pad = (digits, n) ->
   n = n + ''
@@ -1489,6 +1760,9 @@ respondWithNotFound = (protocol='RTSP', callback) ->
   """.replace /\n/g, "\r\n"
   callback null, res
 
+isLoopbackAddress = (socket) ->
+  return socket.remoteAddress is '127.0.0.1'
+
 # Check if the remote address of the given socket is private
 isPrivateNetwork = (socket) ->
   if /^(10\.|192\.168\.|127\.0\.0\.)/.test socket.remoteAddress
@@ -1501,6 +1775,7 @@ isPrivateNetwork = (socket) ->
 
 respond = (socket, req, callback) ->
   client = clients[socket.clientID]
+
   if req.method is 'OPTIONS'
     res = """
     RTSP/1.0 200 OK
@@ -1602,6 +1877,11 @@ respond = (socket, req, callback) ->
       socket.isAuthenticated = true
       client.bandwidth = req.headers.bandwidth
 
+      stream = getStreamByUri req.uri
+      if not stream?
+        respondWithNotFound 'RTSP', callback
+        return
+
       sdpData =
         username      : '-'
         sessionID     : client.sessionID
@@ -1609,25 +1889,25 @@ respond = (socket, req, callback) ->
         addressType   : 'IP4'
         unicastAddress: getMeaningfulIPTo socket
 
-      if isAudioStarted
+      if stream.isAudioStarted
         sdpData.hasAudio          = true
         sdpData.audioPayloadType  = 96
         sdpData.audioEncodingName = 'mpeg4-generic'
-        sdpData.audioClockRate    = audioClockRate
-        sdpData.audioChannels     = config.audioChannels
-        sdpData.audioSampleRate   = config.audioSampleRate
-        sdpData.audioObjectType   = config.audioObjectType
+        sdpData.audioClockRate    = stream.audioClockRate
+        sdpData.audioChannels     = stream.audioChannels
+        sdpData.audioSampleRate   = stream.audioSampleRate
+        sdpData.audioObjectType   = stream.audioObjectType
 
-      if isVideoStarted
+      if stream.isVideoStarted
         sdpData.hasVideo                = true
         sdpData.videoPayloadType        = 97
         sdpData.videoEncodingName       = 'H264'  # must be H264
         sdpData.videoClockRate          = 90000  # must be 90000
-        sdpData.videoProfileLevelId     = PROFILE_LEVEL_ID
-        sdpData.videoSpropParameterSets = spropParameterSets
-        sdpData.videoHeight             = config.videoHeight
-        sdpData.videoWidth              = config.videoWidth
-        sdpData.videoFrameRate          = config.videoFrameRate.toFixed 1
+        sdpData.videoProfileLevelId     = stream.videoProfileLevelId
+        sdpData.videoSpropParameterSets = stream.spropParameterSets
+        sdpData.videoHeight             = stream.videoHeight
+        sdpData.videoWidth              = stream.videoWidth
+        sdpData.videoFrameRate          = stream.videoFrameRate.toFixed 1
 
       body = sdp.createSDP sdpData
 
@@ -1673,32 +1953,53 @@ respond = (socket, req, callback) ->
     if mode is 'RECORD'
       sdpInfo = client.announceSDPInfo
       if (match = /\/([^/]+)$/.exec req.uri)?
-        streamId = match[1]
+        setupStreamId = match[1]  # e.g. "streamid=0"
         mediaType = null
         for media in sdpInfo.media
-          if media.attributes?.control is streamId
+          if media.attributes?.control is setupStreamId
             mediaType = media.media
             break
         if not mediaType?
-          throw new Error "streamid not found: #{streamId}"
+          throw new Error "streamid not found: #{setupStreamId}"
       else
         throw new Error "Unknown URI: #{req.uri}"
 
-      uploadingClient.uploadingChannels = {}
+      streamId = getStreamIdFromUri req.uri
+      stream = streams[streamId]
+      if not stream?
+        console.warn "warning: SETUP specified non-existent stream: #{streamId}"
+        console.warn "         Stream has to be created by ANNOUNCE method."
+        stream = createStream streamId
+      if not stream.uploadingClient?
+        stream.uploadingClient = {}
+      if not stream.uploadingClient.uploadingChannels?
+        stream.uploadingClient.uploadingChannels = {}
       if (match = /;interleaved=(\d)-(\d)/.exec req.headers.transport)?
         if mediaType is 'video'
-          uploadingClient.uploadingChannels.videoData = parseInt match[1]
-          uploadingClient.uploadingChannels.videoControl = parseInt match[2]
+          stream.uploadingClient.uploadingChannels.videoData = parseInt match[1]
+          stream.uploadingClient.uploadingChannels.videoControl = parseInt match[2]
         else  # audio
-          uploadingClient.uploadingChannels.audioData = parseInt match[1]
-          uploadingClient.uploadingChannels.audioControl = parseInt match[2]
+          stream.uploadingClient.uploadingChannels.audioData = parseInt match[1]
+          stream.uploadingClient.uploadingChannels.audioControl = parseInt match[2]
         # interleaved mode (use current connection)
         transportHeader = req.headers.transport.replace(/mode=[^;]*/, '')
       else
         if mediaType is 'video'
           [dataPort, controlPort] = [config.rtspVideoDataUDPListenPort, config.rtspVideoControlUDPListenPort]
+          if (match = /;client_port=(\d+)-(\d+)/.exec req.headers.transport)?
+            console.log "registering video rtspUploadingClient #{client.ip}:#{parseInt(match[1])}"
+            console.log "registering video rtspUploadingClient #{client.ip}:#{parseInt(match[2])}"
+            rtspUploadingClients[client.ip + ':' + parseInt(match[1])] = client
+            rtspUploadingClients[client.ip + ':' + parseInt(match[2])] = client
         else  # audio
           [dataPort, controlPort] = [config.rtspAudioDataUDPListenPort, config.rtspAudioControlUDPListenPort]
+          if (match = /;client_port=(\d+)-(\d+)/.exec req.headers.transport)?
+            console.log "registering audio rtspUploadingClient #{client.ip}:#{parseInt(match[1])}"
+            console.log "registering audio rtspUploadingClient #{client.ip}:#{parseInt(match[2])}"
+            rtspUploadingClients[client.ip + ':' + parseInt(match[1])] = client
+            rtspUploadingClients[client.ip + ':' + parseInt(match[2])] = client
+
+        # client will send packets to "source" address which is specified here
         transportHeader = req.headers.transport.replace(/mode=[^;]*/, '') +
                           "source=#{getMeaningfulIPTo socket}" +
                           ";server_port=#{dataPort}-#{controlPort}"
@@ -1724,7 +2025,7 @@ respond = (socket, req, callback) ->
         else
           ssrc = client.audioSSRC
         serverPort = "#{config.audioRTPServerPort}-#{config.audioRTCPServerPort}"
-        if (match = /client_port=(\d+)-(\d+)/.exec req.headers.transport)?
+        if (match = /;client_port=(\d+)-(\d+)/.exec req.headers.transport)?
           client.clientAudioRTPPort = parseInt match[1]
           client.clientAudioRTCPPort = parseInt match[2]
       else  # video
@@ -1734,7 +2035,7 @@ respond = (socket, req, callback) ->
         else
           ssrc = client.videoSSRC
         serverPort = "#{config.videoRTPServerPort}-#{config.videoRTCPServerPort}"
-        if (match = /client_port=(\d+)-(\d+)/.exec req.headers.transport)?
+        if (match = /;client_port=(\d+)-(\d+)/.exec req.headers.transport)?
           client.clientVideoRTPPort = parseInt match[1]
           client.clientVideoRTCPPort = parseInt match[2]
 
@@ -1819,6 +2120,10 @@ respond = (socket, req, callback) ->
       return
 
     preventFromPlaying = false
+    stream = getStreamByUri req.uri
+    if not stream?
+      respondWithNotFound 'RTSP', callback
+      return
 
 #    if (req.headers['user-agent']?.indexOf('QuickTime') > -1) and
 #    not client.getClient?.useTCPForVideo
@@ -1835,10 +2140,10 @@ respond = (socket, req, callback) ->
     # TODO: Send this response after the first packet for this stream arrives
     baseUrl = req.uri.replace /\/$/, ''
     rtpInfos = []
-    if isAudioStarted
-      rtpInfos.push "url=#{baseUrl}/trackID=1;seq=#{getNextAudioSequenceNumber()};rtptime=#{getNextAudioRTPTimestamp()}"
-    if isVideoStarted
-      rtpInfos.push "url=#{baseUrl}/trackID=2;seq=#{getNextVideoSequenceNumber()};rtptime=#{getNextVideoRTPTimestamp()}"
+    if stream.isAudioStarted
+      rtpInfos.push "url=#{baseUrl}/trackID=1;seq=#{getNextAudioSequenceNumber stream};rtptime=#{getNextAudioRTPTimestamp stream}"
+    if stream.isVideoStarted
+      rtpInfos.push "url=#{baseUrl}/trackID=2;seq=#{getNextVideoSequenceNumber stream};rtptime=#{getNextVideoRTPTimestamp stream}"
     res = """
     RTSP/1.0 200 OK
     Range: npt=0.0-
@@ -1851,28 +2156,30 @@ respond = (socket, req, callback) ->
 
     """.replace /\n/g, "\r\n"
     if not preventFromPlaying
+      stream.clients[client.id] = client
+      stream.numClients++
       if client.useHTTP
-        console.log "[[[ start sending to #{client.getClient.id} through GET ]]]"
-        if ENABLE_START_PLAYING_FROM_KEYFRAME and isVideoStarted
+        console.log "[[[ start streaming to #{client.getClient.id} by HTTP GET ]]]"
+        if ENABLE_START_PLAYING_FROM_KEYFRAME and stream.isVideoStarted
           client.getClient.isWaitingForKeyFrame = true
         else
           client.getClient.isPlaying = true
       else if client.useTCPForVideo  # or client.useTCPForAudio?
-        console.log "[[[ start sending to #{client.id} by TCP ]]]"
-        if ENABLE_START_PLAYING_FROM_KEYFRAME and isVideoStarted
+        console.log "[[[ start streaming to #{client.id} by TCP ]]]"
+        if ENABLE_START_PLAYING_FROM_KEYFRAME and stream.isVideoStarted
           client.isWaitingForKeyFrame = true
         else
           client.isPlaying = true
       else
-        console.log "[[[ start sending to #{client.id} by UDP ]]]"
-        if ENABLE_START_PLAYING_FROM_KEYFRAME and isVideoStarted
+        console.log "[[[ start streaming to #{client.id} by UDP ]]]"
+        if ENABLE_START_PLAYING_FROM_KEYFRAME and stream.isVideoStarted
           client.isWaitingForKeyFrame = true
         else
           client.isPlaying = true
       if client.useHTTP
-        startSendingRTCP client.getClient
+        startSendingRTCP stream, client.getClient
       else
-        startSendingRTCP client
+        startSendingRTCP stream, client
     else
       console.log "[[[ NOT PLAYING ]]]"
     callback null, res
@@ -1897,9 +2204,10 @@ respond = (socket, req, callback) ->
     """.replace /\n/g, "\r\n"
     callback null, res
   else if req.method is 'TEARDOWN'
-    if client is uploadingClient
-      console.log "[rtsp] client finished to upload streams"
-      uploadingClient = null
+    stream = getStreamByUri req.uri
+    if client is stream?.uploadingClient
+      console.log "[rtsp] client finished to upload stream #{stream.id}"
+      stream.uploadingClient = null
     if not socket.isAuthenticated
       respondWithNotFound 'RTSP', callback
       return
@@ -1909,6 +2217,8 @@ respond = (socket, req, callback) ->
     else
       client.isWaitingForKeyFrame = false
       client.isPlaying = false
+    if stream?
+      delete stream.clients[client.id]
     res = """
     RTSP/1.0 200 OK
     Session: #{client.sessionID};timeout=60
@@ -1919,8 +2229,13 @@ respond = (socket, req, callback) ->
     """.replace /\n/g, "\r\n"
     callback null, res
   else if req.method is 'ANNOUNCE'
-    resetStreams()
-    rtp.clearAllUnorderedPacketBuffers()
+    streamId = getStreamIdFromUri req.uri
+    stream = streams[streamId]
+    if stream?
+      resetStreams stream
+      rtp.clearUnorderedPacketBuffer stream.id
+    else
+      stream = createStream streamId
 
     sdpInfo = sdp.parse req.body
 
@@ -1933,9 +2248,9 @@ respond = (socket, req, callback) ->
             nalUnitType = nalUnit[0] & 0x1f
             switch nalUnitType
               when h264.NAL_UNIT_TYPE_SPS  # 7
-                onSPSNALUnit nalUnit
+                onSPSNALUnit stream, nalUnit
               when h264.NAL_UNIT_TYPE_PPS  # 8
-                onPPSNALUnit nalUnit
+                onPPSNALUnit stream, nalUnit
               else
                 console.warn "unknown nal_unit_type #{nalUnitType} in sprop-parameter-sets"
       else if media.media is 'audio'
@@ -1944,16 +2259,17 @@ respond = (socket, req, callback) ->
         if not media.clockRate?
           console.error "Error: rtpmap attribute in SDP must have audio clock rate; assuming 44100"
           media.clockRate = 44100
-        detectedAudioSampleRate = media.clockRate
-        console.log "audio sample rate has been changed to #{detectedAudioSampleRate}"
-        updateAudioSampleRate detectedAudioSampleRate
+        stream.audioSampleRate = media.clockRate
+        console.log "[stream:#{stream.id}] audio sample rate has been changed to #{stream.audioSampleRate}"
+#        updateAudioSampleRate stream, stream.audioSampleRate
+        stream.audioClockRate = media.clockRate
 
         if not media.audioChannels?
           console.error "Error: rtpmap attribute in SDP must have audio channels; assuming 2"
           media.audioChannels = 2
-        detectedAudioChannels = media.audioChannels
-        console.log "audio channels has been changed to #{detectedAudioChannels}"
-        updateAudioChannels detectedAudioChannels
+        stream.audioChannels = media.audioChannels
+        console.log "[stream:#{stream.id}] audio channels has been changed to #{stream.audioChannels}"
+#        updateAudioChannels stream, stream.audioChannels
 
         if not media.fmtpParams?
           console.error "Error: fmtp attribute does not exist in SDP"
@@ -1961,11 +2277,15 @@ respond = (socket, req, callback) ->
 
         if media.fmtpParams.config?
           audioSpecificConfig = rtp.parseAACConfig media.fmtpParams.config
-          config.audioObjectType = audioSpecificConfig.audioObjectType
+          stream.audioObjectType = audioSpecificConfig.audioObjectType
+#          config.audioObjectType = audioSpecificConfig.audioObjectType
         else
           console.error "Error: fmtp attribute in SDP does not have config parameter; assuming audioObjectType=2"
-          config.audioObjectType = 2
-        console.log "audio object type has been changed to #{config.audioObjectType}"
+          stream.audioObjectType = 2
+#          config.audioObjectType = 2
+        console.log "[stream:#{stream.id}] audio object type has been changed to #{stream.audioObjectType}"
+
+        rtmpServer.updateStreamConfig stream
 
         if media.fmtpParams.sizelength?
           media.fmtpParams.sizelength = parseInt media.fmtpParams.sizelength
@@ -1983,11 +2303,14 @@ respond = (socket, req, callback) ->
           console.error "Error: fmtp attribute in SDP must have indexdeltalength parameter; assuming 3"
           media.fmtpParams.indexdeltalength = 3
 
-        updateConfig()
+#        updateConfig()
 
     client.announceSDPInfo = sdpInfo
-    uploadingClient = client
-    uploadingClient.uploadingTimestampInfo = {}
+    # make circular reference between stream and client
+    stream.uploadingClient = client
+    console.log "set uploadingClient #{client.id} to stream #{stream.id}"
+    client.uploadingStream = stream
+    client.uploadingTimestampInfo = {}
 
     socket.isAuthenticated = true
 
@@ -2000,8 +2323,12 @@ respond = (socket, req, callback) ->
     callback null, res
   else if req.method is 'RECORD'
     console.log "[rtsp] client started to upload streams"
-    onReceiveVideoControlBuffer()
-    onReceiveAudioControlBuffer()
+    streamId = getStreamIdFromUri req.uri
+    stream = streams[streamId]
+    if not stream?
+      stream = createStream streamId
+    onReceiveVideoControlBuffer stream
+    onReceiveAudioControlBuffer stream
     res = """
     RTSP/1.0 200 OK
     Session: #{client.sessionID};timeout=60
@@ -2040,5 +2367,5 @@ parseRequest = (data) ->
     protocol: protocol
     headers: headers
     body: body
-    headerBytes: headerPart.length  # TODO
+    headerBytes: Buffer.byteLength headerPart, 'utf8'  # TODO
   }

@@ -408,7 +408,7 @@ exports.UDPServer = class UDPServer extends events.EventEmitter
       @sendAck packet.packetId, packet.port, packet.address
 
     setTimeout =>
-      @emit 'packet', packet.body
+      @emit 'packet', packet.body, packet.address, packet.port
     , 0
 
   sendAck: (packetId, port, address, callback) ->
@@ -433,7 +433,7 @@ exports.UDPServer = class UDPServer extends events.EventEmitter
 # Usage
 
     server = new hybrid_udp.UDPServer
-    server.on 'packet', (buf) ->
+    server.on 'packet', (buf, addr, port) ->
       # buf is a Buffer instance
       console.log "server received: 0x#{buf.toString 'hex'}"
       if buf[0] is 0x04
