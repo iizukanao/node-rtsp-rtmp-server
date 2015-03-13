@@ -5,6 +5,8 @@ zlib    = require 'zlib'
 spawn   = require('child_process').spawn
 Sequent = require 'sequent'
 
+logger = require './logger'
+
 # Directory to store EJS templates
 TEMPLATE_DIR = "#{__dirname}/template"
 
@@ -15,7 +17,7 @@ STATIC_DIR  = "#{__dirname}/public"
 DIRECTORY_INDEX_FILENAME = 'index.html'
 
 # Server name which is embedded in HTTP response header
-serverName = 'node-rtsp-rtmp-server'
+DEFAULT_SERVER_NAME = 'node-rtsp-rtmp-server'
 
 # Response larger than this bytes is compressed
 GZIP_SIZE_THRESHOLD = 300
@@ -35,17 +37,12 @@ zeropad = (width, num) ->
     num = '0' + num
   num
 
-getDateHeader = ->
-  d = new Date
-  "#{DAY_NAMES[d.getUTCDay()]}, #{d.getUTCDate()} #{MONTH_NAMES[d.getUTCMonth()]}" +
-  " #{d.getUTCFullYear()} #{zeropad 2, d.getUTCHours()}:#{zeropad 2, d.getUTCMinutes()}" +
-  ":#{zeropad 2, d.getUTCSeconds()} UTC"
-
-class HTTPServer
-  constructor: ->
+class HTTPHandler
+  constructor: (opts) ->
+    @serverName = opts?.serverName ? DEFAULT_SERVER_NAME
 
   setServerName: (name) ->
-    serverName = name
+    @serverName = name
 
   handlePath: (filepath, req, callback) ->
     # Example implementation
@@ -94,8 +91,8 @@ class HTTPServer
         statusMessage = '401 Unauthorized'
     header = """
     #{protocol} #{statusMessage}
-    Date: #{getDateHeader()}
-    Server: #{serverName}
+    Date: #{api.getDateHeader()}
+    Server: #{@serverName}
 
     """
 
@@ -372,7 +369,43 @@ class HTTPServer
                 headerBuf = new Buffer header, 'utf8'
                 callback null, [ headerBuf, contentBuf ]
       else
-        console.warn "Requested file not found: #{filepath}"
+        logger.warn "[http] Requested file not found: #{filepath}"
         @notFound req, callback
 
-module.exports = HTTPServer
+api =
+  HTTPHandler: HTTPHandler
+
+  getDateHeader: ->
+    d = new Date
+    "#{DAY_NAMES[d.getUTCDay()]}, #{d.getUTCDate()} #{MONTH_NAMES[d.getUTCMonth()]}" +
+    " #{d.getUTCFullYear()} #{zeropad 2, d.getUTCHours()}:#{zeropad 2, d.getUTCMinutes()}" +
+    ":#{zeropad 2, d.getUTCSeconds()} UTC"
+
+  parseRequest: (str) ->
+    [headerPart, body] = str.split '\r\n\r\n'
+
+    lines = headerPart.split /\r\n/
+    [method, uri, protocol] = lines[0].split /\s+/
+    headers = {}
+    for line, i in lines
+      continue if i is 0
+      continue if /^\s*$/.test line
+      params = line.split ": "
+      headers[params[0].toLowerCase()] = params[1]
+
+    try
+      decodedURI = decodeURIComponent uri
+    catch e
+      console.log "error: failed to decode URI: #{uri}"
+      return null
+
+    return {
+      method: method
+      uri: decodedURI
+      protocol: protocol
+      headers: headers
+      body: body
+      headerBytes: Buffer.byteLength headerPart, 'utf8'
+    }
+
+module.exports = api

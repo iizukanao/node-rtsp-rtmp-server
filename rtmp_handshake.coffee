@@ -125,7 +125,7 @@ generateS2 = (messageFormat, clientsig, callback) ->
 # Generate S0/S1/S2 combined message
 generateS0S1S2 = (clientsig, callback) ->
   clientType = clientsig[0]
-  console.log "[rtmp:handshake] client type: #{clientType}"
+#  console.log "[rtmp:handshake] client type: #{clientType}"
   clientsig = clientsig[1..]
 
   dh = DHKeyGenerate KEY_LENGTH * 8
