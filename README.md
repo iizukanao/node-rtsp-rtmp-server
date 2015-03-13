@@ -2,7 +2,6 @@
 
 - Supports RTSP, RTMP/RTMPE/RTMPT/RTMPTE, and HTTP.
 - Supports only H.264 video and AAC audio.
-- Supports only a single pair of audio/video streams (you can't publish multiple streams simultaneously).
 
 ### Installation
 
@@ -41,8 +40,6 @@ In the Encoding Options panel, check "Stream to Flash Media Server" and set the 
 
 Press the "Connect" button. Set the video format to H.264, and the audio format to AAC. Press the "Start" button.
 
-Note that multiple streams are not supported. You can push only one stream at a time.
-
 #### From FFmpeg
 
 If you have an MP4 file with H.264 video and AAC audio:
@@ -60,6 +57,10 @@ Replace `input.mp4` with live audio/video sources.
 You can publish streams from RTSP client such as FFmpeg.
 
     $ ffmpeg -re -i input.mp4 -c:v libx264 -preset fast -c:a libfdk_aac -ab 128k -ar 44100 -f rtsp rtsp://localhost:80/live
+
+Or you can publish it over TCP instead of UDP. TCP is favorable if you publish large data from FFmpeg.
+
+    $ ffmpeg -re -i input.mp4 -c:v libx264 -preset fast -c:a libfdk_aac -ab 128k -ar 44100 -f rtsp -rtsp_transport tcp rtsp://localhost:80/live
 
 #### From GStreamer
 
