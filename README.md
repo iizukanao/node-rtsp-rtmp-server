@@ -58,7 +58,7 @@ You can publish streams from RTSP client such as FFmpeg.
 
     $ ffmpeg -re -i input.mp4 -c:v libx264 -preset fast -c:a libfdk_aac -ab 128k -ar 44100 -f rtsp rtsp://localhost:80/live
 
-Or you can publish it over TCP instead of UDP. TCP is favorable if you publish large data from FFmpeg.
+Or you can publish it over TCP instead of UDP, by specifying `-rtsp_transport tcp` option. TCP is favorable if you publish large data from FFmpeg.
 
     $ ffmpeg -re -i input.mp4 -c:v libx264 -preset fast -c:a libfdk_aac -ab 128k -ar 44100 -f rtsp -rtsp_transport tcp rtsp://localhost:80/live
 
