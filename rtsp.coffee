@@ -421,7 +421,7 @@ class RTSPServer
           @dumpClients()
         c.buf = null
         c.on 'error', (err) ->
-          console.error "Socket error (#{c.clientID}): #{err}"
+          logger.error "Socket error (#{c.clientID}): #{err}"
           c.destroy()
         c.on 'data', (data) =>
           @handleOnData c, data
@@ -893,7 +893,7 @@ class RTSPServer
       if DEBUG_RTSP
         console.log "==================="
       if resultOpts?.close
-        console.log "[#{c.clientID}] end"
+        # Half-close the socket
         c.end()
       if c.buf?
         # Process the remaining buffer
@@ -1823,7 +1823,7 @@ class RTSPClient
     if not @socket.remoteAddress?
       return "#{@id}: session=#{@sessionID} (being destroyed)"
     else
-      transportDesc = if @clientType? then "transport=#{@clientType}" else ''
+      transportDesc = if @clientType? then "type=#{@clientType}" else ''
       if @clientType in ['http-get', 'tcp', 'udp']
         transportDesc += " isPlaying=#{@isPlaying}"
       return "#{@id}: session=#{@sessionID} addr=#{@socket.remoteAddress} port=#{@socket.remotePort} #{transportDesc}"
