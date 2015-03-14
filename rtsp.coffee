@@ -366,7 +366,6 @@ class RTSPServer
     logger.raw "[rtsp/http: #{Object.keys(@clients).length} clients]"
     for clientID, client of @clients
       logger.raw " " + client.toString()
-    avstreams.dump()
     return
 
   start: (opts) ->
