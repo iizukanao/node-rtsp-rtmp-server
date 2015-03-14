@@ -1,5 +1,5 @@
 h264 = require './h264'
-EventEmitterModule = require './EventEmitterModule'
+EventEmitterModule = require './event_emitter'
 logger = require './logger'
 
 class AVStream
