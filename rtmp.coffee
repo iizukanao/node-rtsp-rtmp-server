@@ -2102,7 +2102,6 @@ class RTMPServer
               # If HTTP-tunneling (RTMPT or RTMPTE) is used, Flash Player
               # may send requests in parallel using multiple connections.
               # So we have to buffer and sort the requests.
-              logger.info "buffering request: #{index} > #{session.requestBuffer.nextIndex}"
               session.requestBuffer.reqs.push
                 req     : req
                 index   : index
@@ -2129,7 +2128,6 @@ class RTMPServer
             while (session.requestBuffer.reqs.length > 0) and
             (session.requestBuffer.reqs[0].index is session.requestBuffer.nextIndex)
               info = session.requestBuffer.reqs.shift()
-              logger.info "consuming buffered request: #{info.index}"
               # TODO: Call respondSend with setImmediate()?
               session.respondSend info.req, info.callback
               session.requestBuffer.nextIndex = info.index + 1

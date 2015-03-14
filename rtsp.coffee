@@ -1143,7 +1143,6 @@ class RTSPServer
     getClient = @httpSessions[client.sessionCookie].get
     # Make circular reference
     getClient.postClient = client
-    console.log "getClient: #{getClient} for client #{client.id}"
     client.getClient = getClient
     client.useHTTP = true
     client.httpClientType = 'POST'
