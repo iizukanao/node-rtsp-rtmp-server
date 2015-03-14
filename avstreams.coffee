@@ -117,7 +117,16 @@ class AVStream
       @emit 'updateConfig'
 
   toString: ->
-    return "stream #{@id}: rtspNumClients=#{@rtspNumClients} rtspClients=#{Object.keys(@rtspClients).length}"
+    str = "#{@id}: "
+    if @videoWidth?
+      str += "video: #{@videoWidth}x#{@videoHeight} profile=#{@videoAVCProfile} level=#{@videoAVCLevel}"
+    else
+      str += "video: (waiting for data)"
+    if @audioSampleRate?
+      str += "; audio: samplerate=#{@audioSampleRate} channels=#{@audioChannels} objecttype=#{@audioObjectType}"
+    else
+      str += "; audio: (waiting for data)"
+    return str
 
 EventEmitterModule.mixin AVStream
 
