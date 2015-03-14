@@ -936,7 +936,6 @@ class RTMPSession
 #        0, 0x14, 0, 0
         0, 0x26, 0x25, 0xa0
       ]
-#    console.log "[rtmp:send] WindowAckSize=#{0x2625a0}"
 
     setPeerBandwidth = createRTMPMessage
       chunkStreamID: 2
@@ -1775,7 +1774,6 @@ class RTMPSession
                 (rtmpMessage.body[1] << 16) +
                 (rtmpMessage.body[2] << 8) +
                 rtmpMessage.body[3]
-#              console.log "[rtmp:receive] Set Chunk Size: #{newChunkSize}"
               @receiveChunkSize = newChunkSize
               seq.done()
             when 3  # Acknowledgement
@@ -1906,7 +1904,6 @@ class RTMPServer
           delete sessions[c.clientId]
           sessionsCount--
         @dumpSessions()
-#        logger.info "[rtmp] #{sessionsCount} clients"
       c.on 'error', (err) ->
         logger.error "[rtmp] socket error: #{err}"
         c.destroy()
@@ -2102,7 +2099,7 @@ class RTMPServer
           index = parseInt index
           if session.requestBuffer?
             if index > session.requestBuffer.nextIndex
-              # When HTTP-tunneling (RTMPT or RTMPTE) is used, Flash Player
+              # If HTTP-tunneling (RTMPT or RTMPTE) is used, Flash Player
               # may send requests in parallel using multiple connections.
               # So we have to buffer and sort the requests.
               logger.info "buffering request: #{index} > #{session.requestBuffer.nextIndex}"
@@ -2247,7 +2244,7 @@ class RTMPTSession
 
   close: ->
     if @isClosed
-#      console.log "[rtmpt] already closed"
+      # already closed
       return
     logger.info "[rtmpt] #{@rtmpSession.clientid}: close"
     @isClosed = true

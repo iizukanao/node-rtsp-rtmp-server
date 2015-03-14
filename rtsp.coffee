@@ -145,16 +145,8 @@ class RTSPServer
         console.warn "warning: No uploading client associated with the stream #{stream.id}"
         return
       sendTime = @getVideoSendTimeForUploadingRTPTimestamp stream, rtpTimestamp
-#      diffTimeInMs = sendTime - Date.now()
       calculatedPTS = rtpTimestamp - stream.rtspUploadingClient.videoRTPStartTimestamp
       @emit 'video', stream, nalUnits, calculatedPTS, calculatedPTS
-#      console.log "h264 calculatedPTS=#{calculatedPTS} diffTimeInMs=#{diffTimeInMs}"
-#      if diffTimeInMs >= 20  # later than 20 ms
-#        setTimeout =>
-#          @emit 'video', stream, nalUnits, calculatedPTS, calculatedPTS
-#        , diffTimeInMs
-#      else
-#        @emit 'video', stream, nalUnits, calculatedPTS, calculatedPTS
 
     @rtpParser.on 'aac_access_units', (streamId, accessUnits, rtpTimestamp) =>
       stream = avstreams.get streamId
@@ -167,17 +159,9 @@ class RTSPServer
         console.warn "warning: No uploading client associated with the stream #{stream.id}"
         return
       sendTime = @getAudioSendTimeForUploadingRTPTimestamp stream, rtpTimestamp
-#      diffTimeInMs = sendTime - Date.now()
       calculatedPTS = Math.round (rtpTimestamp - stream.rtspUploadingClient.audioRTPStartTimestamp) * 90000 / stream.audioClockRate
       # PTS may not be monotonically increased (it may not be in decoding order)
       @emit 'audio', stream, accessUnits, calculatedPTS, calculatedPTS
-#      console.log "aac calculatedPTS=#{calculatedPTS} diffTimeInMs=#{diffTimeInMs}"
-#      if diffTimeInMs >= 20  # later than 20ms
-#        setTimeout =>
-#          @emit 'audio', stream, accessUnits, calculatedPTS, calculatedPTS
-#        , diffTimeInMs
-#      else
-#        @emit 'audio', stream, accessUnits, calculatedPTS, calculatedPTS
 
   setServerName: (name) ->
     @serverName = name
@@ -249,11 +233,9 @@ class RTSPServer
       if nalUnitType is h264.NAL_UNIT_TYPE_SPS  # 7
         isSPSSent = true
         stream.updateSPS nalUnit
-#        onSPSNALUnit stream, nalUnit
       else if nalUnitType is h264.NAL_UNIT_TYPE_PPS  # 8
         isPPSSent = true
         stream.updatePPS nalUnit
-#        onPPSNALUnit stream, nalUnit
 
       # If this is keyframe but SPS and PPS do not exist in the
       # same timestamp, we insert them before the keyframe.
@@ -331,7 +313,7 @@ class RTSPServer
       accessUnitLength = concatRawDataBlock.length
 
       # TODO: maximum size of AAC-hbr is 8191 octets
-      # TODO: sequence number should be started from a random number
+      # TODO: sequence number should start at a random number
 
       audioHeader = rtp.createAudioHeader
         accessUnits: group
@@ -927,7 +909,7 @@ class RTSPServer
       thisNalUnit = nalUnit.slice 0, SINGLE_NAL_UNIT_MAX_SIZE
       nalUnit = nalUnit.slice SINGLE_NAL_UNIT_MAX_SIZE
 
-      # TODO: sequence number should be started from a random number
+      # TODO: sequence number should start at a random number
       rtpData = rtp.createRTPHeader
         marker: false
         payloadType: 97
@@ -1046,12 +1028,6 @@ class RTSPServer
     nalUnitLen = nalUnit.length
     rtpBuffer = Buffer.concat [new Buffer(rtpHeader), nalUnit],
       rtp.RTP_HEADER_LEN + nalUnitLen
-#    if DEBUG_INCOMING_PACKET_DATA
-#      md5 = crypto.createHash 'md5'
-#      md5.update nalUnit
-#      tsDiff = ts - stream.lastSentVideoTimestamp
-#      console.log "video: ts #{tsDiff} md5 #{md5.digest('hex')[0..6]} single: #{rtpBuffer.length} bytes marker=#{marker}" + (if isKeyFrame then " isKeyFrame=#{isKeyFrame}" else "")
-#      stream.lastSentVideoTimestamp = ts
 
     for clientID, client of stream.rtspClients
       if client.isWaitingForKeyFrame and isKeyFrame
@@ -1223,14 +1199,6 @@ class RTSPServer
         callback err, output,
           close: req.headers.connection?.toLowerCase() isnt 'keep-alive'
       return
-
-#    console.warn "Routing failed: #{req.uri}"
-#    isKeepAlive = req.headers.connection?.toLowerCase() is 'keep-alive'
-#    opts = { keepalive: isKeepAlive }
-#    @notFound 'HTTP', opts, (err, content) ->
-#      callback null, content,
-#        close: not isKeepAlive
-#    return
 
   respondDescribe: (socket, req, callback) ->
     client = @clients[socket.clientID]
@@ -1644,10 +1612,8 @@ class RTSPServer
             switch nalUnitType
               when h264.NAL_UNIT_TYPE_SPS  # 7
                 stream.updateSPS nalUnit
-#                onSPSNALUnit stream, nalUnit
               when h264.NAL_UNIT_TYPE_PPS  # 8
                 stream.updatePPS nalUnit
-#                onPPSNALUnit stream, nalUnit
               else
                 console.warn "unknown nal_unit_type #{nalUnitType} in sprop-parameter-sets"
       else if media.media is 'audio'

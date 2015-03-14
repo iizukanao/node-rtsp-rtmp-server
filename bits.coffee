@@ -1,19 +1,5 @@
 # Utility functions for buffer operation
 
-#buf = null
-#byte_index = 0
-#bit_index = 0
-#
-#stash_buf = []
-#stash_byte_index = []
-#stash_bit_index = []
-#
-#c_buf = null
-#c_byte_index = 0
-#c_bit_index = 0
-#
-#is_warning_fatal = false
-
 class Bits
   constructor: (buffer) ->
     @buf = null
@@ -192,8 +178,6 @@ class Bits
     if @bit_index is 8
       @byte_index++
       @bit_index = 0
-#      if @byte_index >= @buf.length
-#        console.log "All bytes read"
     return value
 
   push_back_byte: ->
