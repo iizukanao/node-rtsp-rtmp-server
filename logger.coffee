@@ -38,7 +38,7 @@ api =
     if activeTags[tag]?
       api.print str, raw
 
-  log: (level, str, raw=false) ->
+  msg: (level, str, raw=false) ->
     if level >= logLevel
       api.print str, raw
 
@@ -53,19 +53,19 @@ api =
     return logLevel
 
   debug: (str, raw=false) ->
-    api.log api.LEVEL_DEBUG, str, raw
+    api.msg api.LEVEL_DEBUG, str, raw
 
   info: (str, raw=false) ->
-    api.log api.LEVEL_INFO, str, raw
+    api.msg api.LEVEL_INFO, str, raw
 
   warn: (str, raw=false) ->
-    api.log api.LEVEL_WARN, str, raw
+    api.msg api.LEVEL_WARN, str, raw
 
   error: (str, raw=false) ->
-    api.log api.LEVEL_ERROR, str, raw
+    api.msg api.LEVEL_ERROR, str, raw
 
   fatal: (str, raw=false) ->
-    api.log api.LEVEL_FATAL, str, raw
+    api.msg api.LEVEL_FATAL, str, raw
 
 logLevel = api.LEVEL_DEBUG
 
