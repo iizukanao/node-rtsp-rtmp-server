@@ -156,6 +156,7 @@ api =
       info.avcPacketType = bits.read_byte()
       info.compositionTime = bits.read_bits 24
       if (info.avcPacketType isnt 1) and (info.compositionTime isnt 0)
+        # TODO: Handle this situation
         console.log "flv:readVideoDataTag(): warn: AVCPacketType isn't 1 but CompositionTime isn't 0; AVCPacketType=#{info.avcPacketType} CompositionTime=#{info.compositionTime}"
     return info
 
