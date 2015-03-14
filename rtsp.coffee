@@ -1619,12 +1619,12 @@ class RTSPServer
     callback null, res
 
   respondAnnounce: (socket, req, callback) ->
+    # TODO: Refuse uploading to a stream that is being uploaded
     client = @clients[socket.clientID]
     streamId = RTSPServer.getStreamIdFromUri req.uri
     stream = avstreams.get streamId
     if stream?
       stream.reset()
-#        resetStreams stream
       @rtpParser.clearUnorderedPacketBuffer stream.id
     else
       stream = avstreams.create streamId

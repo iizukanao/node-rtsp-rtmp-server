@@ -4,19 +4,19 @@ EventEmitterModule = require './EventEmitterModule'
 
 class AVStream
   constructor: (id) ->
-    @id = id # string
+    @id = id  # string
     @initAVParams()
 
   initAVParams: ->
     @audioClockRate      = null  # int
     @audioSampleRate     = null  # int
     @audioChannels       = null  # int
-    @audioPeriodSize     = 1024  # TODO: detect from stream?
+    @audioPeriodSize     = 1024  # TODO: detect this from stream?
     @audioObjectType     = null  # int
     @videoWidth          = null  # int
     @videoHeight         = null  # int
     @videoProfileLevelId = null  # string (e.g. '42C01F')
-    @videoFrameRate      = 30.0  # float  # TODO
+    @videoFrameRate      = 30.0  # float  # TODO: default value
     @videoAVCLevel       = null  # int
     @videoAVCProfile     = null  # int
     @isVideoStarted      = false # boolean
@@ -32,10 +32,6 @@ class AVStream
   reset: ->
     logger.debug "[stream:#{@id}] reset"
     @initAVParams()
-#    @isVideoStarted = false
-#    @isAudioStarted = false
-#    @rtspUploadingClient = null
-#    @spropParameterSets = ''
     @emit 'reset'
 
   updateSpropParam: (buf) ->
