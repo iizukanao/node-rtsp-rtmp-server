@@ -5,6 +5,8 @@
 events = require 'events'
 dgram = require 'dgram'
 
+logger = require './logger'
+
 MAX_PACKET_ID = 255
 FRAGMENT_HEADER_LEN = 2
 
@@ -42,7 +44,7 @@ exports.UDPClient = class UDPClient
     @socket = dgram.createSocket 'udp4'
 
     @socket.on 'error', (err) ->
-      console.error "UDPServer socket error: #{err}"
+      logger.error "UDPServer socket error: #{err}"
       @socket.close()
 
     @socket.on 'message', (msg, rinfo) =>
@@ -66,10 +68,10 @@ exports.UDPClient = class UDPClient
       if @ackCallbacks[packetId]?
         @ackCallbacks[packetId]()
       else
-        console.warn "ACK is already processed for packetId #{packetId}"
+        logger.warn "ACK is already processed for packetId #{packetId}"
     else
-      console.warn "unknown packet type: #{packetType} len=#{msg.length}"
-      console.warn msg
+      logger.warn "unknown packet type: #{packetType} len=#{msg.length}"
+      logger.warn msg
 
   getNextPacketId: ->
     id = @newPacketId
@@ -139,7 +141,7 @@ exports.UDPClient = class UDPClient
 
     setTimeout =>
       if not isACKReceived and not @isStopped
-        console.warn "resend reset (no ACK received)"
+        logger.warn "resend reset (no ACK received)"
         @resetPacketId callback
     , RESEND_TIMEOUT
 
@@ -167,7 +169,7 @@ exports.UDPClient = class UDPClient
 
     setTimeout =>
       if not isACKReceived and not @isStopped
-        console.warn "resend #{packetId} (no ACK received)"
+        logger.warn "resend #{packetId} (no ACK received)"
         onTimeoutCallback()
     , RESEND_TIMEOUT
 
@@ -237,7 +239,7 @@ exports.UDPServer = class UDPServer extends events.EventEmitter
     @socket = dgram.createSocket 'udp4'
 
     @socket.on 'error', (err) ->
-      console.error "UDPServer socket error: #{err}"
+      logger.error "UDPServer socket error: #{err}"
       @socket.close()
 
     @socket.on 'message', (msg, rinfo) =>
@@ -280,7 +282,7 @@ exports.UDPServer = class UDPServer extends events.EventEmitter
       if @videoReceiveBuf[packetId]?
         # check if existing packet is too old
         if Date.now() - @videoReceiveBuf[packetId].time >= OLD_UDP_PACKET_TIME_THRESHOLD
-          @log "drop stale buffer of packetId #{packetId}"
+          logger.warn "drop stale buffer of packetId #{packetId}"
           @videoReceiveBuf[packetId] = null
       if not @videoReceiveBuf[packetId]?
         @videoReceiveBuf[packetId] =
@@ -305,10 +307,9 @@ exports.UDPServer = class UDPServer extends events.EventEmitter
             address: rinfo.address
             body: receivedBuf
         catch e
-          console.log "concat/receive error for packetId=#{packetId}: #{e}"
-          console.log e.stack
-          console.log targetBuf.buf
-          throw new Error 'exit'
+          logger.error "concat/receive error for packetId=#{packetId}: #{e}"
+          logger.error e.stack
+          logger.error targetBuf.buf
         finally
           delete @videoReceiveBuf[packetId]
           delete @packetLastReceiveTime[packetId]
@@ -323,21 +324,13 @@ exports.UDPServer = class UDPServer extends events.EventEmitter
         address: rinfo.address
         body: receivedBuf
 
-  log: (msg) ->
-    d = new Date
-    dateDesc = "#{d.getFullYear()}-#{zeropad 2, d.getMonth()}-" +
-      "#{zeropad 2, d.getDate()} #{zeropad 2, d.getHours()}:" +
-      "#{zeropad 2, d.getMinutes()}:#{zeropad 2, d.getSeconds()}." +
-      zeropad 3, d.getMilliseconds()
-    console.log "#{dateDesc} UDPServer: #{msg}"
-
   consumeBufferedPacketsFrom: (packetId) ->
     oldEnoughTime = Date.now() - OLD_UDP_PACKET_TIME_THRESHOLD
     loop
       if not @bufferedPackets[packetId]?
         break
       if @packetLastReceiveTime[packetId] <= oldEnoughTime
-        @log "packet #{packetId} is too old"
+        logger.warn "packet #{packetId} is too old"
         break
       @onCompletePacket @bufferedPackets[packetId]
       delete @bufferedPackets[packetId]
@@ -364,7 +357,7 @@ exports.UDPServer = class UDPServer extends events.EventEmitter
       if @packetLastReceiveTime[packetId] <= oldEnoughTime
         # Failed to receive a packet
         timeDiff = oldEnoughTime - @packetLastReceiveTime[packetId]
-        @log "dropped packet #{packetId}: #{timeDiff} ms late"
+        logger.warn "dropped packet #{packetId}: #{timeDiff} ms late"
         isDoneSomething = true
         if @bufferedPackets[packetId]?
           delete @bufferedPackets[packetId]
@@ -396,7 +389,7 @@ exports.UDPServer = class UDPServer extends events.EventEmitter
       @consumeBufferedPacketsFrom nextPacketId
     else  # non-continuous
       if @processedPacketId - RECEIVE_PACKET_ID_WINDOW <= packet.packetId <= @processedPacketId
-        @log "duplicated packet #{packet.packetId}"
+        logger.warn "duplicated packet #{packet.packetId}"
         if packet.packetType is PACKET_TYPE_REQUIRE_ACK
           @sendAck packet.packetId, packet.port, packet.address
         return

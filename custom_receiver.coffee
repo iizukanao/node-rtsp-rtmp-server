@@ -57,7 +57,7 @@ class CustomReceiver
 
   getInternalStream: ->
     if not @internalStream?
-      console.log '[rtsp] warning: Internal stream name not known; using default "public"'
+      logger.warn '[rtsp] warn: Internal stream name not known; using default "public"'
       streamId = 'public'  # TODO: Use default value or throw error?
       @internalStream = avstreams.getOrCreate streamId
     return @internalStream
@@ -65,7 +65,7 @@ class CustomReceiver
   setInternalStreamId: (streamId) ->
     if @internalStream? and (@internalStream.id isnt streamId)
       avstreams.remove @internalStream
-    console.log "[rtsp] internal stream name has been set to: #{streamId}"
+    logger.info "[rtsp] internal stream name has been set to: #{streamId}"
     if avstreams.exists streamId
       avstreams.reset()
     @internalStream = avstreams.create streamId
@@ -125,30 +125,30 @@ class CustomReceiver
         try
           fs.unlinkSync config.videoControlReceiverPath
         catch e
-          console.error "unlink error: #{e}"
+          logger.error "unlink error: #{e}"
       if fs.existsSync config.audioControlReceiverPath
         try
           fs.unlinkSync config.audioControlReceiverPath
         catch e
-          console.error "unlink error: #{e}"
+          logger.error "unlink error: #{e}"
       if fs.existsSync config.videoDataReceiverPath
         try
           fs.unlinkSync config.videoDataReceiverPath
         catch e
-          console.error "unlink error: #{e}"
+          logger.error "unlink error: #{e}"
       if fs.existsSync config.audioDataReceiverPath
         try
           fs.unlinkSync config.audioDataReceiverPath
         catch e
-          console.error "unlink error: #{e}"
+          logger.error "unlink error: #{e}"
     return
 
   createReceiver: (name, callback) ->
     return net.createServer (c) =>
-      console.log "new connection to #{name}"
+      logger.info "new connection to #{name}"
       buf = null
       c.on 'close', ->
-        console.log "connection to #{name} closed"
+        logger.info "connection to #{name} closed"
       c.on 'data', (data) =>
         if config.debug.dropAllData
           return

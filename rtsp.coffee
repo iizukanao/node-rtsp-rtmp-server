@@ -137,12 +137,12 @@ class RTSPServer
     @rtpParser.on 'h264_nal_units', (streamId, nalUnits, rtpTimestamp) =>
       stream = avstreams.get streamId
       if not stream?  # No matching stream
-        console.warn "warning: No matching stream to id #{streamId}"
+        logger.warn "warn: No matching stream to id #{streamId}"
         return
 
       if not stream.rtspUploadingClient?
         # No uploading client associated with the stream
-        console.warn "warning: No uploading client associated with the stream #{stream.id}"
+        logger.warn "warn: No uploading client associated with the stream #{stream.id}"
         return
       sendTime = @getVideoSendTimeForUploadingRTPTimestamp stream, rtpTimestamp
       calculatedPTS = rtpTimestamp - stream.rtspUploadingClient.videoRTPStartTimestamp
@@ -151,12 +151,12 @@ class RTSPServer
     @rtpParser.on 'aac_access_units', (streamId, accessUnits, rtpTimestamp) =>
       stream = avstreams.get streamId
       if not stream?  # No matching stream
-        console.warn "warning: No matching stream to id #{streamId}"
+        logger.warn "warn: No matching stream to id #{streamId}"
         return
 
       if not stream.rtspUploadingClient?
         # No uploading client associated with the stream
-        console.warn "warning: No uploading client associated with the stream #{stream.id}"
+        logger.warn "warn: No uploading client associated with the stream #{stream.id}"
         return
       sendTime = @getAudioSendTimeForUploadingRTPTimestamp stream, rtpTimestamp
       calculatedPTS = Math.round (rtpTimestamp - stream.rtspUploadingClient.audioRTPStartTimestamp) * 90000 / stream.audioClockRate
@@ -249,7 +249,7 @@ class RTSPServer
             # (i.e. nalUnits argument contains multiple keyframes)
             isSPSSent = true
           else
-            console.error "Error: SPS is not set"
+            logger.error "Error: SPS is not set"
         if not isPPSSent  # nal_unit_type 8
           if stream.ppsNALUnit?
             @sendNALUnitOverRTSP stream, stream.ppsNALUnit, pts, dts, false
@@ -257,7 +257,7 @@ class RTSPServer
             # (i.e. nalUnits argument contains multiple keyframes)
             isPPSSent = true
           else
-            console.error "Error: PPS is not set"
+            logger.error "Error: PPS is not set"
 
       @sendNALUnitOverRTSP stream, nalUnit, pts, dts, isLastPacket
 
@@ -341,7 +341,7 @@ class RTSPServer
             if client.clientAudioRTPPort?
               @audioRTPSocket.send rtpBuffer, 0, rtpBuffer.length, client.clientAudioRTPPort, client.ip, (err, bytes) ->
                 if err
-                  console.error "[audioRTPSend] error: #{err.message}"
+                  logger.error "[audioRTPSend] error: #{err.message}"
     return
 
   dumpClients: ->
@@ -388,7 +388,7 @@ class RTSPServer
           try
             c.end()
           catch e
-            console.error "socket.end() error: #{e}"
+            logger.error "socket.end() error: #{e}"
 
           delete @clients[id_str]
           @numClients--
@@ -527,7 +527,7 @@ class RTSPServer
     time = new Date().getTime()
     rtpTime = @getVideoRTPTimestamp stream, time - stream.timeAtVideoStart
     if DEBUG_OUTGOING_RTCP
-      console.log "video sender report: rtpTime=#{rtpTime} time=#{time} timeAtVideoStart=#{stream.timeAtVideoStart}"
+      logger.info "video sender report: rtpTime=#{rtpTime} time=#{time} timeAtVideoStart=#{stream.timeAtVideoStart}"
     buf = new Buffer rtp.createSenderReport
       time: time
       rtpTime: rtpTime
@@ -545,7 +545,7 @@ class RTSPServer
       if client.clientVideoRTCPPort?
         @videoRTCPSocket.send buf, 0, buf.length, client.clientVideoRTCPPort, client.ip, (err, bytes) ->
           if err
-            console.error "[videoRTCPSend] error: #{err.message}"
+            logger.error "[videoRTCPSend] error: #{err.message}"
 
   sendAudioSenderReport: (stream, client) ->
     if not stream.timeAtAudioStart?
@@ -554,7 +554,7 @@ class RTSPServer
     time = new Date().getTime()
     rtpTime = @getAudioRTPTimestamp stream, time - stream.timeAtAudioStart
     if DEBUG_OUTGOING_RTCP
-      console.log "audio sender report: rtpTime=#{rtpTime} time=#{time} timeAtAudioStart=#{stream.timeAtAudioStart}"
+      logger.info "audio sender report: rtpTime=#{rtpTime} time=#{time} timeAtAudioStart=#{stream.timeAtAudioStart}"
     buf = new Buffer rtp.createSenderReport
       time: time
       rtpTime: rtpTime
@@ -572,7 +572,7 @@ class RTSPServer
       if client.clientAudioRTCPPort?
         @audioRTCPSocket.send buf, 0, buf.length, client.clientAudioRTCPPort, client.ip, (err, bytes) ->
           if err
-            console.error "[audioRTCPSend] error: #{err.message}"
+            logger.error "[audioRTCPSend] error: #{err.message}"
 
   stopSendingRTCP: (client) ->
     if client.timeoutID?
@@ -682,7 +682,7 @@ class RTSPServer
       remainingPostData = postData[delimiterPos+CRLF_CRLF.length..]
       req = http.parseRequest decodedRequest
       if not req?  # parse error
-        console.error "Error: request can't be parsed: #{decodedRequest}"
+        logger.error "Unable to parse request: #{decodedRequest}"
         callback? new Error "malformed request"
         return
 
@@ -702,18 +702,18 @@ class RTSPServer
         client.postBuf = remainingPostData
 
       if DEBUG_HTTP_TUNNEL
-        console.log "===request (HTTP tunneled/decoded)==="
+        logger.info "===request (HTTP tunneled/decoded)==="
         process.stdout.write decodedRequest
-        console.log "============="
+        logger.info "============="
       @respond client.socket, req, (err, output) ->
         if err
-          console.error "[respond] Error: #{err}"
+          logger.error "[respond] Error: #{err}"
           callback? err
           return
         if DEBUG_HTTP_TUNNEL
-          console.log "===response (HTTP tunneled)==="
+          logger.info "===response (HTTP tunneled)==="
           process.stdout.write output
-          console.log "============="
+          logger.info "============="
         client.getClient.socket.write output
         processRemainingBuffer()
 
@@ -729,7 +729,7 @@ class RTSPServer
 #        return
 #      if Date.now() < socket.scheduledTimeoutTime
 #        return
-#      console.log "keepalive timeout: #{socket.clientID}"
+#      logger.info "keepalive timeout: #{socket.clientID}"
 #      @teardownClient socket.clientID
 #    , config.keepaliveTimeoutMs
 
@@ -751,14 +751,14 @@ class RTSPServer
         when stream.rtspUploadingClient.uploadingChannels.audioControl
           @onUploadAudioControl stream, interleavedData.data, senderInfo
         else
-          console.error "Error: unknown interleaved channel: #{interleavedData.channel}"
+          logger.error "Error: unknown interleaved channel: #{interleavedData.channel}"
     # Discard incoming RTP packets if the client is not uploading streams
 
   # Called when new data comes from TCP connection
   handleOnData: (c, data) ->
     id_str = c.clientID
     if not @clients[id_str]?  # client socket is already closed
-      console.warn "error: invalid client ID: #{id_str}"
+      logger.error "error: invalid client ID: #{id_str}"
       return
 
     client = @clients[id_str]
@@ -804,26 +804,26 @@ class RTSPServer
         c.buf = null
       req.body = req.rawbody.toString 'utf8'
       if DEBUG_RTSP
-        console.log "===RTSP/HTTP request (cont) from #{id_str}==="
+        logger.info "===RTSP/HTTP request (cont) from #{id_str}==="
         if DEBUG_RTSP_ONLY_HEADERS
-          console.log "(redacted)"
+          logger.info "(redacted)"
         else
           process.stdout.write data.toString 'utf8'
-        console.log "=================="
+        logger.info "=================="
     else
       bufString = c.buf.toString 'utf8'
       if bufString.indexOf('\r\n\r\n') is -1
         return
       if DEBUG_RTSP
-        console.log "===RTSP/HTTP request from #{id_str}==="
+        logger.info "===RTSP/HTTP request from #{id_str}==="
         if DEBUG_RTSP_ONLY_HEADERS
           process.stdout.write bufString.replace(/\r\n\r\n[\s\S]*/, '\n')
         else
           process.stdout.write bufString
-        console.log "=================="
+        logger.info "=================="
       req = http.parseRequest bufString
       if not req?
-        console.error "Error: request can't be parsed: #{bufString}"
+        logger.error "Unable to parse request: #{bufString}"
         c.buf = null
         return
       req.rawbody = c.buf[req.headerBytes+4..]
@@ -850,15 +850,15 @@ class RTSPServer
     c.ongoingRequest = null
     @respond c, req, (err, output, resultOpts) =>
       if err
-        console.error "[respond] Error: #{err}"
+        logger.error "[respond] Error: #{err}"
         return
       # Write the response
       if DEBUG_RTSP
-        console.log "===RTSP/HTTP response to #{id_str}==="
+        logger.info "===RTSP/HTTP response to #{id_str}==="
       if output instanceof Array
         for out, i in output
           if DEBUG_RTSP
-            console.log out
+            logger.info out
           c.write out
       else
         if DEBUG_RTSP
@@ -873,7 +873,7 @@ class RTSPServer
             process.stdout.write output
         c.write output
       if DEBUG_RTSP
-        console.log "==================="
+        logger.info "==================="
       if resultOpts?.close
         # Half-close the socket
         c.end()
@@ -951,7 +951,7 @@ class RTSPServer
             if client.clientVideoRTPPort?
               @videoRTPSocket.send rtpBuffer, 0, rtpBuffer.length, client.clientVideoRTPPort, client.ip, (err, bytes) ->
                 if err
-                  console.log "[videoRTPSend] error: #{err.message}"
+                  logger.error "[videoRTPSend] error: #{err.message}"
 
     # last packet
     if ++stream.videoSequenceNumber > 65535
@@ -996,7 +996,7 @@ class RTSPServer
           if client.clientVideoRTPPort?
             @videoRTPSocket.send rtpBuffer, 0, rtpBuffer.length, client.clientVideoRTPPort, client.ip, (err, bytes) ->
               if err
-                console.log "[videoRTPSend] error: #{err.message}"
+                logger.error "[videoRTPSend] error: #{err.message}"
     return
 
   sendVideoPacketAsSingleNALUnit: (stream, nalUnit, timestamp, marker=true) ->
@@ -1051,7 +1051,7 @@ class RTSPServer
           if client.clientVideoRTPPort?
             @videoRTPSocket.send rtpBuffer, 0, rtpBuffer.length, client.clientVideoRTPPort, client.ip, (err, bytes) ->
               if err
-                console.error "[videoRTPSend] error: #{err.message}"
+                logger.error "[videoRTPSend] error: #{err.message}"
     return
 
   @getISO8601DateString: ->
@@ -1126,7 +1126,7 @@ class RTSPServer
         @dumpClients()
       @rtmpServer.handleRTMPTRequest req, (err, output, resultOpts) =>
         if err
-          console.error "[rtmpt] Error: #{err}"
+          logger.error "[rtmpt] Error: #{err}"
           @respondWithNotFound 'HTTP', (err, response) ->
             callback response, resultOpts
         else
@@ -1164,7 +1164,7 @@ class RTSPServer
       # Outgoing channel
       @consumePathname req.uri, (err) =>
         if err
-          console.warn "Can't consume pathname"
+          logger.warn "Failed to consume pathname: #{err}"
           @respondWithNotFound 'HTTP', callback
           return
         client.sessionCookie = req.headers['x-sessioncookie']
@@ -1275,7 +1275,7 @@ class RTSPServer
     if DEBUG_DISABLE_UDP_TRANSPORT and
     (not /\bTCP\b/.test req.headers.transport)
       # Disable UDP transport and force the client to switch to TCP transport
-      console.log "Unsupported transport: UDP is disabled"
+      logger.info "Unsupported transport: UDP is disabled"
       @respondWithUnsupportedTransport callback, {CSeq: req.headers.cseq}
       return
 
@@ -1300,8 +1300,8 @@ class RTSPServer
       streamId = RTSPServer.getStreamIdFromUri req.uri
       stream = avstreams.get streamId
       if not stream?
-        console.warn "warning: SETUP specified non-existent stream: #{streamId}"
-        console.warn "         Stream has to be created by ANNOUNCE method."
+        logger.warn "warning: SETUP specified non-existent stream: #{streamId}"
+        logger.warn "         Stream has to be created by ANNOUNCE method."
         stream = avstreams.create streamId
       if not stream.rtspUploadingClient?
         stream.rtspUploadingClient = {}
@@ -1470,7 +1470,7 @@ class RTSPServer
 #    not client.getClient?.useTCPForVideo
 #      # QuickTime produces poor quality image over UDP.
 #      # So we let QuickTime switch transport.
-#      console.log "[[[ UDP is discouraged for QuickTime ]]]"
+#      logger.info "UDP is disabled for QuickTime"
 #      preventFromPlaying = true
 
 #    Range: clock=#{RTSPServer.getISO8601DateString()}-
@@ -1603,7 +1603,7 @@ class RTSPServer
         if media.fmtpParams?['packetization-mode']?
           packetizationMode = parseInt media.fmtpParams['packetization-mode']
           if packetizationMode not in [0, 1]
-            console.log "[rtsp:stream:#{streamId}] error: unsupported packetization-mode: #{packetizationMode}"
+            logger.error "[rtsp:stream:#{streamId}] error: unsupported packetization-mode: #{packetizationMode}"
         if media.fmtpParams?['sprop-parameter-sets']?
           nalUnits = h264.parseSpropParameterSets media.fmtpParams['sprop-parameter-sets']
           for nalUnit in nalUnits
@@ -1614,27 +1614,27 @@ class RTSPServer
               when h264.NAL_UNIT_TYPE_PPS  # 8
                 stream.updatePPS nalUnit
               else
-                console.warn "unknown nal_unit_type #{nalUnitType} in sprop-parameter-sets"
+                logger.warn "unknown nal_unit_type #{nalUnitType} in sprop-parameter-sets"
       else if media.media is 'audio'
         sdpInfo.audio = media
 
         if not media.clockRate?
-          console.error "Error: rtpmap attribute in SDP must have audio clock rate; assuming 44100"
+          logger.error "Error: rtpmap attribute in SDP must have audio clock rate; assuming 44100"
           media.clockRate = 44100
 
         if not media.audioChannels?
-          console.error "Error: rtpmap attribute in SDP must have audio channels; assuming 2"
+          logger.error "Error: rtpmap attribute in SDP must have audio channels; assuming 2"
           media.audioChannels = 2
 
         if not media.fmtpParams?
-          console.error "Error: fmtp attribute does not exist in SDP"
+          logger.error "Error: fmtp attribute does not exist in SDP"
           media.fmtpParams = {}
 
         if media.fmtpParams.config?
           audioSpecificConfig = rtp.parseAACConfig media.fmtpParams.config
           audioObjectType = audioSpecificConfig.audioObjectType
         else
-          console.error "Error: fmtp attribute in SDP does not have config parameter; assuming audioObjectType=2"
+          logger.error "Error: fmtp attribute in SDP does not have config parameter; assuming audioObjectType=2"
           audioObjectType = 2
 
         stream.updateConfig
@@ -1646,17 +1646,17 @@ class RTSPServer
         if media.fmtpParams.sizelength?
           media.fmtpParams.sizelength = parseInt media.fmtpParams.sizelength
         else
-          console.error "Error: fmtp attribute in SDP must have sizelength parameter; assuming 13"
+          logger.error "Error: fmtp attribute in SDP must have sizelength parameter; assuming 13"
           media.fmtpParams.sizelength = 13
         if media.fmtpParams.indexlength?
           media.fmtpParams.indexlength = parseInt media.fmtpParams.indexlength
         else
-          console.error "Error: fmtp attribute in SDP must have indexlength parameter; assuming 3"
+          logger.error "Error: fmtp attribute in SDP must have indexlength parameter; assuming 3"
           media.fmtpParams.indexlength = 3
         if media.fmtpParams.indexdeltalength?
           media.fmtpParams.indexdeltalength = parseInt media.fmtpParams.indexdeltalength
         else
-          console.error "Error: fmtp attribute in SDP must have indexdeltalength parameter; assuming 3"
+          logger.error "Error: fmtp attribute in SDP must have indexdeltalength parameter; assuming 3"
           media.fmtpParams.indexdeltalength = 3
 
     client.announceSDPInfo = sdpInfo
@@ -1721,7 +1721,7 @@ class RTSPServer
   # Called when received video data over RTSP
   onUploadVideoData: (stream, msg, rinfo) ->
     if not stream.rtspUploadingClient?
-      console.log "no client is uploading video data to stream #{stream.id}"
+      logger.warn "no client is uploading video data to stream #{stream.id}"
       return
     packet = rtp.parsePacket msg
     if not stream.rtspUploadingClient.videoRTPStartTimestamp?
@@ -1730,11 +1730,11 @@ class RTSPServer
     if packet.rtpHeader.payloadType is stream.rtspUploadingClient.announceSDPInfo.video.fmt
       @rtpParser.feedUnorderedH264Buffer msg, stream.id
     else
-      console.error "Error: Unknown payload type: #{packet.rtpHeader.payloadType} as video"
+      logger.error "Error: Unknown payload type: #{packet.rtpHeader.payloadType} as video"
 
   onUploadVideoControl: (stream, msg, rinfo) ->
     if not stream.rtspUploadingClient?
-      console.log "no client is uploading audio data to stream #{stream.id}"
+      logger.warn "no client is uploading audio data to stream #{stream.id}"
       return
     packets = rtp.parsePackets msg
     for packet in packets
@@ -1746,7 +1746,7 @@ class RTSPServer
 
   onUploadAudioData: (stream, msg, rinfo) ->
     if not stream.rtspUploadingClient?
-      console.log "no client is uploading audio data to stream #{stream.id}"
+      logger.warn "no client is uploading audio data to stream #{stream.id}"
       return
     packet = rtp.parsePacket msg
     if not stream.rtspUploadingClient.audioRTPStartTimestamp?
@@ -1755,11 +1755,11 @@ class RTSPServer
     if packet.rtpHeader.payloadType is stream.rtspUploadingClient.announceSDPInfo.audio.fmt
       @rtpParser.feedUnorderedAACBuffer msg, stream.id, stream.rtspUploadingClient.announceSDPInfo.audio.fmtpParams
     else
-      console.error "Error: Unknown payload type: #{packet.rtpHeader.payloadType} as audio"
+      logger.error "Error: Unknown payload type: #{packet.rtpHeader.payloadType} as audio"
 
   onUploadAudioControl: (stream, msg, rinfo) ->
     if not stream.rtspUploadingClient?
-      console.log "no client is uploading audio data to stream #{stream.id}"
+      logger.warn "no client is uploading audio data to stream #{stream.id}"
       return
     packets = rtp.parsePackets msg
     for packet in packets

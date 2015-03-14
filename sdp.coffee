@@ -2,6 +2,7 @@
 #   RFC 4566  https://tools.ietf.org/html/rfc4566
 
 aac = require './aac'
+logger = require './logger'
 
 api =
   # opts:
@@ -208,7 +209,7 @@ api =
           when 'o'  # Origin
             params = value.split /\s+/
             if params.length > 6
-              console.warn "SDP: Origin has too many parameters: #{line}"
+              logger.warn "SDP: Origin has too many parameters: #{line}"
             session.origin =
               username: params[0]
               sessId: params[1]
@@ -221,7 +222,7 @@ api =
           when 'c'  # Connection Data
             params = value.split /\s+/
             if params.length > 3
-              console.warn "SDP: Connection Data has too many parameters: #{line}"
+              logger.warn "SDP: Connection Data has too many parameters: #{line}"
             session.connectionData =
               nettype: params[0]
               addrtype: params[1]
@@ -229,7 +230,7 @@ api =
           when 't'  # Timing
             params = value.split /\s+/
             if params.length > 2
-              console.warn "SDP: Timing has too many parameters: #{line}"
+              logger.warn "SDP: Timing has too many parameters: #{line}"
             session.timing =
               startTime: params[0]
               stopTime: params[1]
@@ -271,13 +272,13 @@ api =
           when 'b'  # Bandwidth
             params = value.split ':'
             if params.length > 2
-              console.warn "SDP: Bandwidth has too many parameters: #{line}"
+              logger.warn "SDP: Bandwidth has too many parameters: #{line}"
             target = currentMedia ? session
             target.bandwidth =
               bwtype: params[0]
               bandwidth: params[1]
           else
-            console.warn "Unknown (not implemented) SDP: #{line}"
+            logger.warn "Unknown (not implemented) SDP: #{line}"
 
     return session
 

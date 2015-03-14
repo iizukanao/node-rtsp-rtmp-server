@@ -2,6 +2,7 @@
 
 fs = require 'fs'
 Bits = require './bits'
+logger = require './logger'
 
 audioBuf = null
 
@@ -110,7 +111,7 @@ api =
       # The maximum distance between two syncwords is 8192 bytes.
       if syncwordPos > 8192
         throw new Error "the next syncword is too far: #{syncwordPos} bytes"
-      console.log "skipped #{syncwordPos} bytes until syncword"
+      logger.debug "skipped #{syncwordPos} bytes until syncword"
       audioBuf = audioBuf[syncwordPos..]
     return
 

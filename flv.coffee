@@ -1,6 +1,7 @@
 h264 = require './h264'
 aac = require './aac'
 Bits = require './bits'
+logger = require './logger'
 
 api =
   SOUND_FORMAT_AAC: 10  # AAC
@@ -140,7 +141,7 @@ api =
         if bits.has_more_data()
           info.audioSpecificConfig = aac.readAudioSpecificConfig bits
         else
-          console.log "flv:parseAudio(): warn: AAC sequence header is empty"
+          logger.warn "warn: flv:parseAudio(): AAC sequence header is empty"
       when api.AAC_PACKET_TYPE_RAW
         info.rawDataBlock = bits.remaining_buffer()
       else
@@ -157,7 +158,7 @@ api =
       info.compositionTime = bits.read_bits 24
       if (info.avcPacketType isnt 1) and (info.compositionTime isnt 0)
         # TODO: Handle this situation
-        console.log "flv:readVideoDataTag(): warn: AVCPacketType isn't 1 but CompositionTime isn't 0; AVCPacketType=#{info.avcPacketType} CompositionTime=#{info.compositionTime}"
+        logger.error "flv:readVideoDataTag(): AVCPacketType isn't 1 but CompositionTime isn't 0 (feature not implemented); AVCPacketType=#{info.avcPacketType} CompositionTime=#{info.compositionTime}"
     return info
 
   # E.4.2.1 AUDIODATA

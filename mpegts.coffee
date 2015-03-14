@@ -2,6 +2,7 @@
 
 fs = require 'fs'
 Bits = require './bits'
+logger = require './logger'
 
 TS_PACKET_SIZE = 188
 SYNC_BYTE = 0x47
@@ -774,12 +775,12 @@ api =
           # sync byte at the same position.
           for i in [1..4]
             if bits.get_byte_at(i * TS_PACKET_SIZE - 1) isnt SYNC_BYTE
-              console.log "mpegts: sync byte was false positive"
+              logger.debug "mpegts: sync byte was false positive"
               # false positive (sync byte emulation)
               continue
           isSyncByteDetermined = true
           if read_len > 0
-            console.log "mpegts: skipped #{read_len} bytes before sync byte"
+            logger.debug "mpegts: skipped #{read_len} bytes before sync byte"
           bits.push_back_bytes 1
           return
         read_len++
@@ -918,7 +919,7 @@ api =
               return pesPacket
           else
             if not ts_packet.payload_unit_start_indicator
-              console.log "mpegts: dropping residual PES packet for PID #{ts_packet.pid}"
+              logger.warn "mpegts: dropping residual PES packet for PID #{ts_packet.pid}"
             else
               bufferingPESData[ts_packet.pid] =
                 packets: []
@@ -927,7 +928,7 @@ api =
                   adaptation_field: ts_packet.adaptation_field
         catch e
           isEOF = true
-          console.log e.stack
+          logger.error e.stack
           break
     for pid, pid_pes of bufferingPESData
       delete bufferingPESData[pid]

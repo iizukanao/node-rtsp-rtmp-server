@@ -84,8 +84,8 @@ class AVStream
       try
         sps = h264.readSPS nalUnit
       catch e
-        console.error "[stream:#{@id}] video data error: failed to read SPS"
-        console.error e.stack
+        logger.error "[stream:#{@id}] video data error: failed to read SPS"
+        logger.error e.stack
         return
       frameSize = h264.getFrameSize sps
       isConfigUpdated = false
@@ -179,7 +179,7 @@ api =
 
   add: (stream) ->
     if streams[stream.id]?
-      console.warn "warning: overwriting stream: #{stream.id}"
+      logger.warn "warning: overwriting stream: #{stream.id}"
     streams[stream.id] = stream
     api.emit 'add_stream', stream
     stream._onAnyListener = ((stream) ->

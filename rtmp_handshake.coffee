@@ -2,6 +2,7 @@
 
 crypto = require 'crypto'
 codec_utils = require './codec_utils'
+logger = require './logger'
 
 MESSAGE_FORMAT_1       =  1
 MESSAGE_FORMAT_2       =  2
@@ -131,7 +132,7 @@ generateS0S1S2 = (clientsig, callback) ->
 
   messageFormat = detectClientMessageFormat clientsig
   if messageFormat is MESSAGE_FORMAT_UNKNOWN
-    console.warn "[rtmp:handshake] warning: unknown message format, assuming format 1"
+    logger.warn "[rtmp:handshake] warning: unknown message format, assuming format 1"
     messageFormat = 1
   generateS1 messageFormat, dh, (err, s1Bytes) ->
     generateS2 messageFormat, clientsig, (err, s2Bytes, keys) ->

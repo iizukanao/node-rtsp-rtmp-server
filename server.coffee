@@ -41,7 +41,7 @@ rtmpServer.on 'video_data', (streamId, pts, dts, nalUnits) ->
   if stream?
     onReceiveVideoPacket stream, nalUnits, pts, dts
   else
-    console.warn "warning: invalid streamId received from rtmp: #{streamId}"
+    logger.warn "warn: Received invalid streamId from rtmp: #{streamId}"
 rtmpServer.on 'audio_start', (streamId) ->
   stream = avstreams.getOrCreate streamId
   onReceiveAudioControlBuffer stream
@@ -50,7 +50,7 @@ rtmpServer.on 'audio_data', (streamId, pts, dts, adtsFrame) ->
   if stream?
     onReceiveAudioPacket stream, adtsFrame, pts, dts
   else
-    console.warn "warning: invalid streamId received from rtmp: #{streamId}"
+    logger.warn "warn: Received invalid streamId from rtmp: #{streamId}"
 
 rtmpServer.start ->
   # RTMP server is ready
@@ -135,7 +135,7 @@ rtspServer.start port: config.serverPort
 # share the same timestamp as 5
 onReceiveVideoNALUnits = (stream, nalUnits, pts, dts) ->
   if DEBUG_INCOMING_PACKET_DATA
-    console.log "receive video: num_nal_units=#{nalUnits.length} pts=#{pts}"
+    logger.info "receive video: num_nal_units=#{nalUnits.length} pts=#{pts}"
 
   # rtspServer will parse nalUnits and updates SPS/PPS for the stream,
   # so we don't need to parse them here.
@@ -155,7 +155,7 @@ onReceiveVideoNALUnits = (stream, nalUnits, pts, dts) ->
       md5 = crypto.createHash 'md5'
       md5.update nalUnit
       tsDiff = pts - stream.lastSentVideoTimestamp
-      console.log "video: pts=#{pts} pts_diff=#{tsDiff} md5=#{md5.digest('hex')[0..6]} nal_unit_type=#{nalUnitType} bytes=#{nalUnit.length}"
+      logger.info "video: pts=#{pts} pts_diff=#{tsDiff} md5=#{md5.digest('hex')[0..6]} nal_unit_type=#{nalUnitType} bytes=#{nalUnit.length}"
       stream.lastSentVideoTimestamp = pts
 
   if hasVideoFrame
@@ -180,7 +180,7 @@ onReceiveAudioAccessUnits = (stream, accessUnits, pts, dts) ->
   rtspServer.sendAudioData stream, accessUnits, pts, dts
 
   if DEBUG_INCOMING_PACKET_DATA
-    console.log "receive audio: num_access_units=#{accessUnits.length} pts=#{pts}"
+    logger.info "receive audio: num_access_units=#{accessUnits.length} pts=#{pts}"
 
   ptsPerFrame = 90000 / (stream.audioSampleRate / 1024)
 
@@ -188,7 +188,7 @@ onReceiveAudioAccessUnits = (stream, accessUnits, pts, dts) ->
     if DEBUG_INCOMING_PACKET_HASH
       md5 = crypto.createHash 'md5'
       md5.update accessUnit
-      console.log "audio: pts=#{pts} md5=#{md5.digest('hex')[0..6]} bytes=#{accessUnit.length}"
+      logger.info "audio: pts=#{pts} md5=#{md5.digest('hex')[0..6]} bytes=#{accessUnit.length}"
     rtmpServer.sendAudioPacket stream, accessUnit,
       Math.round(pts + ptsPerFrame * i),
       Math.round(dts + ptsPerFrame * i)
@@ -227,4 +227,4 @@ avstreams.on 'reset', (stream) ->
 
 ## TODO: Do we need to do something for remove_stream event?
 #avstreams.on 'remove_stream', (stream) ->
-#  console.log "received remove_stream event from stream #{stream.id}"
+#  logger.raw "received remove_stream event from stream #{stream.id}"

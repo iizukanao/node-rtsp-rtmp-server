@@ -55,7 +55,7 @@ class HTTPHandler
         encoding: 'utf8'
       }, (err, template) =>
         if err
-          console.error err
+          logger.error err
           @serverError req, callback
         else
           html = ejs.render template, opts
@@ -270,7 +270,7 @@ class HTTPHandler
       if exists
         fs.stat filepath, (err, stat) =>
           if err
-            console.error "stat error: #{filepath}"
+            logger.error "stat error: #{filepath}"
             @serverError req, callback
             return
           seq = new Sequent
@@ -286,7 +286,7 @@ class HTTPHandler
           seq.wait 1, =>
             fs.readFile filepath, {encoding:null, flag:'r'}, (err, contentBuf) =>
               if err
-                console.error "readFile error: #{filepath}"
+                logger.error "readFile error: #{filepath}"
                 @serverError req, callback
                 return
               contentRangeHeader = null
@@ -294,7 +294,7 @@ class HTTPHandler
                 if (match = /^bytes=(\d+)?-(\d+)?$/.exec req.headers.range)?
                   from = if match[1]? then parseInt(match[1]) else null
                   to = if match[2]? then parseInt(match[2]) else null
-                  console.log "Range from #{from} to #{to}"
+                  logger.debug "Range from #{from} to #{to}"
                   if not from? and to?  # last n bytes
                     contentRangeHeader = "bytes #{contentBuf.length-to}-#{contentBuf.length-1}/#{contentBuf.length}"
                     contentBuf = contentBuf.slice contentBuf.length-to, contentBuf.length
@@ -306,7 +306,7 @@ class HTTPHandler
                     contentRangeHeader = "bytes #{from}-#{to}/#{contentBuf.length}"
                     contentBuf = contentBuf.slice from, to + 1
                 else
-                  console.warn "[Range spec #{req.headers.range} is not supported]"
+                  logger.error "[Range spec #{req.headers.range} is not supported]"
               if err
                 @serverError req, callback
                 return
@@ -396,7 +396,7 @@ api =
     try
       decodedURI = decodeURIComponent uri
     catch e
-      console.log "error: failed to decode URI: #{uri}"
+      logger.error "error: failed to decode URI: #{uri}"
       return null
 
     return {

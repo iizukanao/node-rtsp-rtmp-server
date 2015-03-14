@@ -4,6 +4,7 @@
 
 fs = require 'fs'
 Bits = require './bits'
+logger = require './logger'
 
 videoBuf = null
 pps = {}
@@ -276,7 +277,7 @@ api =
     bits.read_bytes payloadSize
 
     # TODO
-#    console.log "SEI: payloadType=#{payloadType} payloadSize=#{payloadSize}"
+#    logger.debug "SEI: payloadType=#{payloadType} payloadSize=#{payloadSize}"
 #    switch payloadType
 #      when 0 then api.read_buffering_period payloadSize
 #      when 1 then api.read_pic_timing payloadSize
@@ -508,14 +509,14 @@ api =
     # rbsp_trailing_bits
     rbsp_stop_one_bit = bits.read_bit()
     if rbsp_stop_one_bit isnt 1
-      console.warn "warning: malformed SPS data: rbsp_stop_one_bit must be 1"
+      logger.warn "warn: malformed SPS data: rbsp_stop_one_bit must be 1"
 
     zero_bits_sum = bits.read_until_byte_aligned()
     if zero_bits_sum isnt 0
-      console.warn "warning: malformed SPS data: rbsp_alignment_zero_bit must be all zeroes"
+      logger.warn "warn: malformed SPS data: rbsp_alignment_zero_bit must be all zeroes"
 
     if bits.get_remaining_bits() isnt 0
-      console.warn "warning: malformed SPS length"
+      logger.warn "warn: malformed SPS length"
 
     return sps
 
