@@ -42,7 +42,7 @@ MONTH_NAMES = [
 
 # If true, RTSP requests/response will be printed to the console
 DEBUG_RTSP = false
-DEBUG_RTSP_ONLY_HEADERS = true
+DEBUG_RTSP_ONLY_HEADERS = false
 
 # If true, outgoing video/audio packets are printed to the console
 DEBUG_OUTGOING_PACKET_DATA = false
