@@ -1,6 +1,6 @@
-h264             = require './h264'
-logger           = require './logger'
+h264 = require './h264'
 EventEmitterModule = require './EventEmitterModule'
+logger = require './logger'
 
 class AVStream
   constructor: (id) ->
@@ -23,11 +23,11 @@ class AVStream
     @isAudioStarted      = false # boolean
     @timeAtVideoStart    = null  # milliseconds since the epoch
     @timeAtAudioStart    = null  # milliseconds since the epoch
-    @spropParameterSets  = ''    # string
     @spsString           = ''    # string
     @ppsString           = ''    # string
     @spsNALUnit          = null  # buffer
     @ppsNALUnit          = null  # buffer
+    @spropParameterSets  = ''    # string
 
   reset: ->
     logger.debug "[stream:#{@id}] reset"

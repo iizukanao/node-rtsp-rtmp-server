@@ -1,6 +1,6 @@
 # AAC parser
 
-fs   = require 'fs'
+fs = require 'fs'
 Bits = require './bits'
 
 audioBuf = null

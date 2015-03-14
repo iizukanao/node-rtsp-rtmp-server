@@ -1,6 +1,6 @@
 # MPEG-TS parser
 
-fs   = require 'fs'
+fs = require 'fs'
 Bits = require './bits'
 
 TS_PACKET_SIZE = 188

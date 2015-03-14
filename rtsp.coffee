@@ -5,20 +5,20 @@
 
 # TODO: clear old sessioncookies
 
-net    = require 'net'
-dgram  = require 'dgram'
-os     = require 'os'
+net = require 'net'
+dgram = require 'dgram'
+os = require 'os'
 crypto = require 'crypto'
-url    = require 'url'
+url = require 'url'
 
-rtp          = require './rtp'
-sdp          = require './sdp'
-h264         = require './h264'
-http         = require './http'
-Bits         = require './bits'
-avstreams    = require './avstreams'
-config       = require './config'
-logger       = require './logger'
+rtp = require './rtp'
+sdp = require './sdp'
+h264 = require './h264'
+http = require './http'
+avstreams = require './avstreams'
+Bits = require './bits'
+logger = require './logger'
+config = require './config'
 
 TAG = 'rtsp/http'
 

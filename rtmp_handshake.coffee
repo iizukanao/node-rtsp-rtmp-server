@@ -1,7 +1,7 @@
 # RTMP handshake
 
-crypto     = require 'crypto'
-codecUtils = require './codec_utils'
+crypto = require 'crypto'
+codec_utils = require './codec_utils'
 
 MESSAGE_FORMAT_1       =  1
 MESSAGE_FORMAT_2       =  2
@@ -55,14 +55,14 @@ hasSameBytes = (buf1, buf2) ->
 detectClientMessageFormat = (clientsig) ->
   sdl = GetServerGenuineConstDigestOffset clientsig[772..775]
   msg = Buffer.concat [clientsig[...sdl], clientsig[sdl+SHA256DL..]], 1504
-  computedSignature = codecUtils.calcHmac msg, GenuineFPConst
+  computedSignature = codec_utils.calcHmac msg, GenuineFPConst
   providedSignature = clientsig[sdl...sdl+SHA256DL]
   if hasSameBytes computedSignature, providedSignature
     return MESSAGE_FORMAT_2
 
   sdl = GetClientGenuineConstDigestOffset clientsig[8..11]
   msg = Buffer.concat [clientsig[...sdl], clientsig[sdl+SHA256DL..]], 1504
-  computedSignature = codecUtils.calcHmac msg, GenuineFPConst
+  computedSignature = codec_utils.calcHmac msg, GenuineFPConst
   providedSignature = clientsig[sdl...sdl+SHA256DL]
   if hasSameBytes computedSignature, providedSignature
     return MESSAGE_FORMAT_1
@@ -96,7 +96,7 @@ generateS1 = (messageFormat, dh, callback) ->
       handshakeBytes[0...serverDigestOffset],
       handshakeBytes[serverDigestOffset+SHA256DL..]
     ], RTMP_SIG_SIZE - SHA256DL
-    hash = codecUtils.calcHmac msg, GenuineFMSConst
+    hash = codec_utils.calcHmac msg, GenuineFMSConst
     hash.copy handshakeBytes, serverDigestOffset, 0, 32
     callback null, handshakeBytes
 
@@ -113,9 +113,9 @@ generateS2 = (messageFormat, clientsig, callback) ->
     keyOffset = GetServerDHOffset clientsig[768..771]
   key = clientsig[keyOffset...keyOffset+KEY_LENGTH]
 
-  hash = codecUtils.calcHmac challengeKey, GenuineFMSConstCrud
+  hash = codec_utils.calcHmac challengeKey, GenuineFMSConstCrud
   crypto.pseudoRandomBytes RTMP_SIG_SIZE - 32, (err, randomBytes) ->
-    signature = codecUtils.calcHmac randomBytes, hash
+    signature = codec_utils.calcHmac randomBytes, hash
     s2Bytes = Buffer.concat [
       randomBytes, signature
     ], RTMP_SIG_SIZE

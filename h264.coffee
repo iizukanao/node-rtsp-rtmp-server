@@ -2,7 +2,7 @@
 #
 # H.264 spec is freely available at http://www.itu.int/rec/T-REC-H.264
 
-fs   = require 'fs'
+fs = require 'fs'
 Bits = require './bits'
 
 videoBuf = null

@@ -3,7 +3,7 @@
 # - can send reliable packet which requires ACK
 
 events = require 'events'
-dgram  = require 'dgram'
+dgram = require 'dgram'
 
 MAX_PACKET_ID = 255
 FRAGMENT_HEADER_LEN = 2

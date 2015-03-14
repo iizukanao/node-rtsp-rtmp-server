@@ -9,8 +9,8 @@
 # TODO: Use DON (decoding order number) to carry B-frames.
 #       DON is to RTP what DTS is to MPEG-TS.
 
-Bits   = require './bits'
-aac    = require './aac'
+Bits = require './bits'
+aac = require './aac'
 logger = require './logger'
 
 # Number of seconds from 1900-01-01 to 1970-01-01

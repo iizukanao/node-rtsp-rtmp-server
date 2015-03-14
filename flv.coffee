@@ -1,5 +1,5 @@
 h264 = require './h264'
-aac  = require './aac'
+aac = require './aac'
 Bits = require './bits'
 
 api =

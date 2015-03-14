@@ -3,18 +3,18 @@
 # RTMP specification is available at:
 # http://wwwimages.adobe.com/content/dam/Adobe/en/devnet/rtmp/pdf/rtmp_specification_1.0.pdf
 
-net           = require 'net'
-crypto        = require 'crypto'
-Sequent       = require 'sequent'
+net = require 'net'
+crypto = require 'crypto'
+Sequent = require 'sequent'
 
 rtmp_handshake = require './rtmp_handshake'
-codecUtils     = require './codec_utils'
-config         = require './config'
-h264           = require './h264'
-aac            = require './aac'
-flv            = require './flv'
-avstreams      = require './avstreams'
-logger         = require './logger'
+codec_utils = require './codec_utils'
+config = require './config'
+h264 = require './h264'
+aac = require './aac'
+flv = require './flv'
+avstreams = require './avstreams'
+logger = require './logger'
 
 # enum
 SESSION_STATE_NEW               = 1
@@ -1025,8 +1025,8 @@ class RTMPSession
       @clientPublicKey  = keys.clientPublicKey
       @dh = keys.dh
       @sharedSecret = @dh.computeSecret @clientPublicKey
-      @keyOut = codecUtils.calcHmac(@dh.getPublicKey(), @sharedSecret)[0..15]
-      @keyIn = codecUtils.calcHmac(@clientPublicKey, @sharedSecret)[0..15]
+      @keyOut = codec_utils.calcHmac(@dh.getPublicKey(), @sharedSecret)[0..15]
+      @keyIn = codec_utils.calcHmac(@clientPublicKey, @sharedSecret)[0..15]
 
       @cipherOut = crypto.createCipheriv 'rc4', @keyOut, ''
       @cipherIn  = crypto.createCipheriv 'rc4', @keyIn, ''

@@ -1,8 +1,8 @@
-ejs     = require 'ejs'
-path    = require 'path'
-fs      = require 'fs'
-zlib    = require 'zlib'
-spawn   = require('child_process').spawn
+ejs = require 'ejs'
+path = require 'path'
+fs = require 'fs'
+zlib = require 'zlib'
+spawn = require('child_process').spawn
 Sequent = require 'sequent'
 
 logger = require './logger'
@@ -11,7 +11,7 @@ logger = require './logger'
 TEMPLATE_DIR = "#{__dirname}/template"
 
 # Directory to store static files
-STATIC_DIR  = "#{__dirname}/public"
+STATIC_DIR = "#{__dirname}/public"
 
 # Filename of default file in static directory
 DIRECTORY_INDEX_FILENAME = 'index.html'
