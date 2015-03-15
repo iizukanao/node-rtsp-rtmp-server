@@ -1,4 +1,44 @@
-# Utility functions for buffer operation
+# Utility for Buffer operations
+
+###
+# Usage
+
+    Bits = require './bits'
+    
+    # Reader
+    buf = new Buffer [
+      0b11010001
+      0b11110000
+      0x7f, 0xff, 0xff, 0xff
+      0x80, 0x00, 0x00, 0x00
+    ]
+    myBits = new Bits buf  # A Bits instance holds a cursor
+    console.log myBits.read_bit()
+    # => 1
+    console.log myBits.read_bits 2
+    # => 2
+    myBits.skip_bits 5
+    console.log myBits.read_byte()  # Returns a number
+    # => 240
+    console.log myBits.read_bytes 2  # Returns a Buffer instance
+    # => <Buffer 7f ff>
+    myBits.push_back_bytes 2  # Move the cursor two bytes back
+    console.log myBits.read_int 32
+    # => 2147483647
+    console.log myBits.read_int 32
+    # => -2147483648
+    
+    # Writer
+    myBits = new Bits()
+    myBits.create_buf()
+    myBits.add_bit 1         # 0b1_______
+    myBits.add_bits 2, 1     # 0b101_____
+    myBits.add_bits 5, 3     # 0b10100011
+    myBits.add_bits 8, 0xff  # 0b10100011, 0b11111111
+    resultBuf = myBits.get_created_buf()  # Returns a Buffer instance
+    Bits.printBinary resultBuf
+    # => 10100011 11111111 
+###
 
 class Bits
   constructor: (buffer) ->
