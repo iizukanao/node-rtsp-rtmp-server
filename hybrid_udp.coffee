@@ -2,6 +2,34 @@
 # - can send fire-and-forget (unreliable) packet
 # - can send reliable packet which requires ACK
 
+###
+# Usage
+
+    hybrid_udp = require './hybrid_udp'
+
+    server = new hybrid_udp.UDPServer
+    server.on 'packet', (buf, addr, port) ->
+      # buf is a Buffer instance
+      console.log "server received: 0x#{buf.toString 'hex'}"
+      if buf[0] is 0x04
+        # shutdown server
+        server.stop()
+        console.log "server stopped"
+    server.start 9999, "localhost", ->
+      console.log "server started"
+
+      client = new hybrid_udp.UDPClient
+      client.start 9999, "localhost", ->
+        console.log "client started"
+        console.log "client: writing 0x010203"
+        client.write new Buffer([0x01, 0x02, 0x03]), ->
+          console.log "client: writing 0x040506 and waiting for ACK"
+          client.writeReliable new Buffer([0x04, 0x05, 0x06]), ->
+            console.log "client: received ACK"
+            client.stop()
+            console.log "client stopped"
+###
+
 events = require 'events'
 dgram = require 'dgram'
 
@@ -419,32 +447,3 @@ exports.UDPServer = class UDPServer extends events.EventEmitter
   stop: ->
     @isStopped = true
     @socket.close()
-
-
-###
-
-# Usage
-
-    server = new hybrid_udp.UDPServer
-    server.on 'packet', (buf, addr, port) ->
-      # buf is a Buffer instance
-      console.log "server received: 0x#{buf.toString 'hex'}"
-      if buf[0] is 0x04
-        # shutdown server
-        server.stop()
-        console.log "server stopped"
-    server.start 9999, "localhost", ->
-      console.log "server started"
-
-      client = new hybrid_udp.UDPClient
-      client.start 9999, "localhost", ->
-        console.log "client started"
-        console.log "client: writing 0x010203"
-        client.write new Buffer([0x01, 0x02, 0x03]), ->
-          console.log "client: writing 0x040506 and waiting for ACK"
-          client.writeReliable new Buffer([0x04, 0x05, 0x06]), ->
-            console.log "client: received ACK"
-            client.stop()
-            console.log "client stopped"
-
-###
