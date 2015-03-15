@@ -16,6 +16,7 @@ STREAM_NAME = "myStream"
 
 SERVER_HOST        = 'localhost'
 # Put the same values as the server's config.coffee.
+# Normally you don't need to change these values.
 VIDEO_CONTROL_PORT = 1111
 AUDIO_CONTROL_PORT = 1112
 VIDEO_DATA_PORT    = 1113
