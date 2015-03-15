@@ -66,9 +66,13 @@ class CustomReceiver
     if @internalStream? and (@internalStream.id isnt streamId)
       avstreams.remove @internalStream
     logger.info "[rtsp] internal stream name has been set to: #{streamId}"
-    if avstreams.exists streamId
-      avstreams.reset()
-    @internalStream = avstreams.create streamId
+    stream = avstreams.get streamId
+    if stream?
+      logger.info "[rtsp] resetting existing stream"
+      stream.reset()
+    else
+      stream = avstreams.create streamId
+    @internalStream = stream
 
   start: ->
     if @type is 'unix'
