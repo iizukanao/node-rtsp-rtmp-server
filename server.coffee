@@ -78,6 +78,7 @@ onReceiveVideoDataBuffer = (stream, buf) ->
         buf[4] * 0x010000       + \
         buf[5] * 0x0100         + \
         buf[6]
+  # TODO: Support dts
   dts = pts
   nalUnit = buf[7..]
   onReceiveVideoPacket stream, nalUnit, pts, dts
@@ -89,6 +90,7 @@ onReceiveAudioDataBuffer = (stream, buf) ->
         buf[4] * 0x010000       + \
         buf[5] * 0x0100         + \
         buf[6]
+  # TODO: Support dts
   dts = pts
   adtsFrame = buf[7..]
   onReceiveAudioPacket stream, adtsFrame, pts, dts
