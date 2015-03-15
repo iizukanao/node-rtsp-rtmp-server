@@ -1,6 +1,40 @@
+# EventEmitter with support for catch-all listeners and mixin
 # TODO: Write tests
 
-# EventEmitter with support for catch-all listeners and mixin
+###
+# Usage
+
+    EventEmitterModule = require './event_emitter'
+
+    class MyClass
+
+    # Apply EventEmitterModule to MyClass
+    EventEmitterModule.mixin MyClass
+
+    obj = new MyClass
+    obj.on 'testevent', (a, b, c) ->
+      console.log "received testevent a=#{a} b=#{b} c=#{c}"
+
+    obj.onAny (eventName, data...) ->
+      console.log "received eventName=#{eventName} data=#{data}"
+
+    obj.emit 'testevent', 111, 222, 333
+    obj.emit 'anotherevent', 'hello'
+
+Or EventEmitterModule can be injected dynamically into an object
+(with slightly worse performance):
+
+    class MyClass
+      constructor: ->
+        EventEmitterModule.inject this
+
+    obj = new MyClass
+    obj.on 'testevent', ->
+      console.log "received testevent"
+
+    obj.emit 'testevent'
+###
+
 class EventEmitterModule
   # Apply EventEmitterModule to the class
   @mixin: (cls) ->
@@ -60,37 +94,3 @@ class EventEmitterModule
     @removeListener arguments...
 
 module.exports = EventEmitterModule
-
-###
-# Usage
-
-    EventEmitterModule = require './EventEmitterModule'
-
-    class MyClass
-
-    EventEmitterModule.mixin MyClass
-
-    obj = new MyClass
-    obj.on 'event-a', (a, b, c) ->
-      console.log "received event-a a=#{a} b=#{b} c=#{c}"
-
-    obj.onAny (eventName, data...) ->
-      console.log "received eventName=#{eventName} data=#{data}"
-
-    obj.emit 'event-a', 111, 222, 333
-    obj.emit 'event-b', 'hello'
-
-Or you can inject EventEmitterModule into an object dynamically
-(with slightly worse performance):
-
-    class MyClass
-      constructor: ->
-        EventEmitterModule.inject this
-
-    obj = new MyClass
-    obj.on 'event-a', ->
-      console.log "received event-a"
-
-    obj.emit 'event-a'
-
-###
