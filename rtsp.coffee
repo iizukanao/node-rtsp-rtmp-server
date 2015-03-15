@@ -1235,12 +1235,17 @@ class RTSPServer
         sdpData.videoEncodingName       = 'H264'  # must be H264
         sdpData.videoClockRate          = 90000  # must be 90000
         sdpData.videoProfileLevelId     = stream.videoProfileLevelId
-        sdpData.videoSpropParameterSets = stream.spropParameterSets
+        if stream.spropParameterSets isnt ''
+          sdpData.videoSpropParameterSets = stream.spropParameterSets
         sdpData.videoHeight             = stream.videoHeight
         sdpData.videoWidth              = stream.videoWidth
         sdpData.videoFrameRate          = stream.videoFrameRate.toFixed 1
 
-      body = sdp.createSDP sdpData
+      try
+        body = sdp.createSDP sdpData
+      catch e
+        callback new Error 'Unable to create SDP'
+        return
 
       if /^HTTP\//.test req.protocol
         res = 'HTTP/1.0 200 OK\n'
