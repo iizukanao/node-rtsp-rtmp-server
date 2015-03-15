@@ -34,6 +34,7 @@ class CustomReceiver
       @videoControlReceiver = new hybrid_udp.UDPServer
       @videoControlReceiver.name = 'VideoControl'
       @videoControlReceiver.on 'packet', (buf, addr, port) =>
+        logger.info "[custom_receiver] started receiving video"
         if buf.length >= 5
           streamId = buf.toString 'utf8', 4
         else
@@ -43,6 +44,7 @@ class CustomReceiver
       @audioControlReceiver = new hybrid_udp.UDPServer
       @audioControlReceiver.name = 'AudioControl'
       @audioControlReceiver.on 'packet', (buf, addr, port) =>
+        logger.info "[custom_receiver] started receiving audio"
         callback.audioControl @getInternalStream(), buf[3..]
       @videoDataReceiver = new hybrid_udp.UDPServer
       @videoDataReceiver.name = 'VideoData'
@@ -149,10 +151,10 @@ class CustomReceiver
 
   createReceiver: (name, callback) ->
     return net.createServer (c) =>
-      logger.info "new connection to #{name}"
+      logger.info "[custom_receiver] new connection to #{name}"
       buf = null
       c.on 'close', ->
-        logger.info "connection to #{name} closed"
+        logger.info "[custom_receiver] connection to #{name} closed"
       c.on 'data', (data) =>
         if config.debug.dropAllData
           return
