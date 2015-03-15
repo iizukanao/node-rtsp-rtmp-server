@@ -16,6 +16,7 @@ avstreams = require './avstreams'
 CustomReceiver = require './custom_receiver'
 Bits = require './bits'
 logger = require './logger'
+packageJson = require './package.json'
 
 Bits.set_warning_fatal true
 logger.setLevel logger.LEVEL_INFO
@@ -27,7 +28,7 @@ DEBUG_INCOMING_PACKET_DATA = false
 DEBUG_INCOMING_PACKET_HASH = false
 
 ## Default server name for RTSP and HTTP responses
-DEFAULT_SERVER_NAME = 'node-rtsp-rtmp-server/0.2.2'
+DEFAULT_SERVER_NAME = "node-rtsp-rtmp-server/#{packageJson.version}"
 
 serverName = config.serverName ? DEFAULT_SERVER_NAME
 
