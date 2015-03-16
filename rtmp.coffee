@@ -1957,9 +1957,10 @@ class RTMPServer
     logger.raw "[rtmp: #{sessionsCount} sessions]"
     for sessionID, session of sessions
       logger.raw " " + session.toString()
-    logger.raw "[rtmpt: #{rtmptSessionsCount} sessions]"
-    for sessionID, rtmptSession of rtmptSessions
-      logger.raw " " + rtmptSession.toString()
+    if rtmptSessionsCount > 0
+      logger.raw "[rtmpt: #{rtmptSessionsCount} sessions]"
+      for sessionID, rtmptSession of rtmptSessions
+        logger.raw " " + rtmptSession.toString()
     return
 
   teardownRTMPTClient: (socket) ->
