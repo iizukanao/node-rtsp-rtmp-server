@@ -10,7 +10,12 @@ INPUT_FILE = "test.ts"  # MPEG-TS file up to 1GB
 # To convert from MP4 with H.264 video and AAC audio to MPEG-TS, run:
 # $ ffmpeg -i input.mp4 -c:v copy -c:a copy -bsf h264_mp4toannexb output.ts
 
-# Put the values of server's config.coffee
+# If STREAM_NAME is "myStream", the stream will be accessible at
+# rtsp://localhost:80/live/myStream and rtmp://localhost/live/myStream
+STREAM_NAME = "myStream"
+
+# Put the same values as the server's config.coffee.
+# Normally you don't need to change these values.
 VIDEO_CONTROL_PATH = '/tmp/node_rtsp_rtmp_videoControl'
 AUDIO_CONTROL_PATH = '/tmp/node_rtsp_rtmp_audioControl'
 VIDEO_DATA_PATH    = '/tmp/node_rtsp_rtmp_videoData'
@@ -58,7 +63,8 @@ packet {
 # Notify the start of video stream
 sendVideoStart = ->
   console.log "send video start"
-  payloadSize = 1
+  streamNameBuf = new Buffer STREAM_NAME, 'utf8'
+  payloadSize = 1 + streamNameBuf.length
   buf = new Buffer [
     # Payload size (24 bit unsigned integer)
     (payloadSize >> 16) & 0xff,
@@ -68,6 +74,7 @@ sendVideoStart = ->
     # packet type (0x00 == video start)
     0x00,
   ]
+  buf = Buffer.concat [buf, streamNameBuf], 4 + streamNameBuf.length
   try
     videoControlSocket.write buf
   catch e
@@ -98,8 +105,10 @@ sendAudioStart = ->
 #                          NAL units do not contain start code prefix.
 h264.on 'dts_nal_units', (pts, dts, nalUnits) ->
   # Put start code prefix (0x00000001) before each NAL unit
+  nalUnitTypes = []
   nalUnitsWithStartCode = []
   for nalUnit in nalUnits
+    nalUnitTypes.push nalUnit[0] & 0x1f
     nalUnitsWithStartCode.push new Buffer [ 0x00, 0x00, 0x00, 0x01 ]
     nalUnitsWithStartCode.push nalUnit
 
@@ -124,7 +133,7 @@ h264.on 'dts_nal_units', (pts, dts, nalUnits) ->
     pts                   & 0xff,
   ]
   buf = Buffer.concat [buf, concatNALUnit]
-  console.log "send video: pts=#{pts} dts=#{dts} len=#{concatNALUnit.length}"
+  console.log "send video: pts=#{pts} dts=#{dts} len=#{concatNALUnit.length} nal_unit_types=#{nalUnitTypes.join(',')}"
   try
     videoDataSocket.write buf
   catch e
@@ -198,4 +207,4 @@ videoControlSocket = net.createConnection VIDEO_CONTROL_PATH, ->
         # ready to start
         sendVideoStart()
         sendAudioStart()
-        mpegts.startStreaming()
+        mpegts.startStreaming 0  # skip 0 milliseconds from the start

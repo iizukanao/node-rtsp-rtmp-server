@@ -9,15 +9,15 @@
 # TODO: Use DON (decoding order number) to carry B-frames.
 #       DON is to RTP what DTS is to MPEG-TS.
 
-bits = require './bits'
+Bits = require './bits'
 aac = require './aac'
+logger = require './logger'
 
 # Number of seconds from 1900-01-01 to 1970-01-01
 EPOCH = 2208988800
 
 # Constant for calculating NTP fractional second
 NTP_SCALE_FRAC = 4294.967295
-TIMESTAMP_ROUNDOFF = 4294967296  # 32 bits
 
 # Minimum length of an RTP header
 RTP_HEADER_LEN = 12
@@ -25,15 +25,146 @@ RTP_HEADER_LEN = 12
 MAX_PAYLOAD_SIZE = 1360
 
 MAX_SEQUENCE_NUMBER = 65535
-UNORDERED_PACKET_BUFFER_SIZE = 10
 
-eventListeners = {}
-packetBuffers = {}
-fragmentedH264PacketBuffer = []
-h264NALUnitBuffer = {}
-aacAccessUnitBuffer = {}
+class RTPParser
+  constructor: ->
+    @eventListeners = {}
+    @packetBuffers = {}
+    @fragmentedH264PacketBuffer = {}
+    @h264NALUnitBuffer = {}
+    @aacAccessUnitBuffer = {}
+
+    # config
+    @unorderedPacketBufferSize = 10
+
+  emit: (name, data...) ->
+    if @eventListeners[name]?
+      for listener in @eventListeners[name]
+        listener data...
+    return
+
+  on: (name, listener) ->
+    if @eventListeners[name]?
+      @eventListeners[name].push listener
+    else
+      @eventListeners[name] = [ listener ]
+
+  feedUnorderedAACBuffer: (buf, clientId, params) ->
+    packet = api.parseAACPacket buf, params
+    @feedUnorderedPacket "aac:#{clientId}", packet
+
+  feedUnorderedH264Buffer: (buf, clientId) ->
+    packet = api.parseH264Packet buf
+    @feedUnorderedPacket "h264:#{clientId}", packet
+
+  clearAllUnorderedPacketBuffers: ->
+    @packetBuffers = {}
+
+  clearUnorderedPacketBuffer: (tag) ->
+    delete @packetBuffers["h264:#{tag}"]
+    delete @packetBuffers["aac:#{tag}"]
+
+  feedUnorderedPacket: (tag, packet) ->
+    if not @packetBuffers[tag]?
+      @packetBuffers[tag] =
+        nextSequenceNumber: packet.rtpHeader.sequenceNumber
+        minSequenceNumberInBuffer: null
+        buffer: []
+    packetBuffer = @packetBuffers[tag]
+    if packetBuffer.nextSequenceNumber is packet.rtpHeader.sequenceNumber
+      @onOrderedPacket tag, packet
+      packetBuffer.nextSequenceNumber++
+      if packetBuffer.nextSequenceNumber > MAX_SEQUENCE_NUMBER
+        packetBuffer.nextSequenceNumber = 0
+    else
+      # stash packet in buffer
+      buffers = packetBuffer.buffer
+      buffers.push packet
+      if buffers.length >= 2
+        buffers.sort (a, b) ->
+          numberA = a.rtpHeader.sequenceNumber
+          numberB = b.rtpHeader.sequenceNumber
+          if numberA - numberB >= 60000  # large enough gap
+            return -1  # a comes first
+          else if numberB - numberA >= 60000  # large enough gap
+            return 1   # b comes first
+          else
+            return numberA - numberB
+        while (buffers.length) > 0 and
+        (buffers[0].rtpHeader.sequenceNumber is packetBuffer.nextSequenceNumber)
+          @onOrderedPacket tag, buffers.shift()
+          packetBuffer.nextSequenceNumber++
+          if packetBuffer.nextSequenceNumber > MAX_SEQUENCE_NUMBER
+            packetBuffer.nextSequenceNumber = 0
+        while buffers.length >= 2
+          latestSequenceNumber = buffers[buffers.length-1].rtpHeader.sequenceNumber
+          diff = latestSequenceNumber - packetBuffer.nextSequenceNumber
+          if diff < 0
+            diff += MAX_SEQUENCE_NUMBER + 1
+          if diff < @unorderedPacketBufferSize
+            break
+
+          firstPacket = buffers.shift()
+          if packetBuffer.nextSequenceNumber isnt firstPacket.rtpHeader.sequenceNumber
+            discardedSequenceNumber = firstPacket.rtpHeader.sequenceNumber - 1
+            if discardedSequenceNumber < 0
+              discardedSequenceNumber += MAX_SEQUENCE_NUMBER
+            if packetBuffer.nextSequenceNumber isnt discardedSequenceNumber
+              logger.warn "rtp: #{tag}: incoming packet loss: sequence number #{packetBuffer.nextSequenceNumber}-#{discardedSequenceNumber}"
+            else
+              logger.warn "rtp: #{tag}: incoming packet loss: sequence number #{discardedSequenceNumber}"
+          # consume the first packet
+          @onOrderedPacket tag, firstPacket
+
+          packetBuffer.nextSequenceNumber = firstPacket.rtpHeader.sequenceNumber + 1
+          if packetBuffer.nextSequenceNumber > MAX_SEQUENCE_NUMBER
+            packetBuffer.nextSequenceNumber = 0
+
+  onH264NALUnit: (clientId, nalUnit, packet, timestamp) ->
+    if not @h264NALUnitBuffer[clientId]?
+      @h264NALUnitBuffer[clientId] = []
+    @h264NALUnitBuffer[clientId].push nalUnit
+    if packet.rtpHeader.marker
+      @emit 'h264_nal_units', clientId, @h264NALUnitBuffer[clientId], timestamp
+      @h264NALUnitBuffer[clientId] = []
+
+  onAACAccessUnits: (clientId, accessUnits, packet, timestamp) ->
+    if not @aacAccessUnitBuffer[clientId]?
+      @aacAccessUnitBuffer[clientId] = []
+    @aacAccessUnitBuffer[clientId] = @aacAccessUnitBuffer[clientId].concat accessUnits
+    if packet.rtpHeader.marker
+      @emit 'aac_access_units', clientId, @aacAccessUnitBuffer[clientId], timestamp
+      @aacAccessUnitBuffer[clientId] = []
+
+  onOrderedPacket: (tag, packet) ->
+    if (match = /^h264:(.*)$/.exec tag)?
+      clientId = match[1]
+      if packet.h264.fu_a?  # fragmentation unit
+        # startBit and endBit won't both be set to 1 in the same FU header
+        if packet.h264.fu_a.fuHeader.startBit
+          @fragmentedH264PacketBuffer[tag] = [
+            new Buffer [ (packet.h264.nal_ref_idc << 5) | packet.h264.fu_a.fuHeader.nal_unit_payload_type ]
+            packet.h264.fu_a.nal_unit_fragment
+          ]
+        else if @fragmentedH264PacketBuffer[tag]?
+          @fragmentedH264PacketBuffer[tag].push packet.h264.fu_a.nal_unit_fragment
+        else
+          logger.warn "rtp: #{tag}: discarded fragmented incoming packet: #{packet.rtpHeader.sequenceNumber}"
+          return
+        if packet.h264.fu_a.fuHeader.endBit
+          @onH264NALUnit clientId, Buffer.concat(@fragmentedH264PacketBuffer[tag]), packet, packet.rtpHeader.timestamp
+          @fragmentedH264PacketBuffer[tag] = null
+      else # single NAL unit
+        @onH264NALUnit clientId, packet.h264.nal_unit, packet, packet.rtpHeader.timestamp
+    else if (match = /^aac:(.*)$/.exec tag)?
+      clientId = match[1]
+      @onAACAccessUnits clientId, packet.aac.accessUnits, packet, packet.rtpHeader.timestamp
+    else
+      throw new Error "Unknown tag: #{tag}"
 
 api =
+  RTPParser: RTPParser
+
   # Number of bytes in RTP header
   RTP_HEADER_LEN: RTP_HEADER_LEN
 
@@ -50,20 +181,7 @@ api =
   H264_NAL_UNIT_TYPE_FU_A  : 28
   H264_NAL_UNIT_TYPE_FU_B  : 29
 
-  emit: (name, data...) ->
-    if eventListeners[name]?
-      for listener in eventListeners[name]
-        listener data...
-    return
-
-  on: (name, listener) ->
-    if eventListeners[name]?
-      eventListeners[name].push listener
-    else
-      eventListeners[name] = [ listener ]
-
-
-  readRTCPSenderReport: ->
+  readRTCPSenderReport: (bits) ->
     # RFC 3550 - 6.4.1 SR: Sender Report RTCP Packet
     startBytePos = bits.current_position().byte
     info = {}
@@ -101,7 +219,7 @@ api =
 
     return info
 
-  readRTCPReceiverReport: ->
+  readRTCPReceiverReport: (bits) ->
     # RFC 3550 - 6.4.2 RR: Receiver Report RTCP Packet
     startBytePos = bits.current_position().byte
     info = {}
@@ -133,7 +251,7 @@ api =
 
     return info
 
-  readRTCPSourceDescription: ->
+  readRTCPSourceDescription: (bits) ->
     # RFC 3550 - 6.5 SDES: Source Description RTCP Packet
     startBytePos = bits.current_position().byte
     info = {}
@@ -200,7 +318,7 @@ api =
 
     return info
 
-  readRTCPGoodbye: ->
+  readRTCPGoodbye: (bits) ->
     # RFC 3550 - 6.6 BYE: Goodbye RTCP Packet
     startBytePos = bits.current_position().byte
     info = {}
@@ -225,7 +343,7 @@ api =
 
     return info
 
-  readRTCPApplicationDefined: ->
+  readRTCPApplicationDefined: (bits) ->
     # RFC 3550 - 6.7 APP: Application-Defined RTCP Packet
     startBytePos = bits.current_position().byte
     info = {}
@@ -249,7 +367,7 @@ api =
 
     return info
 
-  readRTPFixedHeader: ->
+  readRTPFixedHeader: (bits) ->
     # RFC 3550 - 5.1 RTP Fixed Header Fields
     info = {}
     info.version = bits.read_bits 2
@@ -267,136 +385,20 @@ api =
     return info
 
   parseAACPacket: (buf, params) ->
-    bits.push_stash()
-    bits.set_data buf
+    bits = new Bits buf
     packet = {}
-    packet.rtpHeader = api.readRTPFixedHeader()
-    packet.aac = api.readAACPayload params
-    bits.pop_stash()
+    packet.rtpHeader = api.readRTPFixedHeader bits
+    packet.aac = api.readAACPayload bits, params
     return packet
-
-  onH264NALUnit: (clientId, nalUnit, packet, timestamp) ->
-    if not h264NALUnitBuffer[clientId]?
-      h264NALUnitBuffer[clientId] = []
-    h264NALUnitBuffer[clientId].push nalUnit
-    if packet.rtpHeader.marker
-      api.emit 'h264_nal_units', clientId, h264NALUnitBuffer[clientId], timestamp
-      h264NALUnitBuffer[clientId] = []
-
-  onAACAccessUnits: (clientId, accessUnits, packet, timestamp) ->
-    if not aacAccessUnitBuffer[clientId]?
-      aacAccessUnitBuffer[clientId] = []
-    aacAccessUnitBuffer[clientId] = aacAccessUnitBuffer[clientId].concat accessUnits
-    if packet.rtpHeader.marker
-      api.emit 'aac_access_units', clientId, aacAccessUnitBuffer[clientId], timestamp
-      aacAccessUnitBuffer[clientId] = []
-
-  onOrderedPacket: (tag, packet) ->
-    if (match = /^h264:(.*)$/.exec tag)?
-      clientId = match[1]
-      if packet.h264.fu_a?  # fragmentation unit
-        # startBit and endBit won't both be set to 1 in the same FU header
-        if packet.h264.fu_a.fuHeader.startBit
-          fragmentedH264PacketBuffer = [
-            new Buffer [ (packet.h264.nal_ref_idc << 5) | packet.h264.fu_a.fuHeader.nal_unit_payload_type ]
-            packet.h264.fu_a.nal_unit_fragment
-          ]
-        else if fragmentedH264PacketBuffer?
-          fragmentedH264PacketBuffer.push packet.h264.fu_a.nal_unit_fragment
-        else
-          console.warn "rtp: #{tag}: discarded fragmented buffer: #{packet.rtpHeader.sequenceNumber}"
-          return
-        if packet.h264.fu_a.fuHeader.endBit
-          api.onH264NALUnit clientId, Buffer.concat(fragmentedH264PacketBuffer), packet, packet.rtpHeader.timestamp
-          fragmentedH264PacketBuffer = null
-      else # single nal unit
-        api.onH264NALUnit clientId, packet.h264.nal_unit, packet, packet.rtpHeader.timestamp
-    else if (match = /^aac:(.*)$/.exec tag)?
-      clientId = match[1]
-      api.onAACAccessUnits clientId, packet.aac.accessUnits, packet, packet.rtpHeader.timestamp
-    else
-      throw new Error "Unknown tag: #{tag}"
-
-  clearAllUnorderedPacketBuffers: ->
-    packetBuffers = {}
-
-  clearUnorderedPacketBuffer: (tag) ->
-    delete packetBuffers[tag]
-
-  feedUnorderedPacket: (tag, packet) ->
-    if not packetBuffers[tag]?
-      packetBuffers[tag] =
-        nextSequenceNumber: packet.rtpHeader.sequenceNumber
-        minSequenceNumberInBuffer: null
-        buffer: []
-    packetBuffer = packetBuffers[tag]
-    if packetBuffer.nextSequenceNumber is packet.rtpHeader.sequenceNumber
-      api.onOrderedPacket tag, packet
-      packetBuffer.nextSequenceNumber++
-      if packetBuffer.nextSequenceNumber > MAX_SEQUENCE_NUMBER
-        packetBuffer.nextSequenceNumber = 0
-    else
-      # stash packet in buffer
-      buffers = packetBuffer.buffer
-      buffers.push packet
-      if buffers.length >= 2
-        buffers.sort (a, b) ->
-          numberA = a.rtpHeader.sequenceNumber
-          numberB = b.rtpHeader.sequenceNumber
-          if numberA - numberB >= 60000  # large enough gap
-            return -1  # a comes first
-          else if numberB - numberA >= 60000  # large enough gap
-            return 1   # b comes first
-          else
-            return numberA - numberB
-        while (buffers.length) > 0 and
-        (buffers[0].rtpHeader.sequenceNumber is packetBuffer.nextSequenceNumber)
-          api.onOrderedPacket tag, buffers.shift()
-          packetBuffer.nextSequenceNumber++
-          if packetBuffer.nextSequenceNumber > MAX_SEQUENCE_NUMBER
-            packetBuffer.nextSequenceNumber = 0
-        while buffers.length >= 2
-          latestSequenceNumber = buffers[buffers.length-1].rtpHeader.sequenceNumber
-          diff = latestSequenceNumber - packetBuffer.nextSequenceNumber
-          if diff < 0
-            diff += MAX_SEQUENCE_NUMBER + 1
-          if diff < UNORDERED_PACKET_BUFFER_SIZE
-            break
-
-          firstPacket = buffers.shift()
-          if packetBuffer.nextSequenceNumber isnt firstPacket.rtpHeader.sequenceNumber
-            discardedSequenceNumber = firstPacket.rtpHeader.sequenceNumber - 1
-            if discardedSequenceNumber < 0
-              discardedSequenceNumber += MAX_SEQUENCE_NUMBER
-            if packetBuffer.nextSequenceNumber isnt discardedSequenceNumber
-              console.warn "rtp: #{tag}: UDP packet loss: sequence number #{packetBuffer.nextSequenceNumber}-#{discardedSequenceNumber}"
-            else
-              console.warn "rtp: #{tag}: UDP packet loss: sequence number #{discardedSequenceNumber}"
-          # consume the first packet
-          api.onOrderedPacket tag, firstPacket
-
-          packetBuffer.nextSequenceNumber = firstPacket.rtpHeader.sequenceNumber + 1
-          if packetBuffer.nextSequenceNumber > MAX_SEQUENCE_NUMBER
-            packetBuffer.nextSequenceNumber = 0
-
-  feedUnorderedAACBuffer: (buf, clientId, params) ->
-    packet = api.parseAACPacket buf, params
-    api.feedUnorderedPacket "aac:#{clientId}", packet
-
-  feedUnorderedH264Buffer: (buf, clientId) ->
-    packet = api.parseH264Packet buf
-    api.feedUnorderedPacket "h264:#{clientId}", packet
 
   parseH264Packet: (buf) ->
-    bits.push_stash()
-    bits.set_data buf
+    bits = new Bits buf
     packet = {}
-    packet.rtpHeader = api.readRTPFixedHeader()
-    packet.h264 = api.readH264Payload()
-    bits.pop_stash()
+    packet.rtpHeader = api.readRTPFixedHeader bits
+    packet.h264 = api.readH264Payload bits
     return packet
 
-  readH264Payload: ->
+  readH264Payload: (bits) ->
     info = {}
     info.forbidden_zero_bit = bits.read_bit()  # 1 indicates error
     if info.forbidden_zero_bit isnt 0
@@ -409,21 +411,21 @@ api =
     else if 24 <= info.nal_unit_type <= 29
       switch info.nal_unit_type
         when api.H264_NAL_UNIT_TYPE_FU_A  # FU-A
-          info.fu_a = api.readH264FragmentationUnitA()
+          info.fu_a = api.readH264FragmentationUnitA bits
         else
           throw new Error "Not implemented: nal_unit_type=#{info.nal_unit_type}"
     else
       throw new Error "Invalid nal_unit_type=#{info.nal_unit_type}"
     return info
 
-  readH264FragmentationUnitA: ->
+  readH264FragmentationUnitA: (bits) ->
     info = {}
-    info.fuHeader = api.readH264FragmentationUnitHeader()
+    info.fuHeader = api.readH264FragmentationUnitHeader bits
     info.nal_unit_fragment = bits.remaining_buffer()
     return info
 
   # FU header
-  readH264FragmentationUnitHeader: ->
+  readH264FragmentationUnitHeader: (bits) ->
     info = {}
     info.startBit = bits.read_bit()
     info.endBit = bits.read_bit()
@@ -434,29 +436,26 @@ api =
     return info
 
   parsePacket: (buf) ->
-    bits.push_stash()
-    bits.set_data buf
+    bits = new Bits buf
     packet = {}
     payloadValue = bits.get_byte_at 1  # including marker bit
     switch payloadValue
       when api.RTCP_PACKET_TYPE_SENDER_REPORT
-        packet.rtcpSenderReport = api.readRTCPSenderReport()
+        packet.rtcpSenderReport = api.readRTCPSenderReport bits
       when api.RTCP_PACKET_TYPE_RECEIVER_REPORT
-        packet.rtcpReceiverReport = api.readRTCPReceiverReport()
+        packet.rtcpReceiverReport = api.readRTCPReceiverReport bits
       when api.RTCP_PACKET_TYPE_SOURCE_DESCRIPTION
-        packet.rtcpSourceDescription = api.readRTCPSourceDescription()
+        packet.rtcpSourceDescription = api.readRTCPSourceDescription bits
       when api.RTCP_PACKET_TYPE_GOODBYE
-        packet.rtcpGoodbye = api.readRTCPGoodbye()
+        packet.rtcpGoodbye = api.readRTCPGoodbye bits
       when api.RTCP_PACKET_TYPE_APPLICATION_DEFINED
-        packet.rtcpApplicationDefined = api.readRTCPApplicationDefined()
+        packet.rtcpApplicationDefined = api.readRTCPApplicationDefined bits
       else  # RTP data transfer protocol - fixed header
-        packet.rtpHeader = api.readRTPFixedHeader()
-    bits.pop_stash()
+        packet.rtpHeader = api.readRTPFixedHeader bits
     return packet
 
   parsePackets: (buf) ->
-    bits.push_stash()
-    bits.set_data buf
+    bits = new Bits buf
 
     packets = []
     while bits.has_more_data()
@@ -464,20 +463,18 @@ api =
       payloadValue = bits.get_byte_at 1  # including marker bit
       switch payloadValue
         when api.RTCP_PACKET_TYPE_SENDER_REPORT
-          packet.rtcpSenderReport = api.readRTCPSenderReport()
+          packet.rtcpSenderReport = api.readRTCPSenderReport bits
         when api.RTCP_PACKET_TYPE_RECEIVER_REPORT
-          packet.rtcpReceiverReport = api.readRTCPReceiverReport()
+          packet.rtcpReceiverReport = api.readRTCPReceiverReport bits
         when api.RTCP_PACKET_TYPE_SOURCE_DESCRIPTION
-          packet.rtcpSourceDescription = api.readRTCPSourceDescription()
+          packet.rtcpSourceDescription = api.readRTCPSourceDescription bits
         when api.RTCP_PACKET_TYPE_GOODBYE
-          packet.rtcpGoodbye = api.readRTCPGoodbye()
+          packet.rtcpGoodbye = api.readRTCPGoodbye bits
         when api.RTCP_PACKET_TYPE_APPLICATION_DEFINED
-          packet.rtcpApplicationDefined = api.readRTCPApplicationDefined()
+          packet.rtcpApplicationDefined = api.readRTCPApplicationDefined bits
         else  # RTP data transfer protocol - fixed header
-          packet.rtpHeader = api.readRTPFixedHeader()
+          packet.rtpHeader = api.readRTPFixedHeader bits
       packets.push packet
-
-    bits.pop_stash()
 
     return packets
 
@@ -504,14 +501,14 @@ api =
     ntp_usec = Math.round(ms * 1000 * NTP_SCALE_FRAC)
     return [ntp_sec, ntp_usec]
 
-  readAACPayload: (params) ->
+  readAACPayload: (bits, params) ->
     info = {}
     info.auHeadersLengthBits = bits.read_bits 16  # in bits
     info.numAUHeaders = info.auHeadersLengthBits / 16
     auHeaders = []
     for i in [0...info.numAUHeaders]
       params.index = i
-      auHeaders.push api.readAACAUHeader params
+      auHeaders.push api.readAACAUHeader bits, params
     info.auHeaders = auHeaders
     info.accessUnits = []
     for auHeader in auHeaders
@@ -519,7 +516,7 @@ api =
       accessUnit = info.accessUnits[info.accessUnits.length-1]
     return info
 
-  readAACAUHeader: (params) ->
+  readAACAUHeader: (bits, params) ->
     if not params.sizelength?
       throw new Error "sizelength is not defined in params"
     info = {}

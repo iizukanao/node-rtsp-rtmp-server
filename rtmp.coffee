@@ -3,16 +3,19 @@
 # RTMP specification is available at:
 # http://wwwimages.adobe.com/content/dam/Adobe/en/devnet/rtmp/pdf/rtmp_specification_1.0.pdf
 
-net           = require 'net'
-crypto        = require 'crypto'
-Sequent       = require 'sequent'
+net = require 'net'
+url = require 'url'
+crypto = require 'crypto'
+Sequent = require 'sequent'
 
-RTMPHandshake = require './rtmp_handshake'
-codecUtils    = require './codec_utils'
-config        = require './config'
-h264          = require './h264'
-aac           = require './aac'
-flv           = require './flv'
+rtmp_handshake = require './rtmp_handshake'
+codec_utils = require './codec_utils'
+config = require './config'
+h264 = require './h264'
+aac = require './aac'
+flv = require './flv'
+avstreams = require './avstreams'
+logger = require './logger'
 
 # enum
 SESSION_STATE_NEW               = 1
@@ -24,6 +27,11 @@ AVC_PACKET_TYPE_NALU            = 1
 AVC_PACKET_TYPE_END_OF_SEQUENCE = 2
 
 TIMESTAMP_ROUNDOFF = 4294967296  # 32 bits
+
+DEBUG_INCOMING_RTMP_PACKETS = false
+DEBUG_OUTGOING_RTMP_PACKETS = false
+
+RTMPT_SEND_REQUEST_BUFFER_SIZE = 10
 
 # Number of active sessions
 sessionsCount = 0
@@ -40,17 +48,7 @@ rtmptSessions = {}
 # The newest client ID
 clientMaxId = 0
 
-# The latest timestamp of video or audio data
-lastTimestamp = null
-
-# NAL unit type 7: Sequence parameter set
-spsPacket = null
-
-# NAL unit type 8: Picture parameter set
-ppsPacket = null
-
-isAudioStarted = false
-isVideoStarted = false
+queuedRTMPMessages = {}
 
 # Generate a new client ID without collision
 generateNewClientID = ->
@@ -68,15 +66,6 @@ generateClientID = ->
     clientID += possible.charAt((Math.random() * numPossible) | 0)
   return clientID
 
-retainCodecConfigPacket = (buf) ->
-  nalUnitType = buf[0] & 0x1f
-  if nalUnitType is 7
-    spsPacket = buf
-  else if nalUnitType is 8
-    ppsPacket = buf
-  else
-    console.error "[rtmp] unknown NAL unit type: #{nalUnitType}"
-
 parseAcknowledgementMessage = (buf) ->
   sequenceNumber = (buf[0] * Math.pow(256, 3)) + (buf[1] << 16) + (buf[2] << 8) + buf[3]
   return {
@@ -85,60 +74,6 @@ parseAcknowledgementMessage = (buf) ->
 
 convertPTSToMilliseconds = (pts) ->
   Math.round pts / 90
-
-ascInfo = null
-avcInfo = null
-
-parseVideoMessage = (buf) ->
-  info = flv.parseVideo buf
-  nalUnitGlob = null
-  switch info.videoDataTag.avcPacketType
-    when flv.AVC_PACKET_TYPE_SEQUENCE_HEADER
-      # Retain AVC configuration
-      avcInfo = info.avcDecoderConfigurationRecord
-      if avcInfo.numOfSPS > 1
-        console.log "flv:parseVideo(): warn: numOfSPS is #{numOfSPS} > 1 (may not work)"
-      if avcInfo.numOfPPS > 1
-        console.log "flv:parseVideo(): warn: numOfPPS is #{numOfPPS} > 1 (may not work)"
-      sps = h264.concatWithStartCodePrefix avcInfo.sps
-      pps = h264.concatWithStartCodePrefix avcInfo.pps
-      nalUnitGlob = Buffer.concat [sps, pps]
-    when flv.AVC_PACKET_TYPE_NALU
-      if not avcInfo?
-        throw new Error "[rtmp:publish] malformed video data: avcInfo is missing"
-      nalUnits = flv.splitNALUnits info.nalUnits, avcInfo.nalUnitLengthSize
-      nalUnitGlob = h264.concatWithStartCodePrefix nalUnits
-    when flv.AVC_PACKET_TYPE_EOS
-      console.log "[rtmp:publish] received an EOS from upstream video"
-      # TODO: Do we have to handle EOS?
-    else
-      throw new Error "unknown AVCPacketType: #{flv.AVC_PACKET_TYPE_SEQUENCE_HEADER}"
-  return {
-    info: info
-    nalUnitGlob: nalUnitGlob
-  }
-
-parseAudioMessage = (buf) ->
-  info = flv.parseAudio buf
-  adtsFrame = null
-  switch info.audioDataTag.aacPacketType
-    when flv.AAC_PACKET_TYPE_SEQUENCE_HEADER
-      if info.audioSpecificConfig?
-        # Retain AudioSpecificConfig
-        ascInfo = info.audioSpecificConfig
-      else
-        console.log "[rtmp] skipping empty AudioSpecificConfig"
-    when flv.AAC_PACKET_TYPE_RAW
-      if not ascInfo?
-        throw new Error "[rtmp:publish] malformed audio data: AudioSpecificConfig is missing"
-      adtsHeader = new Buffer aac.createADTSHeader ascInfo, info.rawDataBlock.length
-      adtsFrame = Buffer.concat [ adtsHeader, info.rawDataBlock ]
-    else
-      throw new Error "[rtmp:publish] unknown AAC_PACKET_TYPE: #{info.audioDataTag.aacPacketType}"
-  return {
-    info: info
-    adtsFrame: adtsFrame
-  }
 
 createAudioMessage = (params) ->
   # TODO: Use type 1/2/3
@@ -150,84 +85,33 @@ createAudioMessage = (params) ->
     body: params.body
   , params.chunkSize
 
-sendVideoMessage = (params) ->
-  allSessions = []
-  for clientID, session of rtmptSessions
-    allSessions.push session.rtmpSession
-
-  for clientID, session of sessions
-    allSessions.push session
-
-  for session in allSessions
-    if session.isWaitingForKeyFrame and params.isKeyFrame
-      session.isFirstVideoMessage = true
-      session.isFirstAudioMessage = true
-      session.isPlaying = true
-      session.playStartTimestamp = params.timestamp
-      session.isWaitingForKeyFrame = false
-    if session.isPlaying
-      messages = []
-      if session.isFirstVideoMessage
-        emptyVideoMessage = session.createVideoMessage
-          body: new Buffer [
-            (5 << 4) | config.flv.videocodecid,
-            0x00
-          ]
-          timestamp: 0
-          chunkSize: @chunkSize
-        messages.push emptyVideoMessage
-        session.isFirstVideoMessage = false
-      videoMessage = session.createVideoMessage
-        body: params.body
-        timestamp: session.getScaledTimestamp params.timestamp
-        chunkSize: session.chunkSize
-      messages.push videoMessage
-      session.sendData messages
-
-sendAudioMessage = (params) ->
-  allSessions = []
-  for clientID, session of rtmptSessions
-    allSessions.push session.rtmpSession
-
-  for clientID, session of sessions
-    allSessions.push session
-
-  for session in allSessions
-    if session.isPlaying
-      messages = []
-      if session.isFirstAudioMessage
-        emptyAudioMessage = session.createAudioMessage
-          body: new Buffer []
-          timestamp: 0
-          chunkSize: @chunkSize
-        messages.push emptyAudioMessage
-        session.isFirstAudioMessage = false
-      audioMessage = session.createAudioMessage
-        body: params.body
-        timestamp: session.getScaledTimestamp params.timestamp
-        chunkSize: session.chunkSize
-      messages.push audioMessage
-      session.sendData messages
-
-queueVideoMessage = (params) ->
+queueVideoMessage = (stream, params) ->
   params.avType = 'video'
   params.chunkStreamID = 4
   params.messageTypeID = 0x09  # Video Data
   params.messageStreamID = 1
   params.originalTimestamp = params.timestamp
-  queuedRTMPMessages.push params
+  if queuedRTMPMessages[stream.id]?
+    queuedRTMPMessages[stream.id].push params
+  else
+    queuedRTMPMessages[stream.id] = [ params ]
 
-  setImmediate flushRTMPMessages
+  setImmediate ->
+    flushRTMPMessages stream
 
-queueAudioMessage = (params) ->
+queueAudioMessage = (stream, params) ->
   params.avType = 'audio'
   params.chunkStreamID = 4
   params.messageTypeID = 0x08  # Audio Data
   params.messageStreamID = 1
   params.originalTimestamp = params.timestamp
-  queuedRTMPMessages.push params
+  if queuedRTMPMessages[stream.id]?
+    queuedRTMPMessages[stream.id].push params
+  else
+    queuedRTMPMessages[stream.id] = [ params ]
 
-  setImmediate flushRTMPMessages
+  setImmediate ->
+    flushRTMPMessages stream
 
 createVideoMessage = (params) ->
   # TODO: Use type 1/2/3
@@ -458,32 +342,36 @@ createAMF0ECMAArray = (obj, buf=null) ->
 
   return Buffer.concat bufs, totalLength
 
-queuedRTMPMessages = []
-
 counter = 0
 
-flushRTMPMessages = ->
-  if queuedRTMPMessages.length < config.rtmpMessageQueueSize
+flushRTMPMessages = (stream) ->
+  if not stream?
+    logger.error "[rtmp] error: flushRTMPMessages: Invalid stream"
     return
 
-  rtmpMessagesToSend = queuedRTMPMessages
-  queuedRTMPMessages = []
+  if queuedRTMPMessages[stream.id].length < config.rtmpMessageQueueSize
+    # not enough buffer
+    return
+
+  rtmpMessagesToSend = queuedRTMPMessages[stream.id]
+  queuedRTMPMessages[stream.id] = []
 
   if rtmpMessagesToSend.length is 0
+    # nothing to send
     return
 
-#  mostRecentAVType = queuedRTMPMessages[queuedRTMPMessages.length-1].avType
+#  mostRecentAVType = queuedRTMPMessages[stream.id][queuedRTMPMessages[stream.id].length-1].avType
 #  largestIndex = null
-#  for i in [queuedRTMPMessages.length-2..0]
-#    rtmpMessage = queuedRTMPMessages[i]
+#  for i in [queuedRTMPMessages[stream.id].length-2..0]
+#    rtmpMessage = queuedRTMPMessages[stream.id][i]
 #    if rtmpMessage.avType isnt mostRecentAVType
 #      largestIndex = i
 #      break
 #  if largestIndex is null
 #    return
 #
-#  rtmpMessagesToSend = queuedRTMPMessages[0..largestIndex]
-#  queuedRTMPMessages = queuedRTMPMessages[largestIndex+1..]
+#  rtmpMessagesToSend = queuedRTMPMessages[stream.id][0..largestIndex]
+#  queuedRTMPMessages[stream.id] = queuedRTMPMessages[stream.id][largestIndex+1..]
 
   allSessions = []
   for clientID, session of rtmptSessions
@@ -493,19 +381,27 @@ flushRTMPMessages = ->
     allSessions.push session
 
   for session in allSessions
+    if session.streamId isnt stream.id  # The session is not associated with current stream
+      continue
     msgs = null
+
+    # TODO: Start streaming audio before key frame comes
     if session.isWaitingForKeyFrame
-      if isVideoStarted  # has video stream
+      if stream.isVideoStarted  # has video stream
         for rtmpMessage, i in rtmpMessagesToSend
-          if rtmpMessage.avType is 'video' and rtmpMessage.isKeyFrame
+          if (rtmpMessage.avType is 'video') and rtmpMessage.isKeyFrame
+            logger.info "[rtmp] started streaming to client #{session.clientid}"
             session.isPlaying = true
             session.playStartTimestamp = rtmpMessage.originalTimestamp
+            session.playStartDateTime = Date.now()  # TODO: Should we use slower process.hrtime()?
             session.isWaitingForKeyFrame = false
             msgs = rtmpMessagesToSend[i..]
             break
       else  # audio only
+        logger.info "[rtmp] started streaming to client #{session.clientid}"
         session.isPlaying = true
         session.playStartTimestamp = rtmpMessagesToSend[0].originalTimestamp
+        session.playStartDateTime = Date.now()
         session.isWaitingForKeyFrame = false
         msgs = rtmpMessagesToSend
     else
@@ -516,12 +412,17 @@ flushRTMPMessages = ->
 
     if session.isPlaying
       for rtmpMessage in msgs
+        # get milliseconds elapsed since play start
         rtmpMessage.timestamp = session.getScaledTimestamp(rtmpMessage.originalTimestamp) % TIMESTAMP_ROUNDOFF
 
       if msgs.length > 1
         buf = createRTMPAggregateMessage msgs, session.chunkSize
+        if DEBUG_OUTGOING_RTMP_PACKETS
+          logger.info "send RTMP aggregate message: #{buf.length} bytes"
       else
         buf = createRTMPMessage msgs[0], session.chunkSize
+        if DEBUG_OUTGOING_RTMP_PACKETS
+          logger.info "send RTMP message: #{buf.length} bytes"
       session.sendData buf
 
   return
@@ -530,11 +431,11 @@ flushRTMPMessages = ->
 createMessageHeader = (params) ->
   payloadLength = params.body.length
   if not params.messageTypeID?
-    console.warn "[rtmp] warning: createMessageHeader(): messageTypeID is not set"
+    logger.warn "[rtmp] warning: createMessageHeader(): messageTypeID is not set"
   if not params.timestamp?
-    console.warn "[rtmp] warning: createMessageHeader(): timestamp is not set"
+    logger.warn "[rtmp] warning: createMessageHeader(): timestamp is not set"
   if not params.messageStreamID?
-    console.warn "[rtmp] warning: createMessageHeader(): messageStreamID is not set"
+    logger.warn "[rtmp] warning: createMessageHeader(): messageStreamID is not set"
   # 6.1.1.  Message Header
   return new Buffer [
     params.messageTypeID,
@@ -586,13 +487,13 @@ createRTMPType1Message = (params) ->
   bodyLength = params.body.length
   formatTypeID = 1
   if not params.body?
-    console.warn "[rtmp] warning: createRTMPType1Message(): body is not set for RTMP message"
+    logger.warn "[rtmp] warning: createRTMPType1Message(): body is not set for RTMP message"
   if not params.chunkStreamID?
-    console.warn "[rtmp] warning: createRTMPType1Message(): chunkStreamID is not set for RTMP message"
+    logger.warn "[rtmp] warning: createRTMPType1Message(): chunkStreamID is not set for RTMP message"
   if not params.timestampDelta?
-    console.warn "[rtmp] warning: createRTMPType1Message(): timestampDelta is not set for RTMP message"
+    logger.warn "[rtmp] warning: createRTMPType1Message(): timestampDelta is not set for RTMP message"
   if not params.messageStreamID?
-    console.warn "[rtmp] warning: createRTMPType1Message(): messageStreamID is not set for RTMP message"
+    logger.warn "[rtmp] warning: createRTMPType1Message(): messageStreamID is not set for RTMP message"
   useExtendedTimestamp = false
   if params.timestampDelta >= 0xffffff
     useExtendedTimestamp = true
@@ -637,13 +538,13 @@ createRTMPMessage = (params, chunkSize=128) ->
   # TODO: Use format type ID 1 and 2
   formatTypeID = 0
   if not params.body?
-    console.warn "[rtmp] warning: createRTMPMessage(): body is not set for RTMP message"
+    logger.warn "[rtmp] warning: createRTMPMessage(): body is not set for RTMP message"
   if not params.chunkStreamID?
-    console.warn "[rtmp] warning: createRTMPMessage(): chunkStreamID is not set for RTMP message"
+    logger.warn "[rtmp] warning: createRTMPMessage(): chunkStreamID is not set for RTMP message"
   if not params.timestamp?
-    console.warn "[rtmp] warning: createRTMPMessage(): timestamp is not set for RTMP message"
+    logger.warn "[rtmp] warning: createRTMPMessage(): timestamp is not set for RTMP message"
   if not params.messageStreamID?
-    console.warn "[rtmp] warning: createRTMPMessage(): messageStreamID is not set for RTMP message"
+    logger.warn "[rtmp] warning: createRTMPMessage(): messageStreamID is not set for RTMP message"
   useExtendedTimestamp = false
   if params.timestamp >= 0xffffff
     useExtendedTimestamp = true
@@ -743,7 +644,7 @@ createAMF0CommandMessage = (params, chunkSize) ->
 
 class RTMPSession
   constructor: (socket) ->
-    console.log "[rtmp] created a new session"
+    logger.debug "[rtmp] created a new session"
     @listeners = {}
     @state = SESSION_STATE_NEW
     @socket = socket
@@ -757,6 +658,60 @@ class RTMPSession
     @windowAckSize = null
     @lastSentAckBytes = 0
     @receivedBytes = 0
+
+  toString: ->
+    return "#{@clientid}: addr=#{@socket.remoteAddress} port=#{@socket.remotePort}"
+
+  parseVideoMessage: (buf) ->
+    info = flv.parseVideo buf
+    nalUnitGlob = null
+    switch info.videoDataTag.avcPacketType
+      when flv.AVC_PACKET_TYPE_SEQUENCE_HEADER
+        # Retain AVC configuration
+        @avcInfo = info.avcDecoderConfigurationRecord
+        if @avcInfo.numOfSPS > 1
+          logger.warn "warn: flv:parseVideo(): numOfSPS is #{numOfSPS} > 1 (may not work)"
+        if @avcInfo.numOfPPS > 1
+          logger.warn "warn: flv:parseVideo(): numOfPPS is #{numOfPPS} > 1 (may not work)"
+        sps = h264.concatWithStartCodePrefix @avcInfo.sps
+        pps = h264.concatWithStartCodePrefix @avcInfo.pps
+        nalUnitGlob = Buffer.concat [sps, pps]
+      when flv.AVC_PACKET_TYPE_NALU
+        if not @avcInfo?
+          throw new Error "[rtmp:publish] malformed video data: avcInfo is missing"
+        nalUnits = flv.splitNALUnits info.nalUnits, @avcInfo.nalUnitLengthSize
+        nalUnitGlob = h264.concatWithStartCodePrefix nalUnits
+      when flv.AVC_PACKET_TYPE_EOS
+        logger.info "[rtmp:publish] received EOS from uploading client #{@clientid}"
+        # TODO: Do we have to handle EOS?
+      else
+        throw new Error "unknown AVCPacketType: #{flv.AVC_PACKET_TYPE_SEQUENCE_HEADER}"
+    return {
+      info: info
+      nalUnitGlob: nalUnitGlob
+    }
+
+  parseAudioMessage: (buf) ->
+    info = flv.parseAudio buf
+    adtsFrame = null
+    switch info.audioDataTag.aacPacketType
+      when flv.AAC_PACKET_TYPE_SEQUENCE_HEADER
+        if info.audioSpecificConfig?
+          # Retain AudioSpecificConfig
+          @ascInfo = info.audioSpecificConfig
+        else
+          logger.warn "[rtmp] skipping empty AudioSpecificConfig"
+      when flv.AAC_PACKET_TYPE_RAW
+        if not @ascInfo?
+          throw new Error "[rtmp:publish] malformed audio data: AudioSpecificConfig is missing"
+        adtsHeader = new Buffer aac.createADTSHeader @ascInfo, info.rawDataBlock.length
+        adtsFrame = Buffer.concat [ adtsHeader, info.rawDataBlock ]
+      else
+        throw new Error "[rtmp:publish] unknown AAC_PACKET_TYPE: #{info.audioDataTag.aacPacketType}"
+    return {
+      info: info
+      adtsFrame: adtsFrame
+    }
 
   clearTimeout: ->
     if @timeoutTimer?
@@ -775,7 +730,7 @@ class RTMPSession
         return
       if Date.now() - @lastTimeoutScheduledTime < config.rtmpSessionTimeoutMs
         return
-      console.log "[rtmp] session timeout: #{@clientid}"
+      logger.info "[rtmp] session timeout: #{@clientid}"
       @teardown()
     , config.rtmpSessionTimeoutMs
 
@@ -785,24 +740,25 @@ class RTMPSession
       clearTimeout @pingTimer
     @pingTimer = setTimeout =>
       if Date.now() - @lastPingScheduledTime < config.rtmpPingTimeoutMs
-        console.log "[rtmp] ping timeout canceled"
+        logger.debug "[rtmp] ping timeout canceled"
       @ping()
     , config.rtmpPingTimeoutMs
 
   ping: ->
+    currentTimestamp = @getCurrentTimestamp()
     pingRequest = createRTMPMessage
       chunkStreamID: 2
-      timestamp: lastTimestamp
+      timestamp: currentTimestamp
       messageTypeID: 0x04  # User Control Message
       messageStreamID: 0
       body: new Buffer [
         # Event Type: 6=PingRequest
         0, 6,
         # Server Timestamp
-        (lastTimestamp >> 24) & 0xff,
-        (lastTimestamp >> 16) & 0xff,
-        (lastTimestamp >> 8) & 0xff,
-        lastTimestamp & 0xff
+        (currentTimestamp >> 24) & 0xff,
+        (currentTimestamp >> 16) & 0xff,
+        (currentTimestamp >> 8) & 0xff,
+        currentTimestamp & 0xff
       ]
 
     @sendData pingRequest
@@ -813,7 +769,7 @@ class RTMPSession
 
   teardown: ->
     if @isTearedDown
-      console.log "[rtmp] already teared down"
+      logger.debug "[rtmp] already teared down"
       return
     @isTearedDown = true
     @clearTimeout()
@@ -827,8 +783,11 @@ class RTMPSession
     try
       @socket.end()
     catch e
-      console.error "[rtmp] socket.end error: #{e}"
+      logger.error "[rtmp] socket.end error: #{e}"
     @emit 'teardown'
+
+  getCurrentTimestamp: ->
+    return Date.now() - @playStartDateTime
 
   getScaledTimestamp: (timestamp) ->
     ts = timestamp - @playStartTimestamp
@@ -897,7 +856,7 @@ class RTMPSession
     removedCount = 0
     for _listener, i in listeners
       if _listener is listener
-        console.log "[rtmp] removed listener for #{event}"
+        logger.debug "[rtmp] removed listener for #{event}"
         actualIndex = i - removedCount
         listeners[actualIndex..actualIndex] = []  # Remove element
         removedCount++
@@ -962,7 +921,7 @@ class RTMPSession
     app = commandMessage.objects[0].value.app
     app = app.replace /\/$/, ''  # JW Player adds / at the end
     if app isnt config.rtmpApplicationName
-      console.warn "[rtmp] requested invalid app name: #{app}"
+      logger.warn "[rtmp] requested invalid app name: #{app}"
       @rejectConnect commandMessage, callback
       return
 
@@ -978,7 +937,6 @@ class RTMPSession
 #        0, 0x14, 0, 0
         0, 0x26, 0x25, 0xa0
       ]
-#    console.log "[rtmp:send] WindowAckSize=#{0x2625a0}"
 
     setPeerBandwidth = createRTMPMessage
       chunkStreamID: 2
@@ -1058,17 +1016,17 @@ class RTMPSession
       return result
 
   respondHandshake: (c0c1, callback) ->
-    RTMPHandshake.generateS0S1S2 c0c1, (err, s0s1s2, keys) =>
+    rtmp_handshake.generateS0S1S2 c0c1, (err, s0s1s2, keys) =>
       type = s0s1s2[0]
       if type is 6
         @useEncryption = true
-        console.log "[rtmp] using encryption"
+        logger.info "[rtmp] enabled encryption for client #{@clientid}"
 
       @clientPublicKey  = keys.clientPublicKey
       @dh = keys.dh
       @sharedSecret = @dh.computeSecret @clientPublicKey
-      @keyOut = codecUtils.calcHmac(@dh.getPublicKey(), @sharedSecret)[0..15]
-      @keyIn = codecUtils.calcHmac(@clientPublicKey, @sharedSecret)[0..15]
+      @keyOut = codec_utils.calcHmac(@dh.getPublicKey(), @sharedSecret)[0..15]
+      @keyIn = codec_utils.calcHmac(@clientPublicKey, @sharedSecret)[0..15]
 
       @cipherOut = crypto.createCipheriv 'rc4', @keyOut, ''
       @cipherIn  = crypto.createCipheriv 'rc4', @keyIn, ''
@@ -1201,7 +1159,7 @@ class RTMPSession
           message.timestamp = previousChunk.timestamp
           message.messageStreamID = previousChunk.messageStreamID
         else
-          throw new Error "Chunk reference error for type 1: previous chunk for id #{message.chunkStreamID} is not found"
+          throw new Error "#{@clientid}: Chunk reference error for type 1: previous chunk for id #{message.chunkStreamID} is not found (possibly a bug)"
         chunkBody = chunkMessageHeader[7..]
         headerLen += 7
       else if message.formatType is 2  # Type 2 (3 bytes)
@@ -1216,7 +1174,7 @@ class RTMPSession
           message.messageLength = previousChunk.messageLength
           message.messageTypeID = previousChunk.messageTypeID
         else
-          throw new Error "Chunk reference error for type 2: previous chunk for id #{message.chunkStreamID} is not found"
+          throw new Error "#{@clientid}: Chunk reference error for type 2: previous chunk for id #{message.chunkStreamID} is not found (possibly a bug)"
         chunkBody = chunkMessageHeader[3..]
         headerLen += 3
       else if message.formatType is 3  # Type 3 (0 byte)
@@ -1228,7 +1186,7 @@ class RTMPSession
           message.timestampDelta = previousChunk.timestampDelta
           message.messageTypeID = previousChunk.messageTypeID
         else
-          throw new Error "Chunk reference error for type 3: previous chunk for id #{message.chunkStreamID} is not found"
+          throw new Error "#{@clientid}: Chunk reference error for type 3: previous chunk for id #{message.chunkStreamID} is not found (possibly a bug)"
         chunkBody = chunkMessageHeader
       else
         throw new Error "Unknown format type: #{formatType}"
@@ -1281,7 +1239,7 @@ class RTMPSession
       if message.body.length >= message.messageLength # message is completed
         # TODO: Is this check redundant?
         if message.body.length isnt message.messageLength
-          console.log "[rtmp] warning: message lengths don't match: " +
+          logger.warn "[rtmp] warning: message lengths don't match: " +
             "got=#{message.body.length} expected=#{message.messageLength}"
 
         messages.push message
@@ -1299,7 +1257,7 @@ class RTMPSession
   # releaseStream()
   respondReleaseStream: (requestCommand, callback) ->
     streamName = requestCommand.objects[1]?.value
-    console.log "[rtmp] releaseStream: #{streamName}"
+    logger.debug "[rtmp] releaseStream: #{streamName}"
     _result = createAMF0CommandMessage
       chunkStreamID: 3
       timestamp: 0
@@ -1315,13 +1273,13 @@ class RTMPSession
   # @setDataFrame
   receiveSetDataFrame: (requestData) ->
     if requestData.objects[1].value is 'onMetaData'
-      console.log "[rtmp:receive] @setDataFrame onMetaData"
+      logger.debug "[rtmp:receive] @setDataFrame onMetaData"
     else
       throw new Error "Unknown @setDataFrame: #{requestData.objects[1].value}"
 
   respondFCUnpublish: (requestCommand, callback) ->
     streamName = requestCommand.objects[1]?.value
-    console.log "[rtmp] FCUnpublish: #{streamName}"
+    logger.info "[rtmp] FCUnpublish: #{streamName}"
     _result = createAMF0CommandMessage
       chunkStreamID: 3
       timestamp: 0
@@ -1360,17 +1318,38 @@ class RTMPSession
   respondPublish: (requestCommand, callback) ->
     @receiveTimestamp = null
     publishingName = requestCommand.objects[1]?.value
+
+    # Strip the query string from
+    # "livestream?videoKeyframeFrequency=5&totalDatarate=248"
+    urlInfo = url.parse publishingName
+    if urlInfo.query?
+      pairs = urlInfo.query.split '&'
+      params = {}
+      for pair in pairs
+        kv = pair.split '='
+        params[ kv[0] ] = kv[1]
+      # TODO: Use this information for something
+      # totalDatarate: Total kbps for video + audio
+      logger.info JSON.stringify params
+
+    publishingName = urlInfo.pathname
+    @streamId = publishingName
+    stream = avstreams.get @streamId
+    if stream?
+      stream.reset()
+    else
+      stream = avstreams.create @streamId
+    # TODO: Check if streamId is already used
     publishingType = requestCommand.objects[2]?.value
     if publishingType isnt 'live'
-      console.log "[rtmp] warn: publishing type other than 'live' is not supported: #{publishingType}; using 'live'"
-    console.log "[rtmp] publish: stream=#{publishingName} publishingType=#{publishingType}"
+      logger.warn "[rtmp] warn: publishing type other than 'live' is not supported: #{publishingType}; using 'live'"
+    logger.info "[rtmp] publish: stream=#{publishingName} publishingType=#{publishingType}"
     # strip query string from publishingName
     if (match = /^(.*?)\?/.exec publishingName)?
       streamName = match[1]
     else
       streamName = publishingName
 
-    @emit 'stream_reset'
     @isFirstVideoReceived = false
     @isFirstAudioReceived = false
 
@@ -1396,7 +1375,7 @@ class RTMPSession
   # FCPublish()
   respondFCPublish: (requestCommand, callback) ->
     streamName = requestCommand.objects[1]?.value
-    console.log "[rtmp] FCPublish: #{streamName}"
+    logger.debug "[rtmp] FCPublish: #{streamName}"
     _result = createAMF0CommandMessage
       chunkStreamID: 3
       timestamp: 0
@@ -1504,25 +1483,32 @@ class RTMPSession
       hasMetadata : true
       hasCuePoints: false
 
-    if isVideoStarted
-      metadata.hasVideo      = true
-      metadata.framerate     = config.videoFrameRate
-      metadata.height        = config.videoHeight
-      metadata.videocodecid  = config.flv.videocodecid
-      metadata.videodatarate = config.videoBitrateKbps
-      metadata.width         = config.videoWidth
-      metadata.avclevel      = config.flv.avclevel
-      metadata.avcprofile    = config.flv.avcprofile
+    if @streamId?
+      stream = avstreams.get @streamId
+      if stream?
+        if stream.isVideoStarted
+          metadata.hasVideo      = true
+          metadata.framerate     = stream.videoFrameRate
+          metadata.height        = stream.videoHeight
+          metadata.videocodecid  = config.flv.videocodecid # TODO
+          metadata.videodatarate = config.videoBitrateKbps # TODO
+          metadata.width         = stream.videoWidth
+          metadata.avclevel      = stream.videoAVCLevel
+          metadata.avcprofile    = stream.videoAVCProfile
 
-    if isAudioStarted
-      metadata.hasAudio        = true
-      metadata.audiocodecid    = config.flv.audiocodecid
-      metadata.audiodatarate   = config.audioBitrateKbps
-      metadata.audiodelay      = 0
-      metadata.audiosamplerate = config.audioSampleRate
-      metadata.stereo          = config.audioChannels > 1
-      metadata.audiochannels   = config.audioChannels
-      metadata.aacaot          = config.audioObjectType
+        if stream.isAudioStarted
+          metadata.hasAudio        = true
+          metadata.audiocodecid    = config.flv.audiocodecid # TODO
+          metadata.audiodatarate   = config.audioBitrateKbps # TODO
+          metadata.audiodelay      = 0
+          metadata.audiosamplerate = stream.audioSampleRate
+          metadata.stereo          = stream.audioChannels > 1
+          metadata.audiochannels   = stream.audioChannels
+          metadata.aacaot          = stream.audioObjectType
+      else
+        logger.error "[rtmp] error: respondPlay: no such stream: #{@streamId}"
+    else
+      logger.error "[rtmp] error: respondPlay: no streamId defined"
 
     onMetaData = createAMF0DataMessage
       chunkStreamID: 4
@@ -1544,19 +1530,30 @@ class RTMPSession
     ]
 
     # ready for playing
+    logger.info "[rtmp] waiting for the key frame for client #{@clientid}"
     @isWaitingForKeyFrame = true
 
+  # Returns a Buffer contains both SPS and PPS
   getCodecConfigs: ->
     configMessages = []
 
-    if isVideoStarted
-      if not spsPacket? or not ppsPacket?
-        console.error "[rtmp] error: SPS or PPS is not present"
-        return
+    if not @streamId?
+      logger.error "[rtmp] error: getCodecConfigs: no streamId defined"
+      return new Buffer []
+
+    stream = avstreams.get @streamId
+    if not stream?
+      logger.error "[rtmp] error: getCodecConfigs: no such stream: #{@streamId}"
+      return new Buffer []
+
+    if stream.isVideoStarted
+      if not stream.spsNALUnit? or not stream.ppsNALUnit?
+        logger.error "[rtmp] error: getCodecConfigs: SPS or PPS is not present"
+        return new Buffer []
 
       # video
-      spsLen = spsPacket.length
-      ppsLen = ppsPacket.length
+      spsLen = stream.spsNALUnit.length
+      ppsLen = stream.ppsNALUnit.length
       buf = new Buffer [
         # VIDEODATA tag (Appeared in Adobe's Video File Format Spec v10.1 E.4.3.1 VIDEODATA
         (1 << 4) | config.flv.videocodecid, # 1=key frame
@@ -1567,19 +1564,19 @@ class RTMPSession
 
         # AVC decoder configuration: described in ISO 14496-15 5.2.4.1.1 Syntax
         0x01,  # version
-        spsPacket[1..3]...,
+        stream.spsNALUnit[1..3]...,
         0xff, # 6 bits reserved (0b111111) + 2 bits nal size length - 1 (0b11)
         0xe1, # 3 bits reserved (0b111) + 5 bits number of sps (0b00001)
 
         (spsLen >> 8) & 0xff,
         spsLen & 0xff,
-        spsPacket...,
+        stream.spsNALUnit...,
 
         0x01,  # number of PPS (1)
 
         (ppsLen >> 8) & 0xff,
         ppsLen & 0xff,
-        ppsPacket...
+        stream.ppsNALUnit...
       ]
       videoConfigMessage = createVideoMessage
         body: buf
@@ -1587,16 +1584,16 @@ class RTMPSession
         chunkSize: @chunkSize
       configMessages.push videoConfigMessage
 
-    if isAudioStarted
+    if stream.isAudioStarted
       # audio
       # TODO: support other than AAC too?
       buf = flv.createAACAudioDataTag
         aacPacketType: flv.AAC_PACKET_TYPE_SEQUENCE_HEADER
       # buf is an array at this point
       buf = buf.concat aac.createAudioSpecificConfig
-        audioObjectType: config.audioObjectType
-        sampleRate: config.audioSampleRate
-        channels: config.audioChannels
+        audioObjectType: stream.audioObjectType
+        sampleRate: stream.audioSampleRate
+        channels: stream.audioChannels
         frameLength: 1024  # TODO: How to detect 960?
       buf = new Buffer buf
 
@@ -1641,12 +1638,12 @@ class RTMPSession
   handleAMFDataMessage: (dataMessage, callback) ->
     callback null
     if dataMessage.objects.length is 0
-      console.warn "[rtmp:receive] empty AMF data"
+      logger.warn "[rtmp:receive] empty AMF data"
     switch dataMessage.objects[0].value
       when '@setDataFrame'
         @receiveSetDataFrame dataMessage
       else
-        console.warn "[rtmp:receive] unknown AMF data: #{dataMessage.objects[0].value}"
+        logger.warn "[rtmp:receive] unknown (not implemented) AMF data: #{dataMessage.objects[0].value}"
     return
 
   handleAMFCommandMessage: (commandMessage, callback) ->
@@ -1660,15 +1657,15 @@ class RTMPSession
       when 'createStream'
         @respondCreateStream commandMessage, callback
       when 'play'
-        streamName = commandMessage.objects[1]?.value
-        console.log "[rtmp] requested stream: #{streamName}"
+        @streamId = commandMessage.objects[1]?.value
+        logger.info "[rtmp] client #{@clientid} requested stream #{@streamId}"
         @respondPlay commandMessage, callback
       when 'closeStream'
         @closeStream callback
       when 'deleteStream'
         @deleteStream commandMessage, callback
       when 'pause'
-        console.log 'pause received'
+        logger.debug 'pause received'
         @pauseOrUnpauseStream commandMessage, callback
 
       # Methods used for publishing from the client
@@ -1681,7 +1678,7 @@ class RTMPSession
       when 'FCUnpublish'
         @respondFCUnpublish commandMessage, callback
       else
-        console.warn "[rtmp:receive] unknown AMF command: #{commandMessage.command}"
+        logger.warn "[rtmp:receive] unknown (not implemented) AMF command: #{commandMessage.command}"
         callback null
 
   createAck: ->
@@ -1707,7 +1704,6 @@ class RTMPSession
     if @windowAckSize?
       @receivedBytes += buf.length
       if @receivedBytes - @lastSentAckBytes > @windowAckSize / 2
-#        console.log "[rtmp:send] Ack=#{@receivedBytes}"
         outputs.push @createAck()
         @lastSentAckBytes = @receivedBytes
 
@@ -1716,7 +1712,7 @@ class RTMPSession
         buf = Buffer.concat [@tmpBuf, buf], @tmpBuf.length + buf.length
         @tmpBuf = null
       if buf.length < 1537
-        console.log "[rtmp] waiting for C0+C1"
+        logger.debug "[rtmp] waiting for C0+C1"
         @tmpBuf = buf
         return
       @tmpBuf = null
@@ -1728,7 +1724,7 @@ class RTMPSession
         buf = Buffer.concat [@tmpBuf, buf], @tmpBuf.length + buf.length
         @tmpBuf = null
       if buf.length < 1536
-        console.log "[rtmp] waiting for C2"
+        logger.debug "[rtmp] waiting for C2"
         @tmpBuf = buf
         return
       @tmpBuf = null
@@ -1737,7 +1733,7 @@ class RTMPSession
 #      c2Message = buf[0..1535]
 
       @state = SESSION_STATE_HANDSHAKE_DONE
-      console.log "[rtmp] handshake success"
+      logger.debug "[rtmp] handshake success"
 
       if buf.length <= 1536
         callback null
@@ -1746,7 +1742,7 @@ class RTMPSession
       buf = buf[1536..]
 
     if @state isnt SESSION_STATE_HANDSHAKE_DONE
-      console.log "[rtmp:receive] unknown session state: #{@state}"
+      logger.error "[rtmp:receive] unknown session state: #{@state}"
       callback new Error "Unknown session state"
     else
       if @useEncryption
@@ -1781,7 +1777,7 @@ class RTMPSession
 
         seq.wait parseResult.rtmpMessages.length, (err, output) ->
           if err?
-            console.log "[rtmp:receive] packet error: #{err}"
+            logger.error "[rtmp:receive] packet error: #{err}"
           if output?
             outputs.push output
           consumeNextRTMPMessage()
@@ -1793,12 +1789,11 @@ class RTMPSession
                 (rtmpMessage.body[1] << 16) +
                 (rtmpMessage.body[2] << 8) +
                 rtmpMessage.body[3]
-#              console.log "[rtmp:receive] Set Chunk Size: #{newChunkSize}"
               @receiveChunkSize = newChunkSize
               seq.done()
             when 3  # Acknowledgement
               acknowledgementMessage = parseAcknowledgementMessage rtmpMessage.body
-#              console.log "[rtmp:receive] Ack=#{acknowledgementMessage.sequenceNumber}"
+#              logger.debug "[rtmp:receive] Ack=#{acknowledgementMessage.sequenceNumber}"
               seq.done()
             when 4  # User Control Message
               userControlMessage = parseUserControlMessage rtmpMessage.body
@@ -1811,16 +1806,16 @@ class RTMPSession
                   (userControlMessage.eventData[5] << 16) +
                   (userControlMessage.eventData[6] << 8) +
                   userControlMessage.eventData[7]
-                console.log "[rtmp:receive] SetBufferLength: streamID=#{streamID} bufferLength=#{bufferLength}"
+                logger.debug "[rtmp:receive] SetBufferLength: streamID=#{streamID} bufferLength=#{bufferLength}"
               else if userControlMessage.eventType is 7
                 timestamp = (userControlMessage.eventData[0] << 24) +
                   (userControlMessage.eventData[1] << 16) +
                   (userControlMessage.eventData[2] << 8) +
                   userControlMessage.eventData[3]
-                console.log "[rtmp:receive] PingResponse: timestamp=#{timestamp}"
+                logger.debug "[rtmp:receive] PingResponse: timestamp=#{timestamp}"
               else
-                console.log "[rtmp:receive] User Control Message"
-                console.log userControlMessage
+                logger.debug "[rtmp:receive] User Control Message"
+                logger.debug userControlMessage
               seq.done()
             when 5  # Window Acknowledgement Size
               @windowAckSize = (rtmpMessage.body[0] << 24) +
@@ -1829,41 +1824,41 @@ class RTMPSession
                 rtmpMessage.body[3]
               seq.done()
             when 8  # Audio Message (incoming)
-              audioData = parseAudioMessage rtmpMessage.body
+              audioData = @parseAudioMessage rtmpMessage.body
               if audioData.adtsFrame?
                 if not @isFirstAudioReceived
-                  @emit 'audio_start'
+                  @emit 'audio_start', @streamId
                   @isFirstAudioReceived = true
                 pts = dts = flv.convertMsToPTS rtmpMessage.timestamp
-                @emit 'audio_data', pts, dts, audioData.adtsFrame
+                @emit 'audio_data', @streamId, pts, dts, audioData.adtsFrame
               seq.done()
             when 9  # Video Message (incoming)
-              videoData = parseVideoMessage rtmpMessage.body
+              videoData = @parseVideoMessage rtmpMessage.body
               if videoData.nalUnitGlob?
                 if not @isFirstVideoReceived
-                  @emit 'video_start'
+                  @emit 'video_start', @streamId
                   @isFirstVideoReceived = true
                 dts = rtmpMessage.timestamp
                 pts = dts + videoData.info.videoDataTag.compositionTime
                 pts = flv.convertMsToPTS pts
                 dts = flv.convertMsToPTS dts
-                @emit 'video_data', pts, dts, videoData.nalUnitGlob  # TODO pts, dts
+                @emit 'video_data', @streamId, pts, dts, videoData.nalUnitGlob  # TODO pts, dts
               seq.done()
             when 15  # AMF3 data message
               dataMessage = parseAMF0DataMessage rtmpMessage.body[1..]
               @handleAMFDataMessage dataMessage, (err, output) ->
                 if err?
-                  console.log "[rtmp:receive] packet error: #{err}"
+                  logger.error "[rtmp:receive] packet error: #{err}"
                 if output?
                   outputs.push output
                 seq.done()
             when 17  # AMF3 command (0x11)
               # Does the first byte == 0x00 mean AMF0?
               commandMessage = parseAMF0CommandMessage rtmpMessage.body[1..]
-              console.log "[rtmp:receive] AMF3 command: #{commandMessage.command}"
+              logger.debug "[rtmp:receive] AMF3 command: #{commandMessage.command}"
               @handleAMFCommandMessage commandMessage, (err, output) ->
                 if err?
-                  console.log "[rtmp:receive] packet error: #{err}"
+                  logger.error "[rtmp:receive] packet error: #{err}"
                 if output?
                   outputs.push output
                 seq.done()
@@ -1871,30 +1866,80 @@ class RTMPSession
               dataMessage = parseAMF0DataMessage rtmpMessage.body
               @handleAMFDataMessage dataMessage, (err, output) ->
                 if err?
-                  console.log "[rtmp:receive] packet error: #{err}"
+                  logger.error "[rtmp:receive] packet error: #{err}"
                 if output?
                   outputs.push output
                 seq.done()
             when 20  # AMF0 command
               commandMessage = parseAMF0CommandMessage rtmpMessage.body
-              console.log "[rtmp:receive] AMF0 command: #{commandMessage.command}"
+              logger.debug "[rtmp:receive] AMF0 command: #{commandMessage.command}"
               @handleAMFCommandMessage commandMessage, (err, output) ->
                 if err?
-                  console.log "[rtmp:receive] packet error: #{err}"
+                  logger.error "[rtmp:receive] packet error: #{err}"
                 if output?
                   outputs.push output
                 seq.done()
             else
-              console.log "----- BUG -----"
-              console.log "[rtmp:receive] received unknown (not implemented) message type ID: #{rtmpMessage.messageTypeID}"
-              console.log rtmpMessage
-              console.log "Please report this bug on GitHub."
-              console.log "---------------"
+              logger.error "----- BUG -----"
+              logger.error "[rtmp:receive] received unknown (not implemented) message type ID: #{rtmpMessage.messageTypeID}"
+              logger.error rtmpMessage
+              logger.error "Please report this bug on GitHub. Thanks."
+              logger.error "https://github.com/iizukanao/node-rtsp-rtmp-server/issues"
+              logger.error "---------------"
               seq.done()
 
       consumeNextRTMPMessage()
 
 class RTMPServer
+  constructor: ->
+    @eventListeners = {}
+    @port = 1935
+    @server = net.createServer (c) =>
+      c.clientId = ++clientMaxId
+      sess = new RTMPSession c
+      logger.info "[rtmp] client #{sess.clientid} connected"
+      sessions[c.clientId] = sess
+      sessionsCount++
+      c.rtmpSession = sess
+      sess.on 'data', (data) ->
+        if data? and data.length > 0
+          c.write data
+      sess.on 'video_start', (args...) =>
+        @emit 'video_start', args...
+      sess.on 'audio_start', (args...) =>
+        @emit 'audio_start', args...
+      sess.on 'video_data', (args...) =>
+        @emit 'video_data', args...
+      sess.on 'audio_data', (args...) =>
+        @emit 'audio_data', args...
+      c.on 'close', =>
+        logger.info "[rtmp] client #{sess.clientid} disconnected"
+        if sessions[c.clientId]?
+          sessions[c.clientId].teardown()
+          delete sessions[c.clientId]
+          sessionsCount--
+        @dumpSessions()
+      c.on 'error', (err) ->
+        logger.error "[rtmp] socket error: #{err}"
+        c.destroy()
+      c.on 'data', (data) =>
+        c.rtmpSession.handleData data, (err, output) ->
+          if err
+            logger.error "[rtmp] error: #{err}"
+          else if output?
+            if output.length > 0
+              c.write output
+      @dumpSessions()
+
+  start: (callback) ->
+    logger.debug "[rtmp] starting server on port #{@port}"
+    @server.listen @port, '0.0.0.0', 511, =>
+      logger.info "[rtmp] server started on port #{@port}"
+      callback?()
+
+  stop: (callback) ->
+    @server.close callback
+
   on: (event, listener) ->
     if @eventListeners[event]?
       @eventListeners[event].push listener
@@ -1908,57 +1953,19 @@ class RTMPServer
         listener args...
     return
 
-  constructor: ->
-    @eventListeners = {}
-    @port = 1935
-    @server = net.createServer (c) =>
-      console.log "[rtmp] new client"
-      c.clientId = ++clientMaxId
-      sess = new RTMPSession c
-      sessions[c.clientId] = sess
-      sessionsCount++
-      c.rtmpSession = sess
-      sess.on 'data', (data) ->
-        if data? and data.length > 0
-          c.write data
-      sess.on 'stream_reset', (args...) =>
-        @emit 'stream_reset', args...
-      sess.on 'video_start', (args...) =>
-        @emit 'video_start', args...
-      sess.on 'audio_start', (args...) =>
-        @emit 'audio_start', args...
-      sess.on 'video_data', (args...) =>
-        @emit 'video_data', args...
-      sess.on 'audio_data', (args...) =>
-        @emit 'audio_data', args...
-      c.on 'close', ->
-        console.log "[rtmp] client disconnected"
-        if sessions[c.clientId]?
-          sessions[c.clientId].teardown()
-          delete sessions[c.clientId]
-          sessionsCount--
-        console.log "[rtmp] #{sessionsCount} clients"
-      c.on 'error', (err) ->
-        console.error "[rtmp] socket error: #{err}"
-        c.destroy()
-      c.on 'data', (data) =>
-        c.rtmpSession.handleData data, (err, output) ->
-          if err
-            console.error "[rtmp] error: #{err}"
-          else if output?
-            if output.length > 0
-              c.write output
-
-  start: (callback) ->
-    console.log "starting rtmp server on port #{@port}"
-    @server.listen @port, '0.0.0.0', 511, callback
-
-  stop: (callback) ->
-    @server.close callback
+  dumpSessions: ->
+    logger.raw "[rtmp: #{sessionsCount} sessions]"
+    for sessionID, session of sessions
+      logger.raw " " + session.toString()
+    if rtmptSessionsCount > 0
+      logger.raw "[rtmpt: #{rtmptSessionsCount} sessions]"
+      for sessionID, rtmptSession of rtmptSessions
+        logger.raw " " + rtmptSession.toString()
+    return
 
   teardownRTMPTClient: (socket) ->
     if socket.rtmptClientID?
-      console.log "[rtmp] teardownRTMPTClient: #{socket.rtmptClientID}"
+      logger.debug "[rtmp] teardownRTMPTClient: #{socket.rtmptClientID}"
       tsession = rtmptSessions[socket.rtmptClientID]
       if tsession?
         tsession.rtmpSession?.teardown()
@@ -1968,18 +1975,13 @@ class RTMPServer
   updateConfig: (newConfig) ->
     config = newConfig
 
-  updateSPS: (buf) ->
-    spsPacket = buf
-
-  updatePPS: (buf) ->
-    ppsPacket = buf
-
   # Packets must be come in DTS ascending order
-  sendVideoPacket: (nalUnits, pts, dts) ->
+  sendVideoPacket: (stream, nalUnits, pts, dts) ->
+    if DEBUG_INCOMING_RTMP_PACKETS
+      logger.info "received video: stream=#{stream.id} #{nalUnits.length} NAL units; pts=#{pts}"
     if dts > pts
       throw new Error "pts must be >= dts (pts=#{pts} dts=#{dts})"
     timestamp = convertPTSToMilliseconds dts
-    lastTimestamp = timestamp
 
     if sessionsCount + rtmptSessionsCount is 0
       return
@@ -2033,16 +2035,17 @@ class RTMPServer
 
     buf = Buffer.concat message
 
-    queueVideoMessage
+    queueVideoMessage stream,
       body: buf
       timestamp: timestamp
       isKeyFrame: hasKeyFrame
 
     return
 
-  sendAudioPacket: (rawDataBlock, timestamp) ->
+  sendAudioPacket: (stream, rawDataBlock, timestamp) ->
+    if DEBUG_INCOMING_RTMP_PACKETS
+      logger.info "received audio: stream=#{stream.id} #{rawDataBlock.length} bytes; timestamp=#{timestamp}"
     timestamp = convertPTSToMilliseconds timestamp
-    lastTimestamp = timestamp
 
     if sessionsCount + rtmptSessionsCount is 0
       return
@@ -2053,23 +2056,11 @@ class RTMPServer
 
     buf = Buffer.concat [headerBytes, rawDataBlock], rawDataBlock.length + 2
 
-    queueAudioMessage
+    queueAudioMessage stream,
       body: buf
       timestamp: timestamp
 
     return
-
-  resetStreams: ->
-    spsPacket = null
-    ppsPacket = null
-    isAudioStarted = false
-    isVideoStarted = false
-
-  startAudio: ->
-    isAudioStarted = true
-
-  startVideo: ->
-    isVideoStarted = true
 
   handleRTMPTRequest: (req, callback) ->
     # /fcs/ident2 will be handled in another place
@@ -2079,7 +2070,7 @@ class RTMPServer
       index = match[3]
       if not index?
         index = client
-      if command is 'fcs' and index is 'ident2'
+      if (command is 'fcs') and (index is 'ident2')
         response = """
         HTTP/1.1 400 RTMPT command /fcs/ident2 is not supported
         Cache-Control: no-cache
@@ -2091,12 +2082,11 @@ class RTMPServer
         """.replace /\n/g, '\r\n'
         callback null, response
       else if command is 'open'
-        session = new RTMPTSession req.socket, ->
+        session = new RTMPTSession req.socket, =>
           rtmptSessions[session.id] = session
           rtmptSessionsCount++
           session.respondOpen req, callback
-        session.on 'stream_reset', (args...) =>
-          @emit 'stream_reset', args...
+          @dumpSessions()
         session.on 'video_start', (args...) =>
           @emit 'video_start', args...
         session.on 'audio_start', (args...) =>
@@ -2108,13 +2098,61 @@ class RTMPServer
       else if command is 'idle'
         session = rtmptSessions[client]
         if session?
+          # TODO: Do we have to sort requests by index?
+          index = parseInt index
           session.respondIdle req, callback
+          if session.requestBuffer?
+            session.requestBuffer.nextIndex = index + 1
+          else
+            session.requestBuffer =
+              nextIndex: index + 1
+              reqs: []
         else
           callback new Error "No such session"
       else if command is 'send'
         session = rtmptSessions[client]
         if session?
-          session.respondSend req, callback
+          index = parseInt index
+          if session.requestBuffer?
+            if index > session.requestBuffer.nextIndex
+              # If HTTP-tunneling (RTMPT or RTMPTE) is used, Flash Player
+              # may send requests in parallel using multiple connections.
+              # So we have to buffer and sort the requests.
+              session.requestBuffer.reqs.push
+                req     : req
+                index   : index
+                callback: callback
+              session.requestBuffer.reqs.sort (a, b) ->
+                a.index - b.index
+            else if index is session.requestBuffer.nextIndex
+              session.respondSend req, callback
+              session.requestBuffer.nextIndex = index + 1
+            else
+              logger.warn "[rtmpt] received stale request: #{index}"
+
+            # Discard old requests
+            if (session.requestBuffer.reqs.length > 0) and
+            (index - session.requestBuffer.reqs[0].index > RTMPT_SEND_REQUEST_BUFFER_SIZE)
+                info = session.requestBuffer.reqs[0]
+                if info.index is session.requestBuffer.nextIndex + 1
+                  logger.warn "[rtmpt] discarded lost request: #{session.requestBuffer.nextIndex}"
+                else
+                  logger.warn "[rtmpt] discarded lost requests: #{session.requestBuffer.nextIndex}-#{info.index-1}"
+                session.requestBuffer.nextIndex = info.index
+
+            # Consume buffered requests
+            while (session.requestBuffer.reqs.length > 0) and
+            (session.requestBuffer.reqs[0].index is session.requestBuffer.nextIndex)
+              info = session.requestBuffer.reqs.shift()
+              # TODO: Call respondSend with setImmediate()?
+              session.respondSend info.req, info.callback
+              session.requestBuffer.nextIndex = info.index + 1
+          else
+            # TODO: Does index start at zero?
+            session.requestBuffer =
+              nextIndex: index + 1
+              reqs: []
+            session.respondSend req, callback
         else
           callback new Error "No such session"
       else if command is 'close'
@@ -2150,6 +2188,40 @@ generateSessionID = (callback) ->
       callback null, sid
 
 class RTMPTSession
+  constructor: (socket, callback) ->
+    @creationDate = new Date  # for debug
+    @eventListeners = {}
+    @socket = socket
+    @pollingDelay = 1
+    @pendingResponses = []
+    @requestBuffer = null
+    @rtmpSession = new RTMPSession socket
+    @rtmpSession.on 'data', (data) =>
+      @scheduleTimeout()
+      @pendingResponses.push data
+    @rtmpSession.on 'video_start', (args...) =>
+      @emit 'video_start', args...
+    @rtmpSession.on 'audio_start', (args...) =>
+      @emit 'audio_start', args...
+    @rtmpSession.on 'video_data', (args...) =>
+      @emit 'video_data', args...
+    @rtmpSession.on 'audio_data', (args...) =>
+      @emit 'audio_data', args...
+    @rtmpSession.on 'teardown', =>
+      logger.info "[rtmpt] #{@rtmpSession.clientid}: received teardown"
+      @close()
+    generateNewSessionID (err, sid) =>
+      if err
+        callback err
+      else
+        @id = sid
+        @socket.rtmptClientID = @id
+        @scheduleTimeout()
+        callback? null
+
+  toString: ->
+    return "#{@id}: rtmp_session=#{@rtmpSession.clientid} created_at=#{@creationDate}"
+
   on: (event, listener) ->
     if @eventListeners[event]?
       @eventListeners[event].push listener
@@ -2162,39 +2234,6 @@ class RTMPTSession
       for listener in @eventListeners[event]
         listener args...
     return
-
-  constructor: (socket, callback) ->
-    console.log "[rtmpt] new"
-    @eventListeners = {}
-    @socket = socket
-    @pollingDelay = 1
-    @pendingResponses = []
-    @rtmpSession = new RTMPSession socket
-    @rtmpSession.on 'data', (data) =>
-      @scheduleTimeout()
-      @pendingResponses.push data
-    @rtmpSession.on 'stream_reset', (args...) =>
-      @emit 'stream_reset', args...
-    @rtmpSession.on 'video_start', (args...) =>
-      @emit 'video_start', args...
-    @rtmpSession.on 'audio_start', (args...) =>
-      @emit 'audio_start', args...
-    @rtmpSession.on 'video_data', (args...) =>
-      @emit 'video_data', args...
-    @rtmpSession.on 'audio_data', (args...) =>
-      @emit 'audio_data', args...
-    @rtmpSession.on 'teardown', =>
-      console.log "[rtmpt] received teardown"
-      @close()
-    generateNewSessionID (err, sid) =>
-      if err
-        callback err
-      else
-        console.log "[rtmpt] session id: #{sid}"
-        @id = sid
-        @socket.rtmptClientID = @id
-        @scheduleTimeout()
-        callback? null
 
   clearTimeout: ->
     if @timeoutTimer?
@@ -2213,15 +2252,15 @@ class RTMPTSession
         return
       if Date.now() - @lastTimeoutScheduledTime < config.rtmptSessionTimeoutMs
         return
-      console.log "[rtmpt] session timeout: #{@id}"
+      logger.info "[rtmpt] session timeout: #{@id}"
       @close()
     , config.rtmptSessionTimeoutMs
 
   close: ->
     if @isClosed
-      console.log "[rtmpt] already closed"
+      # already closed
       return
-    console.log "[rtmpt] close"
+    logger.info "[rtmpt] #{@rtmpSession.clientid}: close"
     @isClosed = true
     @clearTimeout()
     if @rtmpSession?
@@ -2274,7 +2313,7 @@ class RTMPTSession
     @scheduleTimeout()
     @rtmpSession.handleData req.rawbody, (err, output) =>
       if err
-        console.error "[rtmpt:send-resp] Error: #{err}"
+        logger.error "[rtmpt:send-resp] Error: #{err}"
         callback err
       else if output?
         interval = new Buffer [ @pollingDelay ]
@@ -2290,4 +2329,7 @@ class RTMPTSession
     @close()
     callback null, @createHTTPResponse allBytes
 
-module.exports = RTMPServer
+api =
+  RTMPServer: RTMPServer
+
+module.exports = api

@@ -1,7 +1,8 @@
 # AAC parser
 
-fs   = require 'fs'
-bits = require './bits'
+fs = require 'fs'
+Bits = require './bits'
+logger = require './logger'
 
 audioBuf = null
 
@@ -43,8 +44,7 @@ api =
 
   parseADTSHeader: (buf) ->
     info = {}
-    bits.push_stash()
-    bits.set_data buf
+    bits = new Bits buf
 
     # adts_fixed_header()
     info.syncword = bits.read_bits 12
@@ -65,11 +65,11 @@ api =
     info.adts_buffer_fullness = bits.read_bits 11
     info.number_of_raw_data_blocks_in_frame = bits.read_bits 2
 
-    bits.pop_stash()
     return info
 
-  # Feed the return value of readAudioSpecificConfig()
+  # For ascInfo argument, pass a return value of readAudioSpecificConfig()
   createADTSHeader: (ascInfo, aac_frame_length) ->
+    bits = new Bits
     bits.create_buf()
     # adts_fixed_header()
     bits.add_bits 12, 0xfff  # syncword
@@ -99,19 +99,19 @@ api =
     return bits.get_created_buf()
 
   getNextPossibleSyncwordPosition: (buffer) ->
-    syncwordPos = bits.searchBitsInArray buffer, [0xff, 0xf0], 1
+    syncwordPos = Bits.searchBitsInArray buffer, [0xff, 0xf0], 1
     # The maximum distance between two syncwords is 8192 bytes.
     if syncwordPos > 8192
       throw new Error "the next syncword is too far: #{syncwordPos} bytes"
     return syncwordPos
 
   skipToNextPossibleSyncword: ->
-    syncwordPos = bits.searchBitsInArray audioBuf, [0xff, 0xf0], 1
+    syncwordPos = Bits.searchBitsInArray audioBuf, [0xff, 0xf0], 1
     if syncwordPos > 0
       # The maximum distance between two syncwords is 8192 bytes.
       if syncwordPos > 8192
         throw new Error "the next syncword is too far: #{syncwordPos} bytes"
-      console.log "skipped #{syncwordPos} bytes until syncword"
+      logger.debug "skipped #{syncwordPos} bytes until syncword"
       audioBuf = audioBuf[syncwordPos..]
     return
 
@@ -127,7 +127,7 @@ api =
         buffer = buffer[syncwordPos..]
         continue
 
-      aac_frame_length = bits.parse_bits_uint buffer, 30, 13
+      aac_frame_length = Bits.parse_bits_uint buffer, 30, 13
       if buffer.length < aac_frame_length
         # not enough buffer
         break
@@ -168,7 +168,7 @@ api =
         @skipToNextPossibleSyncword()
         continue
 
-      aac_frame_length = bits.parse_bits_uint audioBuf, 30, 13
+      aac_frame_length = Bits.parse_bits_uint audioBuf, 30, 13
       if audioBuf.length < aac_frame_length
         # not enough buffer
         break
@@ -207,7 +207,7 @@ api =
         @skipToNextPossibleSyncword()
         continue
 
-      aac_frame_length = bits.parse_bits_uint audioBuf, 30, 13
+      aac_frame_length = Bits.parse_bits_uint audioBuf, 30, 13
       if audioBuf.length < aac_frame_length
         # not enough buffer
         break
@@ -286,7 +286,7 @@ api =
   #   coreCoderDelay (number) (optional): delay in samples. mandatory if
   #                                       dependsOnCoreCoder is true.
   # }
-  addGASpecificConfig: (opts) ->
+  addGASpecificConfig: (bits, opts) ->
     # frameLengthFlag (1 bit)
     if opts.frameLength is 1024
       bits.add_bit 0
@@ -309,22 +309,18 @@ api =
       throw new Error "audio object type #{opts.audioObjectType} is not implemented"
 
   # ISO 14496-3 GetAudioObjectType()
-  readGetAudioObjectType: ->
+  readGetAudioObjectType: (bits) ->
     audioObjectType = bits.read_bits 5
     if audioObjectType is 31
       audioObjectType = 32 + bits.read_bits 6
     return audioObjectType
-
-  read_program_config_element: ->
-    # TODO
-    throw new Error "program_config_element() is not implemented"
 
   # @param opts: {
   #   samplingFrequencyIndex: number
   #   channelConfiguration: number
   #   audioObjectType: number
   # }
-  readGASpecificConfig: (opts) ->
+  readGASpecificConfig: (bits, opts) ->
     info = {}
     info.frameLengthFlag = bits.read_bit()
     info.dependsOnCoreCoder = bits.read_bit()
@@ -332,7 +328,7 @@ api =
       info.coreCoderDelay = bits.read_bits 14
     info.extensionFlag = bits.read_bit()
     if opts.channelConfiguration is 0
-      info.program_config_element = api.read_program_config_element()
+      info.program_config_element = api.read_program_config_element bits
     if opts.audioObjectType in [6, 20]
       info.layerNr = bits.read_bits 3
     if info.extensionFlag
@@ -349,16 +345,14 @@ api =
 
   # ISO 14496-3 1.6.2.1 AudioSpecificConfig
   parseAudioSpecificConfig: (buf) ->
-    bits.push_stash()
-    bits.set_data buf
-    asc = api.readAudioSpecificConfig()
-    bits.pop_stash()
+    bits = new Bits buf
+    asc = api.readAudioSpecificConfig bits
     return asc
 
   # ISO 14496-3 1.6.2.1 AudioSpecificConfig
-  readAudioSpecificConfig: ->
+  readAudioSpecificConfig: (bits) ->
     info = {}
-    info.audioObjectType = api.readGetAudioObjectType()
+    info.audioObjectType = api.readGetAudioObjectType bits
     info.samplingFrequencyIndex = bits.read_bits 4
     if info.samplingFrequencyIndex is 0xf
       info.samplingFrequency = bits.read_bits 24
@@ -375,13 +369,13 @@ api =
         info.extensionSamplingFrequency = bits.read_bits 24
       else
         info.extensionSamplingFrequency = api.getSampleRateFromFreqIndex extensionSamplingFrequencyIndex
-      info.audioObjectType = api.readGetAudioObjectType()
+      info.audioObjectType = api.readGetAudioObjectType bits
     else
       info.extensionAudioObjectType = 0
 
     switch info.audioObjectType
       when 1, 2, 3, 4, 6, 7, 17, 19, 20, 21, 22, 23
-        info.gaSpecificConfig = api.readGASpecificConfig info
+        info.gaSpecificConfig = api.readGASpecificConfig bits, info
       else
         throw new Error "audio object type #{info.audioObjectType} is not implemented"
     switch info.audioObjectType
@@ -391,7 +385,7 @@ api =
     if (info.extensionAudioObjectType isnt 5) and (bits.get_remaining_bits() >= 16)
       info.syncExtensionType = bits.read_bits 11
       if info.syncExtensionType is 0x2b7
-        info.extensionAudioObjectType = api.readGetAudioObjectType()
+        info.extensionAudioObjectType = api.readGetAudioObjectType bits
         if info.extensionAudioObjectType is 5
           info.sbrPresentFlag = bits.read_bit()
           if info.sbrPresentFlag is 1
@@ -412,6 +406,7 @@ api =
   #   frameLength (int): 1024 or 960
   # }
   createAudioSpecificConfig: (opts) ->
+    bits = new Bits
     bits.create_buf()
 
     # Table 1.13 - AudioSpecificConfig()
@@ -444,7 +439,7 @@ api =
         bits.add_bits 6, opts.audioObjectType - 32
     switch opts.audioObjectType
       when 1, 2, 3, 4, 6, 7, 17, 19, 20, 21, 22, 23
-        api.addGASpecificConfig opts
+        api.addGASpecificConfig bits, opts
       else
         throw new Error "audio object type #{opts.audioObjectType} is not implemented"
     switch opts.audioObjectType
@@ -459,18 +454,18 @@ api =
     if (adtsFrame[0] isnt 0xff) or (adtsFrame[1] & 0xf0 isnt 0xf0)
       throw new Error "malformed audio: data doesn't start with a syncword (0xfff)"
 
-    info.mpegIdentifier = bits.parse_bits_uint adtsFrame, 12, 1
-    profile_ObjectType = bits.parse_bits_uint adtsFrame, 16, 2
+    info.mpegIdentifier = Bits.parse_bits_uint adtsFrame, 12, 1
+    profile_ObjectType = Bits.parse_bits_uint adtsFrame, 16, 2
     if info.mpegIdentifier is MPEG_IDENTIFIER_MPEG2
       info.audioObjectType = profile_ObjectType
     else
       info.audioObjectType = profile_ObjectType + 1
-    freq = bits.parse_bits_uint adtsFrame, 18, 4
+    freq = Bits.parse_bits_uint adtsFrame, 18, 4
     info.sampleRate = api.getSampleRateFromFreqIndex freq
-    info.channels = bits.parse_bits_uint adtsFrame, 23, 3
+    info.channels = Bits.parse_bits_uint adtsFrame, 23, 3
 
 #    # raw_data_block starts from byte index 7
-#    id_syn_ele = bits.parse_bits_uint adtsFrame, 56, 3
+#    id_syn_ele = Bits.parse_bits_uint adtsFrame, 56, 3
 
     return info
 
@@ -487,7 +482,7 @@ api =
         @skipToNextPossibleSyncword()
         continue
 
-      aac_frame_length = bits.parse_bits_uint audioBuf, 30, 13
+      aac_frame_length = Bits.parse_bits_uint audioBuf, 30, 13
       if audioBuf.length < aac_frame_length
         # not enough buffer
         return null

@@ -1,21 +1,23 @@
-ejs     = require 'ejs'
-path    = require 'path'
-fs      = require 'fs'
-zlib    = require 'zlib'
-spawn   = require('child_process').spawn
+ejs = require 'ejs'
+path = require 'path'
+fs = require 'fs'
+zlib = require 'zlib'
+spawn = require('child_process').spawn
 Sequent = require 'sequent'
+
+logger = require './logger'
 
 # Directory to store EJS templates
 TEMPLATE_DIR = "#{__dirname}/template"
 
 # Directory to store static files
-STATIC_DIR  = "#{__dirname}/public"
+STATIC_DIR = "#{__dirname}/public"
 
 # Filename of default file in static directory
 DIRECTORY_INDEX_FILENAME = 'index.html'
 
 # Server name which is embedded in HTTP response header
-serverName = 'node-rtsp-rtmp-server'
+DEFAULT_SERVER_NAME = 'node-rtsp-rtmp-server'
 
 # Response larger than this bytes is compressed
 GZIP_SIZE_THRESHOLD = 300
@@ -35,17 +37,12 @@ zeropad = (width, num) ->
     num = '0' + num
   num
 
-getDateHeader = ->
-  d = new Date
-  "#{DAY_NAMES[d.getUTCDay()]}, #{d.getUTCDate()} #{MONTH_NAMES[d.getUTCMonth()]}" +
-  " #{d.getUTCFullYear()} #{zeropad 2, d.getUTCHours()}:#{zeropad 2, d.getUTCMinutes()}" +
-  ":#{zeropad 2, d.getUTCSeconds()} UTC"
-
-class HTTPServer
-  constructor: ->
+class HTTPHandler
+  constructor: (opts) ->
+    @serverName = opts?.serverName ? DEFAULT_SERVER_NAME
 
   setServerName: (name) ->
-    serverName = name
+    @serverName = name
 
   handlePath: (filepath, req, callback) ->
     # Example implementation
@@ -58,7 +55,7 @@ class HTTPServer
         encoding: 'utf8'
       }, (err, template) =>
         if err
-          console.error err
+          logger.error err
           @serverError req, callback
         else
           html = ejs.render template, opts
@@ -94,8 +91,8 @@ class HTTPServer
         statusMessage = '401 Unauthorized'
     header = """
     #{protocol} #{statusMessage}
-    Date: #{getDateHeader()}
-    Server: #{serverName}
+    Date: #{api.getDateHeader()}
+    Server: #{@serverName}
 
     """
 
@@ -273,7 +270,7 @@ class HTTPServer
       if exists
         fs.stat filepath, (err, stat) =>
           if err
-            console.error "stat error: #{filepath}"
+            logger.error "stat error: #{filepath}"
             @serverError req, callback
             return
           seq = new Sequent
@@ -289,7 +286,7 @@ class HTTPServer
           seq.wait 1, =>
             fs.readFile filepath, {encoding:null, flag:'r'}, (err, contentBuf) =>
               if err
-                console.error "readFile error: #{filepath}"
+                logger.error "readFile error: #{filepath}"
                 @serverError req, callback
                 return
               contentRangeHeader = null
@@ -297,7 +294,7 @@ class HTTPServer
                 if (match = /^bytes=(\d+)?-(\d+)?$/.exec req.headers.range)?
                   from = if match[1]? then parseInt(match[1]) else null
                   to = if match[2]? then parseInt(match[2]) else null
-                  console.log "Range from #{from} to #{to}"
+                  logger.debug "Range from #{from} to #{to}"
                   if not from? and to?  # last n bytes
                     contentRangeHeader = "bytes #{contentBuf.length-to}-#{contentBuf.length-1}/#{contentBuf.length}"
                     contentBuf = contentBuf.slice contentBuf.length-to, contentBuf.length
@@ -309,7 +306,7 @@ class HTTPServer
                     contentRangeHeader = "bytes #{from}-#{to}/#{contentBuf.length}"
                     contentBuf = contentBuf.slice from, to + 1
                 else
-                  console.warn "[Range spec #{req.headers.range} is not supported]"
+                  logger.error "[Range spec #{req.headers.range} is not supported]"
               if err
                 @serverError req, callback
                 return
@@ -372,7 +369,43 @@ class HTTPServer
                 headerBuf = new Buffer header, 'utf8'
                 callback null, [ headerBuf, contentBuf ]
       else
-        console.warn "Requested file not found: #{filepath}"
+        logger.warn "[http] Requested file not found: #{filepath}"
         @notFound req, callback
 
-module.exports = HTTPServer
+api =
+  HTTPHandler: HTTPHandler
+
+  getDateHeader: ->
+    d = new Date
+    "#{DAY_NAMES[d.getUTCDay()]}, #{d.getUTCDate()} #{MONTH_NAMES[d.getUTCMonth()]}" +
+    " #{d.getUTCFullYear()} #{zeropad 2, d.getUTCHours()}:#{zeropad 2, d.getUTCMinutes()}" +
+    ":#{zeropad 2, d.getUTCSeconds()} UTC"
+
+  parseRequest: (str) ->
+    [headerPart, body] = str.split '\r\n\r\n'
+
+    lines = headerPart.split /\r\n/
+    [method, uri, protocol] = lines[0].split /\s+/
+    headers = {}
+    for line, i in lines
+      continue if i is 0
+      continue if /^\s*$/.test line
+      params = line.split ": "
+      headers[params[0].toLowerCase()] = params[1]
+
+    try
+      decodedURI = decodeURIComponent uri
+    catch e
+      logger.error "error: failed to decode URI: #{uri}"
+      return null
+
+    return {
+      method: method
+      uri: decodedURI
+      protocol: protocol
+      headers: headers
+      body: body
+      headerBytes: Buffer.byteLength headerPart, 'utf8'
+    }
+
+module.exports = api

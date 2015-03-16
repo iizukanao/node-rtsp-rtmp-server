@@ -1,6 +1,7 @@
 h264 = require './h264'
-aac  = require './aac'
-bits = require './bits'
+aac = require './aac'
+Bits = require './bits'
+logger = require './logger'
 
 api =
   SOUND_FORMAT_AAC: 10  # AAC
@@ -81,9 +82,8 @@ api =
 
   parseVideo: (buf) ->
     info = {}
-    bits.push_stash()
-    bits.set_data buf
-    info.videoDataTag = api.readVideoDataTag()
+    bits = new Bits buf
+    info.videoDataTag = api.readVideoDataTag bits
 
     # Reject if the codec is not H.264
     if info.videoDataTag.codecID isnt 7
@@ -92,23 +92,20 @@ api =
 
     switch info.videoDataTag.avcPacketType
       when api.AVC_PACKET_TYPE_SEQUENCE_HEADER
-        info.avcDecoderConfigurationRecord = h264.readAVCDecoderConfigurationRecord()
+        info.avcDecoderConfigurationRecord = h264.readAVCDecoderConfigurationRecord bits
       when api.AVC_PACKET_TYPE_NALU
         info.nalUnits = bits.remaining_buffer()
       when api.AVC_PACKET_TYPE_EOS
       else
         throw new Error "flv: unknown AVCPacketType: #{info.videoDataTag.avcPacketType}"
-    bits.pop_stash()
     return info
 
   splitNALUnits: (buf, nalUnitLengthSize) ->
-    bits.push_stash()
-    bits.set_data buf
+    bits = new Bits buf
     nalUnits = []
     while bits.has_more_data()
       nalUnitLen = bits.read_bits nalUnitLengthSize * 8
       nalUnits.push bits.read_bytes nalUnitLen
-    bits.pop_stash()
     return nalUnits
 
   soundFormat2Str: (soundFormat) ->
@@ -131,9 +128,8 @@ api =
 
   parseAudio: (buf) ->
     info = {}
-    bits.push_stash()
-    bits.set_data buf
-    info.audioDataTag = api.readAudioDataTag()
+    bits = new Bits buf
+    info.audioDataTag = api.readAudioDataTag bits
 
     # Reject if the sound format is not AAC
     if info.audioDataTag.soundFormat isnt api.SOUND_FORMAT_AAC
@@ -143,18 +139,17 @@ api =
     switch info.audioDataTag.aacPacketType
       when api.AAC_PACKET_TYPE_SEQUENCE_HEADER
         if bits.has_more_data()
-          info.audioSpecificConfig = aac.readAudioSpecificConfig()
+          info.audioSpecificConfig = aac.readAudioSpecificConfig bits
         else
-          console.log "flv:parseAudio(): warn: AAC sequence header is empty"
+          logger.warn "warn: flv:parseAudio(): AAC sequence header is empty"
       when api.AAC_PACKET_TYPE_RAW
         info.rawDataBlock = bits.remaining_buffer()
       else
         throw new Error "flv: unknown AACPacketType: #{info.audioDataTag.aacPacketType}"
-    bits.pop_stash()
     return info
 
   # E.4.3.1 VIDEODATA
-  readVideoDataTag: ->
+  readVideoDataTag: (bits) ->
     info = {}
     info.frameType = bits.read_bits 4
     info.codecID = bits.read_bits 4
@@ -162,11 +157,12 @@ api =
       info.avcPacketType = bits.read_byte()
       info.compositionTime = bits.read_bits 24
       if (info.avcPacketType isnt 1) and (info.compositionTime isnt 0)
-        console.log "flv:readVideoDataTag(): warn: AVCPacketType isn't 1 but CompositionTime isn't 0; AVCPacketType=#{info.avcPacketType} CompositionTime=#{info.compositionTime}"
+        # TODO: Handle this situation
+        logger.error "flv:readVideoDataTag(): AVCPacketType isn't 1 but CompositionTime isn't 0 (feature not implemented); AVCPacketType=#{info.avcPacketType} CompositionTime=#{info.compositionTime}"
     return info
 
   # E.4.2.1 AUDIODATA
-  readAudioDataTag: ->
+  readAudioDataTag: (bits) ->
     info = {}
     b = bits.read_byte()
     info.soundFormat = b >> 4
