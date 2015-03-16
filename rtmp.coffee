@@ -4,6 +4,7 @@
 # http://wwwimages.adobe.com/content/dam/Adobe/en/devnet/rtmp/pdf/rtmp_specification_1.0.pdf
 
 net = require 'net'
+url = require 'url'
 crypto = require 'crypto'
 Sequent = require 'sequent'
 
@@ -1317,6 +1318,21 @@ class RTMPSession
   respondPublish: (requestCommand, callback) ->
     @receiveTimestamp = null
     publishingName = requestCommand.objects[1]?.value
+
+    # Strip the query string from
+    # "livestream?videoKeyframeFrequency=5&totalDatarate=248"
+    urlInfo = url.parse publishingName
+    if urlInfo.query?
+      pairs = urlInfo.query.split '&'
+      params = {}
+      for pair in pairs
+        kv = pair.split '='
+        params[ kv[0] ] = kv[1]
+      # TODO: Use this information for something
+      # totalDatarate: Total kbps for video + audio
+      logger.info JSON.stringify params
+
+    publishingName = urlInfo.pathname
     @streamId = publishingName
     stream = avstreams.get @streamId
     if stream?
