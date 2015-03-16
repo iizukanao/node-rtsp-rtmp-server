@@ -40,6 +40,8 @@ In the Encoding Options panel, check "Stream to Flash Media Server" and set the 
 
 Press the "Connect" button. Set the video format to H.264, and the audio format to AAC. Press the "Start" button.
 
+When you watch the stream over RTSP or RTMP, use the stream name specified above.
+
 #### From FFmpeg
 
 If you have an MP4 file with H.264 video and AAC audio:
