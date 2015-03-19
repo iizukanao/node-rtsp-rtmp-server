@@ -682,7 +682,7 @@ class RTMPSession
         nalUnits = flv.splitNALUnits info.nalUnits, @avcInfo.nalUnitLengthSize
         nalUnitGlob = h264.concatWithStartCodePrefix nalUnits
       when flv.AVC_PACKET_TYPE_EOS
-        logger.info "[rtmp:publish] received EOS from uploading client #{@clientid}"
+        logger.info "[rtmp:#{@clientid}] received EOS from uploading client"
         # TODO: Do we have to handle EOS?
       else
         throw new Error "unknown AVCPacketType: #{flv.AVC_PACKET_TYPE_SEQUENCE_HEADER}"
@@ -730,7 +730,7 @@ class RTMPSession
         return
       if Date.now() - @lastTimeoutScheduledTime < config.rtmpSessionTimeoutMs
         return
-      logger.info "[rtmp] session timeout: #{@clientid}"
+      logger.info "[rtmp:#{@clientid}] session timeout"
       @teardown()
     , config.rtmpSessionTimeoutMs
 
@@ -1020,7 +1020,7 @@ class RTMPSession
       type = s0s1s2[0]
       if type is 6
         @useEncryption = true
-        logger.info "[rtmp] enabled encryption for client #{@clientid}"
+        logger.info "[rtmp:#{@clientid}] enabled encryption"
 
       @clientPublicKey  = keys.clientPublicKey
       @dh = keys.dh
@@ -1530,8 +1530,9 @@ class RTMPSession
     ]
 
     # ready for playing
-    logger.info "[rtmp] waiting for the key frame for client #{@clientid}"
     @isWaitingForKeyFrame = true
+    if config.rtmpWaitForKeyFrame
+      logger.info "[rtmp:#{@clientid}] waiting for keyframe"
 
   # Returns a Buffer contains both SPS and PPS
   getCodecConfigs: ->
@@ -1658,7 +1659,7 @@ class RTMPSession
         @respondCreateStream commandMessage, callback
       when 'play'
         @streamId = commandMessage.objects[1]?.value
-        logger.info "[rtmp] client #{@clientid} requested stream #{@streamId}"
+        logger.info "[rtmp:#{@clientid}] requested stream #{@streamId}"
         @respondPlay commandMessage, callback
       when 'closeStream'
         @closeStream callback
@@ -1897,7 +1898,7 @@ class RTMPServer
     @server = net.createServer (c) =>
       c.clientId = ++clientMaxId
       sess = new RTMPSession c
-      logger.info "[rtmp] client #{sess.clientid} connected"
+      logger.info "[rtmp:#{sess.clientid}] connected"
       sessions[c.clientId] = sess
       sessionsCount++
       c.rtmpSession = sess
@@ -1913,7 +1914,7 @@ class RTMPServer
       sess.on 'audio_data', (args...) =>
         @emit 'audio_data', args...
       c.on 'close', =>
-        logger.info "[rtmp] client #{sess.clientid} disconnected"
+        logger.info "[rtmp:#{sess.clientid}] disconnected"
         if sessions[c.clientId]?
           sessions[c.clientId].teardown()
           delete sessions[c.clientId]
@@ -2208,7 +2209,7 @@ class RTMPTSession
     @rtmpSession.on 'audio_data', (args...) =>
       @emit 'audio_data', args...
     @rtmpSession.on 'teardown', =>
-      logger.info "[rtmpt] #{@rtmpSession.clientid}: received teardown"
+      logger.info "[rtmpt:#{@rtmpSession.clientid}] received teardown"
       @close()
     generateNewSessionID (err, sid) =>
       if err
@@ -2260,7 +2261,7 @@ class RTMPTSession
     if @isClosed
       # already closed
       return
-    logger.info "[rtmpt] #{@rtmpSession.clientid}: close"
+    logger.info "[rtmpt:#{@rtmpSession.clientid}] close"
     @isClosed = true
     @clearTimeout()
     if @rtmpSession?
