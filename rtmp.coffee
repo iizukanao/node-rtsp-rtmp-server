@@ -385,20 +385,29 @@ flushRTMPMessages = (stream) ->
       continue
     msgs = null
 
-    # TODO: Start streaming audio before key frame comes
+    # If video starts with an inter frame, Flash Player might
+    # shows images looks like a glitch until the first keyframe.
     if session.isWaitingForKeyFrame
-      if stream.isVideoStarted  # has video stream
-        for rtmpMessage, i in rtmpMessagesToSend
-          if (rtmpMessage.avType is 'video') and rtmpMessage.isKeyFrame
-            logger.info "[rtmp] started streaming to client #{session.clientid}"
-            session.isPlaying = true
-            session.playStartTimestamp = rtmpMessage.originalTimestamp
-            session.playStartDateTime = Date.now()  # TODO: Should we use slower process.hrtime()?
-            session.isWaitingForKeyFrame = false
-            msgs = rtmpMessagesToSend[i..]
-            break
-      else  # audio only
-        logger.info "[rtmp] started streaming to client #{session.clientid}"
+      if config.rtmpWaitForKeyFrame
+        if stream.isVideoStarted  # has video stream
+          for rtmpMessage, i in rtmpMessagesToSend
+            if (rtmpMessage.avType is 'video') and rtmpMessage.isKeyFrame
+              logger.info "[rtmp:#{session.clientid}] started streaming"
+              session.isPlaying = true
+              session.playStartTimestamp = rtmpMessage.originalTimestamp
+              session.playStartDateTime = Date.now()  # TODO: Should we use slower process.hrtime()?
+              session.isWaitingForKeyFrame = false
+              msgs = rtmpMessagesToSend[i..]
+              break
+        else  # audio only
+          logger.info "[rtmp:#{session.clientid}] started streaming"
+          session.isPlaying = true
+          session.playStartTimestamp = rtmpMessagesToSend[0].originalTimestamp
+          session.playStartDateTime = Date.now()
+          session.isWaitingForKeyFrame = false
+          msgs = rtmpMessagesToSend
+      else  # Do not wait for a keyframe
+        logger.info "[rtmp:#{session.clientid}] started streaming"
         session.isPlaying = true
         session.playStartTimestamp = rtmpMessagesToSend[0].originalTimestamp
         session.playStartDateTime = Date.now()

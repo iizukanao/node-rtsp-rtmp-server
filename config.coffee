@@ -49,6 +49,10 @@ module.exports =
   # RTMP stream name
   rtmpApplicationName: 'live'
 
+  # If true, the server waits for the first keyframe
+  # before starting to send video/audio over RTMP.
+  rtmpWaitForKeyFrame: true
+
   # Enable RTMPT and RTMPTE
   enableRTMPT: true
 
