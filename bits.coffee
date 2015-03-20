@@ -307,6 +307,18 @@ class Bits
     else
       Bits.parse_bits_uint @buf, byteOffset * 8, 8
 
+  mark: ->
+    if not @marks?
+      @marks = [ @byte_index ]
+    else
+      @marks.push @byte_index
+
+  marked_bytes: ->
+    if (not @marks?) or (@marks.length is 0)
+      throw new Error "The buffer has not been marked"
+    startIndex = @marks.pop()
+    return @buf[startIndex..@byte_index-1]
+
   @searchBytesInArray: (haystack, needle, from_pos=0) ->
     if from_pos >= haystack.length
       return -1
