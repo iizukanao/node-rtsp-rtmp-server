@@ -48,13 +48,11 @@ api =
   print: (str, raw=false) ->
     if not raw
       d = new Date()
-      msg = "#{d.getFullYear()}-#{zeropad 2, d.getMonth()+1}-" +
+      process.stdout.write "#{d.getFullYear()}-#{zeropad 2, d.getMonth()+1}-" +
         "#{zeropad 2, d.getDate()} #{zeropad 2, d.getHours()}:" +
         "#{zeropad 2, d.getMinutes()}:#{zeropad 2, d.getSeconds()}." +
-        "#{zeropad 3, d.getMilliseconds()} " + str
-    else
-      msg = str
-    console.log msg
+        "#{zeropad 3, d.getMilliseconds()} "
+    console.log str
 
   tag: (tag, str, raw=false) ->
     if activeTags[tag]?
