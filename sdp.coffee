@@ -82,10 +82,14 @@ api =
     if opts.hasAudio
       # configspec: for MPEG-4 Audio streams, use hexstring of AudioSpecificConfig()
       # see 1.6.2.1 of ISO/IEC 14496-3 for the details of AudioSpecificConfig
-      if opts.audioObjectType? and opts.audioSampleRate? and opts.audioChannels?
+      if opts.audioSpecificConfig?
+        configspec = opts.audioSpecificConfig.toString 'hex'
+      else if opts.audioObjectType? and opts.audioSampleRate? and opts.audioChannels?
+        # TODO: This should not occur. Throw an error?
+        logger.warn "warn: creating AudioSpecificConfig from scratch"
         configspec = new Buffer aac.createAudioSpecificConfig
           audioObjectType: opts.audioObjectType
-          sampleRate: opts.audioSampleRate
+          samplingFrequency: opts.audioSampleRate
           channels: opts.audioChannels
           frameLength: 1024  # TODO: How to detect 960?
         configspec = configspec.toString 'hex'
@@ -96,7 +100,8 @@ api =
       if opts.audioChannels?
         rtpmap += "/#{opts.audioChannels}"
 
-      fmtp = "#{opts.audioPayloadType} profile-level-id=1;mode=AAC-hbr;sizeLength=13;indexLength=3;indexDeltaLength=3"
+      profileLevelId = 1  # TODO: Set this value according to audio config
+      fmtp = "#{opts.audioPayloadType} profile-level-id=#{profileLevelId};mode=AAC-hbr;sizeLength=13;indexLength=3;indexDeltaLength=3"
       if configspec?
         fmtp += ";config=#{configspec}"
 

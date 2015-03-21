@@ -139,7 +139,9 @@ api =
     switch info.audioDataTag.aacPacketType
       when api.AAC_PACKET_TYPE_SEQUENCE_HEADER
         if bits.has_more_data()
-          info.audioSpecificConfig = aac.readAudioSpecificConfig bits
+          bits.mark()
+          info.ascInfo = aac.readAudioSpecificConfig bits
+          info.audioSpecificConfig = bits.marked_bytes()
         else
           logger.warn "warn: flv:parseAudio(): AAC sequence header is empty"
       when api.AAC_PACKET_TYPE_RAW

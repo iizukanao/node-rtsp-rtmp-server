@@ -14,6 +14,7 @@ url = require 'url'
 rtp = require './rtp'
 sdp = require './sdp'
 h264 = require './h264'
+aac = require './aac'
 http = require './http'
 avstreams = require './avstreams'
 Bits = require './bits'
@@ -1229,6 +1230,17 @@ class RTSPServer
         sdpData.audioSampleRate   = stream.audioSampleRate
         sdpData.audioObjectType   = stream.audioObjectType
 
+        ascInfo = stream.audioASCInfo
+        # Check whether explicit hierarchical signaling of SBR is used
+        if ascInfo.explicitHierarchicalSBR and config.rtspDisableHierarchicalSBR
+          logger.debug "[rtsp] converting hierarchical signaling of SBR" +
+            " (AudioSpecificConfig=0x#{stream.audioSpecificConfig.toString 'hex'})" +
+            " to backward compatible signaling"
+          sdpData.audioSpecificConfig = new Buffer aac.createAudioSpecificConfig ascInfo
+        else
+          sdpData.audioSpecificConfig = stream.audioSpecificConfig
+        logger.debug "[rtsp] sending AudioSpecificConfig: 0x#{sdpData.audioSpecificConfig.toString 'hex'}"
+
       if stream.isVideoStarted
         sdpData.hasVideo                = true
         sdpData.videoPayloadType        = 97
@@ -1635,9 +1647,12 @@ class RTSPServer
           logger.error "Error: fmtp attribute does not exist in SDP"
           media.fmtpParams = {}
 
-        if media.fmtpParams.config?
-          audioSpecificConfig = rtp.parseAACConfig media.fmtpParams.config
-          audioObjectType = audioSpecificConfig.audioObjectType
+        audioSpecificConfig = null
+        ascInfo = null
+        if media.fmtpParams.config? and (media.fmtpParams.config isnt '')
+          audioSpecificConfig = new Buffer media.fmtpParams.config, 'hex'
+          ascInfo = aac.parseAudioSpecificConfig audioSpecificConfig
+          audioObjectType = ascInfo.audioObjectType
         else
           logger.error "Error: fmtp attribute in SDP does not have config parameter; assuming audioObjectType=2"
           audioObjectType = 2
@@ -1647,6 +1662,8 @@ class RTSPServer
           audioClockRate: media.clockRate
           audioChannels: media.audioChannels
           audioObjectType: audioObjectType
+          audioSpecificConfig: audioSpecificConfig
+          audioASCInfo: ascInfo
 
         if media.fmtpParams.sizelength?
           media.fmtpParams.sizelength = parseInt media.fmtpParams.sizelength

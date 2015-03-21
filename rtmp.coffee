@@ -703,17 +703,23 @@ class RTMPSession
   parseAudioMessage: (buf) ->
     info = flv.parseAudio buf
     adtsFrame = null
+    stream = avstreams.get @streamId
+    if not stream?
+      throw new Error "[rtmp] Unknown stream: #{@streamId}"
     switch info.audioDataTag.aacPacketType
       when flv.AAC_PACKET_TYPE_SEQUENCE_HEADER
         if info.audioSpecificConfig?
-          # Retain AudioSpecificConfig
-          @ascInfo = info.audioSpecificConfig
+          stream.updateConfig
+            audioSpecificConfig: info.audioSpecificConfig
+            audioASCInfo: info.ascInfo
         else
           logger.warn "[rtmp] skipping empty AudioSpecificConfig"
       when flv.AAC_PACKET_TYPE_RAW
-        if not @ascInfo?
+        if not stream.audioASCInfo?
           throw new Error "[rtmp:publish] malformed audio data: AudioSpecificConfig is missing"
-        adtsHeader = new Buffer aac.createADTSHeader @ascInfo, info.rawDataBlock.length
+
+        # TODO: This must be a little heavy and needs better alternative.
+        adtsHeader = new Buffer aac.createADTSHeader stream.audioASCInfo, info.rawDataBlock.length
         adtsFrame = Buffer.concat [ adtsHeader, info.rawDataBlock ]
       else
         throw new Error "[rtmp:publish] unknown AAC_PACKET_TYPE: #{info.audioDataTag.aacPacketType}"
@@ -1599,13 +1605,31 @@ class RTMPSession
       # TODO: support other than AAC too?
       buf = flv.createAACAudioDataTag
         aacPacketType: flv.AAC_PACKET_TYPE_SEQUENCE_HEADER
-      # buf is an array at this point
-      buf = buf.concat aac.createAudioSpecificConfig
-        audioObjectType: stream.audioObjectType
-        sampleRate: stream.audioSampleRate
-        channels: stream.audioChannels
-        frameLength: 1024  # TODO: How to detect 960?
-      buf = new Buffer buf
+      ascInfo = stream.audioASCInfo
+      if ascInfo?
+        # Flash Player won't play audio if explicit hierarchical
+        # signaling of SBR is used
+        if ascInfo.explicitHierarchicalSBR and config.rtmpDisableHierarchicalSBR
+          logger.debug "[rtmp] converting hierarchical signaling of SBR" +
+            " (AudioSpecificConfig=0x#{stream.audioSpecificConfig.toString 'hex'})" +
+            " to backward compatible signaling"
+          buf = buf.concat aac.createAudioSpecificConfig ascInfo
+          buf = new Buffer buf
+        else
+          buf = Buffer.concat [
+            new Buffer buf
+            stream.audioSpecificConfig
+          ]
+        logger.debug "[rtmp] sending AudioSpecificConfig: 0x#{buf.toString 'hex'}"
+      else  # TODO: This should not occur. Throw an error?
+        buf = buf.concat aac.createAudioSpecificConfig
+          audioObjectType: stream.audioObjectType
+          samplingFrequency: stream.audioSampleRate
+          channels: stream.audioChannels
+          frameLength: 1024  # TODO: How to detect 960?
+        # Convert buf from array to Buffer
+        buf = new Buffer buf
+        logger.warn "[rtmp] warn: created AudioSpecificConfig from scratch: #{buf.toString 'hex'}"
 
       audioConfigMessage = createAudioMessage
         body: buf

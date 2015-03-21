@@ -288,12 +288,15 @@ api =
   # }
   addGASpecificConfig: (bits, opts) ->
     # frameLengthFlag (1 bit)
-    if opts.frameLength is 1024
-      bits.add_bit 0
-    else if opts.frameLength is 960
-      bits.add_bit 1
+    if opts.frameLengthFlag?
+      bits.add_bit opts.frameLengthFlag
     else
-      throw new Error "Invalid frameLength: #{opts.frameLength} (must be 1024 or 960)"
+      if opts.frameLength is 1024
+        bits.add_bit 0
+      else if opts.frameLength is 960
+        bits.add_bit 1
+      else
+        throw new Error "Invalid frameLength: #{opts.frameLength} (must be 1024 or 960)"
 
     # dependsOnCoreCoder (1 bit)
     if opts.dependsOnCoreCoder
@@ -302,11 +305,14 @@ api =
     else
       bits.add_bit 0
 
-    # extensionFlag (1 bit)
-    if opts.audioObjectType in [1, 2, 3, 4, 6, 7]
-      bits.add_bit 0
+    if opts.extensionFlag?
+      bits.add_bit opts.extensionFlag
     else
-      throw new Error "audio object type #{opts.audioObjectType} is not implemented"
+      # extensionFlag (1 bit)
+      if opts.audioObjectType in [1, 2, 3, 4, 6, 7]
+        bits.add_bit 0
+      else
+        throw new Error "audio object type #{opts.audioObjectType} is not implemented"
 
   # ISO 14496-3 GetAudioObjectType()
   readGetAudioObjectType: (bits) ->
@@ -361,15 +367,25 @@ api =
     info.channelConfiguration = bits.read_bits 4
 
     info.sbrPresentFlag = -1
-    if info.audioObjectType is 5
-      info.extensionAudioObjectType = info.audioObjectType
+    info.psPresentFlag = -1
+    info.mpsPresentFlag = -1
+    if (info.audioObjectType is 5) or (info.audioObjectType is 29)
+      # Explicit hierarchical signaling of SBR
+      # 1.6.5.2 2.A in ISO 14496-3
+      info.explicitHierarchicalSBR = true
+
+      info.extensionAudioObjectType = 5
       info.sbrPresentFlag = 1
+      if info.audioObjectType is 29
+        info.psPresentFlag = 1
       extensionSamplingFrequencyIndex = bits.read_bits 4
       if extensionSamplingFrequencyIndex is 0xf
         info.extensionSamplingFrequency = bits.read_bits 24
       else
         info.extensionSamplingFrequency = api.getSampleRateFromFreqIndex extensionSamplingFrequencyIndex
       info.audioObjectType = api.readGetAudioObjectType bits
+      if info.audioObjectType is 22
+        info.extensionChannelConfiguration = bits.read_bits 4
     else
       info.extensionAudioObjectType = 0
 
@@ -379,12 +395,20 @@ api =
       else
         throw new Error "audio object type #{info.audioObjectType} is not implemented"
     switch info.audioObjectType
-      when 17, 19, 20, 21, 22, 23, 24, 25, 26, 27
+      when 17, 19, 20, 21, 22, 23, 24, 25, 26, 27, 39
         throw new Error "audio object type #{info.audioObjectType} is not implemented"
 
-    if (info.extensionAudioObjectType isnt 5) and (bits.get_remaining_bits() >= 16)
-      info.syncExtensionType = bits.read_bits 11
-      if info.syncExtensionType is 0x2b7
+    extensionIdentifier = -1
+    if bits.get_remaining_bits() >= 11
+      extensionIdentifier = bits.read_bits 11
+    if extensionIdentifier is 0x2b7
+      extensionIdentifier = -1
+
+      if (info.extensionAudioObjectType isnt 5) and (bits.get_remaining_bits() >= 5)
+        # Explicit backward compatible signaling of SBR
+        # 1.6.5.2 2.B in ISO 14496-3
+        info.explicitBackwardCompatibleSBR = true
+
         info.extensionAudioObjectType = api.readGetAudioObjectType bits
         if info.extensionAudioObjectType is 5
           info.sbrPresentFlag = bits.read_bit()
@@ -394,57 +418,150 @@ api =
               info.extensionSamplingFrequency = bits.read_bits 24
             else
               info.extensionSamplingFrequency = api.getSampleRateFromFreqIndex extensionSamplingFrequencyIndex
+          if bits.get_remaining_bits() >= 12
+            extensionIdentifier = bits.read_bits 11
+            if extensionIdentifier is 0x548
+              extensionIdentifier = -1
+              info.psPresentFlag = bits.read_bit()
+        if info.extensionAudioObjectType is 22
+          info.sbrPresentFlag = bits.read_bit()
+          if info.sbrPresentFlag is 1
+            extensionSamplingFrequencyIndex = bits.read_bits 4
+            if extensionSamplingFrequencyIndex is 0xf
+              info.extensionSamplingFrequency = bits.read_bits 24
+            else
+              info.extensionSamplingFrequency = api.getSampleRateFromFreqIndex extensionSamplingFrequencyIndex
+          info.extensionChannelConfiguration = bits.read_bits 4
+    if (extensionIdentifier is -1) and (bits.get_remaining_bits() >= 11)
+      extensionIdentifier = bits.read_bits 11
+    if extensionIdentifier is 0x76a
+      logger.warn "aac: this audio config may not be supported (extensionIdentifier == 0x76a)"
+      if (info.audioObjectType isnt 30) and (bits.get_remaining_bits() >= 1)
+        info.mpsPresentFlag = bits.read_bit()
+        if info.mpsPresentFlag is 1
+          info.sacPayloadEmbedding = 1
+          info.sscLen = bits.read_bits 8
+          if info.sscLen is 0xff
+            sscLenExt = bits.read_bits 16
+            info.sscLen += sscLenExt
+          info.spatialSpecificConfig = api.readSpatialSpecificConfig bits
 
     return info
 
-  # @param opts: {
+  readSpatialSpecificConfig: (bits) ->
+    throw new Error "SpatialSpecificConfig is not implemented"
+
+  # Inverse of GetAudioObjectType() in ISO 14496-3 Table 1.14
+  addAudioObjectType: (bits, audioObjectType) ->
+    if audioObjectType >= 32
+      bits.add_bits 5, 31  # 0b11111
+      bits.add_bits 6, audioObjectType - 32
+    else
+      bits.add_bits 5, audioObjectType
+
+  # @param opts: A return value of parseAudioSpecificConfig(), or an object: {
   #   audioObjectType (int): audio object type
-  #   extensionAudioObjectType (int) (optional):
-  #   sampleRate (int): sample rate in Hz
-  #   extensionSampleRate (int) (optional): extension sample rate in Hz
+  #   samplingFrequency (int): sample rate in Hz
+  #   extensionSamplingFrequency (int) (optional): sample rate in Hz for extension
   #   channels (int): number of channels
+  #   extensionChannels (int): number of channels for extension
   #   frameLength (int): 1024 or 960
   # }
-  createAudioSpecificConfig: (opts) ->
+  createAudioSpecificConfig: (opts, explicitHierarchicalSBR=false) ->
     bits = new Bits
     bits.create_buf()
 
     # Table 1.13 - AudioSpecificConfig()
 
-    if opts.extensionAudioObjectType is 5
-      audioObjectType = opts.extensionAudioObjectType
+    if (opts.sbrPresentFlag is 1) and explicitHierarchicalSBR
+      if opts.psPresentFlag is 1
+        audioObjectType = 29 # HE-AAC v2
+      else
+        audioObjectType = 5  # HE-AAC v1
     else
       audioObjectType = opts.audioObjectType
 
-    # GetAudioObjectType()
-    bits.add_bits 5, audioObjectType
-    if audioObjectType >= 31
-      bits.add_bits 6, audioObjectType - 32
+    api.addAudioObjectType bits, audioObjectType
 
-    samplingFreqIndex = api.getSamplingFreqIndex opts.sampleRate
+    samplingFreqIndex = api.getSamplingFreqIndex opts.samplingFrequency
     bits.add_bits 4, samplingFreqIndex
     if samplingFreqIndex is 0xf
-      bits.add_bits 24, opts.sampleRate
-    channelConfiguration = api.getChannelConfiguration opts.channels
-    bits.add_bits 4, channelConfiguration
+      bits.add_bits 24, opts.samplingFrequency
+    if opts.channelConfiguration?
+      bits.add_bits 4, opts.channelConfiguration
+    else
+      channelConfiguration = api.getChannelConfiguration opts.channels
+      bits.add_bits 4, channelConfiguration
 
-    if opts.extensionAudioObjectType is 5
-      extensionSamplingFreqIndex = api.getSamplingFreqIndex opts.extensionSampleRate
-      bits.add_bits 4, extensionSamplingFreqIndex
-      if extensionSamplingFreqIndex is 0xf
-        bits.add_bits 24, opts.extensionSampleRate
-      # GetAudioObjectType()
-      bits.add_bits 5, opts.audioObjectType
-      if opts.audioObjectType >= 31
-        bits.add_bits 6, opts.audioObjectType - 32
+    if (opts.sbrPresentFlag is 1) and explicitHierarchicalSBR
+      # extensionSamplingFrequencyIndex
+      samplingFreqIndex = api.getSamplingFreqIndex opts.extensionSamplingFrequency
+      bits.add_bits 4, samplingFreqIndex
+      if samplingFreqIndex is 0xf
+        # extensionSamplingFrequency
+        bits.add_bits 24, opts.extensionSamplingFrequency
+      api.addAudioObjectType bits, opts.audioObjectType
+      if opts.audioObjectType is 22
+        if opts.channelConfiguration?
+          bits.add_bits 4, opts.channelConfiguration
+        else
+          channelConfiguration = api.getChannelConfiguration opts.extensionChannels
+          bits.add_bits 4, channelConfiguration
+
     switch opts.audioObjectType
       when 1, 2, 3, 4, 6, 7, 17, 19, 20, 21, 22, 23
-        api.addGASpecificConfig bits, opts
+        if opts.gaSpecificConfig?
+          api.addGASpecificConfig bits, opts.gaSpecificConfig
+        else
+          api.addGASpecificConfig bits, opts
       else
         throw new Error "audio object type #{opts.audioObjectType} is not implemented"
     switch opts.audioObjectType
-      when 17, 19, 20, 21, 22, 23, 24, 25, 26, 27
+      when 17, 19, 20, 21, 22, 23, 24, 25, 26, 27, 39
         throw new Error "audio object type #{opts.audioObjectType} is not implemented"
+
+    if (opts.sbrPresentFlag is 1) and (not explicitHierarchicalSBR)
+      # extensionIdentifier
+      bits.add_bits 11, 0x2b7
+
+      if opts.audioObjectType isnt 22
+        # extensionAudioObjectType
+        api.addAudioObjectType bits, 5
+
+        # sbrPresentFlag
+        bits.add_bit 1
+
+        samplingFreqIndex = api.getSamplingFreqIndex opts.extensionSamplingFrequency
+        # extensionSamplingFrequencyIndex
+        bits.add_bits 4, samplingFreqIndex
+        if samplingFreqIndex is 0xf
+          # extensionSamplingFrequency
+          bits.add_bits 24, opts.extensionSamplingFrequency
+
+        if opts.psPresentFlag is 1
+          # extensionIdentifier
+          bits.add_bits 11, 0x548
+          # psPresentFlag
+          bits.add_bit 1
+      else  # opts.audioObjectType is 22
+        # extensionAudioObjectType
+        api.addAudioObjectType bits, 22
+        # sbrPresentFlag
+        bits.add_bit 1
+
+        samplingFreqIndex = api.getSamplingFreqIndex opts.extensionSamplingFrequency
+        # extensionSamplingFrequencyIndex
+        bits.add_bits 4, samplingFreqIndex
+        if samplingFreqIndex is 0xf
+          # extensionSamplingFrequency
+          bits.add_bits 24, opts.extensionSamplingFrequency
+
+        # extensionChannelConfiguration
+        if opts.extensionChannelConfiguration?
+          bits.add_bits 4, opts.extensionChannelConfiguration
+        else
+          channelConfiguration = api.getChannelConfiguration opts.extensionChannels
+          bits.add_bits 4, channelConfiguration
 
     return bits.get_created_buf()
 

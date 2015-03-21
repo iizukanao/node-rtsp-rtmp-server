@@ -95,6 +95,17 @@ module.exports =
   # Maximum number of RTMP messages being sent at once
   rtmpMessageQueueSize: 5
 
+  # For HE-AAC streaming over RTSP:
+  # If true, explicit hierarchical signaling of SBR in AudioSpecificConfig
+  # will be converted to explicit backward compatible signaling.
+  rtspDisableHierarchicalSBR: true
+
+  # For HE-AAC streaming over RTMP:
+  # If true, explicit hierarchical signaling of SBR in AudioSpecificConfig
+  # will be converted to explicit backward compatible signaling.
+  # Flash Player won't play audio if hierarchical signaling is used.
+  rtmpDisableHierarchicalSBR: true
+
   # If true, H.264 access unit delimiter NAL units are
   # not sent to clients
   dropH264AccessUnitDelimiter: true

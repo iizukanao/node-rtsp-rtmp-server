@@ -70,7 +70,19 @@ class AVStream
     for name, value of obj
       if @[name] isnt value
         @[name] = value
-        logger.debug "[stream:#{@id}] update #{name}: #{value}"
+        if value instanceof Buffer
+          logger.debug "[stream:#{@id}] update #{name}: Buffer=<0x#{value.toString 'hex'}>"
+        else if typeof(value) is 'object'
+          logger.debug "[stream:#{@id}] update #{name}:"
+          logger.debug value
+        else
+          logger.debug "[stream:#{@id}] update #{name}: #{value}"
+        if name is 'audioASCInfo'
+          if value.sbrPresentFlag is 1
+            if value.psPresentFlag is 1
+              logger.debug "[stream:#{@id}] audio: HE-AAC v2"
+            else
+              logger.debug "[stream:#{@id}] audio: HE-AAC v1"
         isConfigUpdated = true
     if isConfigUpdated
       @emit 'updateConfig'
