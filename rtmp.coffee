@@ -1525,6 +1525,9 @@ class RTMPSession
     else
       logger.error "[rtmp] error: respondPlay: no streamId defined"
 
+    logger.debug "[rtmp] metadata:"
+    logger.debug metadata
+
     onMetaData = createAMF0DataMessage
       chunkStreamID: 4
       timestamp: 0

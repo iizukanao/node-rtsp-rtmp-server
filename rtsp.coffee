@@ -1256,6 +1256,7 @@ class RTSPServer
       try
         body = sdp.createSDP sdpData
       catch e
+        logger.error "error: Unable to create SDP: #{e}"
         callback new Error 'Unable to create SDP'
         return
 
@@ -1642,6 +1643,8 @@ class RTSPServer
         if not media.audioChannels?
           logger.error "Error: rtpmap attribute in SDP must have audio channels; assuming 2"
           media.audioChannels = 2
+
+        logger.debug "[rtsp] audio fmtp: #{JSON.stringify media.fmtpParams}"
 
         if not media.fmtpParams?
           logger.error "Error: fmtp attribute does not exist in SDP"
