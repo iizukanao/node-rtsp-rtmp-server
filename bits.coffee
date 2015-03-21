@@ -35,7 +35,8 @@
     myBits.add_bits 2, 1     # 0b101_____
     myBits.add_bits 5, 3     # 0b10100011
     myBits.add_bits 8, 0xff  # 0b10100011, 0b11111111
-    resultBuf = myBits.get_created_buf()  # Returns a Buffer instance
+    resultArray = myBits.get_created_buf()  # Returns an array
+    resultBuf = new Buffer resultArray
     Bits.printBinary resultBuf
     # => 10100011 11111111 
 ###
@@ -100,6 +101,7 @@ class Bits
         @c_byte_index++
         @c_bit_index = 0
 
+  # TODO: This method needs a better name, since it returns an array.
   # @return array
   get_created_buf: ->
     return @c_buf
