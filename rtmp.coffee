@@ -688,6 +688,8 @@ class RTMPSession
       when flv.AVC_PACKET_TYPE_NALU
         if not @avcInfo?
           throw new Error "[rtmp:publish] malformed video data: avcInfo is missing"
+
+        # TODO: This must be too heavy and needs better alternative.
         nalUnits = flv.splitNALUnits info.nalUnits, @avcInfo.nalUnitLengthSize
         nalUnitGlob = h264.concatWithStartCodePrefix nalUnits
       when flv.AVC_PACKET_TYPE_EOS
