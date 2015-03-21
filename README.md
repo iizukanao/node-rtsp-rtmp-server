@@ -1,7 +1,7 @@
 ### RTSP, RTMP, and HTTP server in Node.js
 
 - Supports RTSP, RTMP/RTMPE/RTMPT/RTMPTE, and HTTP.
-- Supports only H.264 video and AAC audio.
+- Supports only H.264 video and AAC audio (AAC-LC, HE-AAC v1/v2).
 
 ### Installation
 
