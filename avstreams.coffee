@@ -77,8 +77,7 @@ class AVStream
 
   # nal_unit_type 7
   updateSPS: (nalUnit) ->
-    if nalUnit isnt @spsNALUnit
-      logger.debug "[stream:#{@id}] updated SPS"
+    if (not @spsNALUnit?) or (nalUnit.compare(@spsNALUnit) isnt 0)
       @spsNALUnit = nalUnit
       @updateSpropParam nalUnit
       try
@@ -106,11 +105,12 @@ class AVStream
         logger.debug "[stream:#{@id}] video avcprofile: #{@videoAVCProfile}"
         isConfigUpdated = true
       if isConfigUpdated
+        logger.debug "[stream:#{@id}] updated SPS"
         @emit 'updateConfig'
 
   # nal_unit_type 8
   updatePPS: (nalUnit) ->
-    if nalUnit isnt @ppsNALUnit
+    if (not @ppsNALUnit?) or (nalUnit.compare(@ppsNALUnit) isnt 0)
       logger.debug "[stream:#{@id}] updated PPS"
       @ppsNALUnit = nalUnit
       @updateSpropParam nalUnit
