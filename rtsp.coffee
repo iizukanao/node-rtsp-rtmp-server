@@ -1365,8 +1365,8 @@ class RTSPServer
 
         # client will send packets to "source" address which is specified here
         transportHeader = req.headers.transport.replace(/mode=[^;]*/, '') +
-                          "source=#{api.getMeaningfulIPTo socket}" +
-                          ";server_port=#{dataPort}-#{controlPort}"
+#                          "source=#{api.getMeaningfulIPTo socket};" +
+                          "server_port=#{dataPort}-#{controlPort}"
       dateHeader = api.getDateHeader()
       res = """
       RTSP/1.0 200 OK
@@ -1461,7 +1461,7 @@ class RTSPServer
                             ";ssrc=#{zeropad(8, ssrc.toString(16))}"
       else
         transportHeader = req.headers.transport +
-                          ";source=#{api.getMeaningfulIPTo socket}" +
+#                          ";source=#{api.getMeaningfulIPTo socket}" +
                           ";server_port=#{serverPort};ssrc=#{zeropad(8, ssrc.toString(16))}"
       dateHeader = api.getDateHeader()
       res = """
