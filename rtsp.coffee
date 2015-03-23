@@ -424,9 +424,8 @@ class RTSPServer
       stream = @getStreamByRTSPUDPAddress rinfo.address, rinfo.port, 'video-data'
       if stream?
         @onUploadVideoData stream, msg, rinfo
-      else
-        logger.warn "[#{TAG}] warning: No uploading stream found for remote address #{rinfo.address}:#{rinfo.port} (udp)"
-        logger.warn "message: " + msg.toString 'utf8'
+#      else
+#        logger.warn "[#{TAG}] warn: received UDP video data but no existing client found: #{rinfo.address}:#{rinfo.port}"
     udpVideoDataServer.on 'listening', ->
       addr = udpVideoDataServer.address()
       logger.debug "[#{TAG}] udp video data receiver is listening on port #{addr.port}"
@@ -440,9 +439,8 @@ class RTSPServer
       stream = @getStreamByRTSPUDPAddress rinfo.address, rinfo.port, 'video-control'
       if stream?
         @onUploadVideoControl stream, msg, rinfo
-      else
-        logger.warn "[#{TAG}] warning: No uploading stream found for remote address #{rinfo.address}:#{rinfo.port} (udp)"
-        logger.warn "message: " + msg.toString 'utf8'
+#      else
+#        logger.warn "[#{TAG}] warn: received UDP video control data but no existing client found: #{rinfo.address}:#{rinfo.port}"
     udpVideoControlServer.on 'listening', ->
       addr = udpVideoControlServer.address()
       logger.debug "[#{TAG}] udp video control receiver is listening on port #{addr.port}"
@@ -456,9 +454,8 @@ class RTSPServer
       stream = @getStreamByRTSPUDPAddress rinfo.address, rinfo.port, 'audio-data'
       if stream?
         @onUploadAudioData stream, msg, rinfo
-      else
-        logger.warn "[#{TAG}] warning: No uploading stream found for remote address #{rinfo.address}:#{rinfo.port} (udp)"
-        logger.warn "message: " + msg.toString 'utf8'
+#      else
+#        logger.warn "[#{TAG}] warn: received UDP audio data but no existing client found: #{rinfo.address}:#{rinfo.port}"
     udpAudioDataServer.on 'listening', ->
       addr = udpAudioDataServer.address()
       logger.debug "[#{TAG}] udp audio data receiver is listening on port #{addr.port}"
@@ -472,9 +469,8 @@ class RTSPServer
       stream = @getStreamByRTSPUDPAddress rinfo.address, rinfo.port, 'audio-control'
       if stream?
         @onUploadAudioControl stream, msg, rinfo
-      else
-        logger.warn "[#{TAG}] warning: No uploading stream found for remote address #{rinfo.address}:#{rinfo.port} (udp)"
-        logger.warn "message: " + msg.toString 'utf8'
+#      else
+#        logger.warn "[#{TAG}] warn: received UDP audio control data but no existing client found: #{rinfo.address}:#{rinfo.port}"
     udpAudioControlServer.on 'listening', ->
       addr = udpAudioControlServer.address()
       logger.debug "[#{TAG}] udp audio control receiver is listening on port #{addr.port}"
@@ -1753,7 +1749,7 @@ class RTSPServer
   # Called when received video data over RTSP
   onUploadVideoData: (stream, msg, rinfo) ->
     if not stream.rtspUploadingClient?
-      logger.warn "no client is uploading video data to stream #{stream.id}"
+#      logger.warn "no client is uploading video data to stream #{stream.id}"
       return
     packet = rtp.parsePacket msg
     if not stream.rtspUploadingClient.videoRTPStartTimestamp?
@@ -1766,7 +1762,7 @@ class RTSPServer
 
   onUploadVideoControl: (stream, msg, rinfo) ->
     if not stream.rtspUploadingClient?
-      logger.warn "no client is uploading audio data to stream #{stream.id}"
+#      logger.warn "no client is uploading audio data to stream #{stream.id}"
       return
     packets = rtp.parsePackets msg
     for packet in packets
@@ -1778,7 +1774,7 @@ class RTSPServer
 
   onUploadAudioData: (stream, msg, rinfo) ->
     if not stream.rtspUploadingClient?
-      logger.warn "no client is uploading audio data to stream #{stream.id}"
+#      logger.warn "no client is uploading audio data to stream #{stream.id}"
       return
     packet = rtp.parsePacket msg
     if not stream.rtspUploadingClient.audioRTPStartTimestamp?
@@ -1791,7 +1787,7 @@ class RTSPServer
 
   onUploadAudioControl: (stream, msg, rinfo) ->
     if not stream.rtspUploadingClient?
-      logger.warn "no client is uploading audio data to stream #{stream.id}"
+#      logger.warn "no client is uploading audio data to stream #{stream.id}"
       return
     packets = rtp.parsePackets msg
     for packet in packets
