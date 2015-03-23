@@ -1626,7 +1626,7 @@ class RTMPSession
             stream.audioSpecificConfig
           ]
         logger.debug "[rtmp] sending AudioSpecificConfig: 0x#{buf.toString 'hex'}"
-      else  # TODO: This should not occur. Throw an error?
+      else
         buf = buf.concat aac.createAudioSpecificConfig
           audioObjectType: stream.audioObjectType
           samplingFrequency: stream.audioSampleRate
@@ -1634,7 +1634,6 @@ class RTMPSession
           frameLength: 1024  # TODO: How to detect 960?
         # Convert buf from array to Buffer
         buf = new Buffer buf
-        logger.warn "[rtmp] warn: created AudioSpecificConfig from scratch: #{buf.toString 'hex'}"
 
       audioConfigMessage = createAudioMessage
         body: buf

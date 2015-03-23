@@ -169,7 +169,7 @@ class CustomReceiver
             if buf.length >= totalSize
               if name is 'VideoControl'  # parse stream name
                 if buf.length >= 5
-                  streamId = buf.toString 'utf8', 4
+                  streamId = buf.toString 'utf8', 4, totalSize
                 else
                   streamId = "public"  # TODO: Use default value or throw error?
                 @setInternalStreamId streamId

@@ -1232,13 +1232,20 @@ class RTSPServer
 
         ascInfo = stream.audioASCInfo
         # Check whether explicit hierarchical signaling of SBR is used
-        if ascInfo.explicitHierarchicalSBR and config.rtspDisableHierarchicalSBR
+        if ascInfo?.explicitHierarchicalSBR and config.rtspDisableHierarchicalSBR
           logger.debug "[rtsp] converting hierarchical signaling of SBR" +
             " (AudioSpecificConfig=0x#{stream.audioSpecificConfig.toString 'hex'})" +
             " to backward compatible signaling"
           sdpData.audioSpecificConfig = new Buffer aac.createAudioSpecificConfig ascInfo
-        else
+        else if stream.audioSpecificConfig?
           sdpData.audioSpecificConfig = stream.audioSpecificConfig
+        else
+          # no AudioSpecificConfig available
+          sdpData.audioSpecificConfig = new Buffer aac.createAudioSpecificConfig
+            audioObjectType: stream.audioObjectType
+            samplingFrequency: stream.audioSampleRate
+            channels: stream.audioChannels
+            frameLength: 1024  # TODO: How to detect 960?
         logger.debug "[rtsp] sending AudioSpecificConfig: 0x#{sdpData.audioSpecificConfig.toString 'hex'}"
 
       if stream.isVideoStarted

@@ -85,8 +85,6 @@ api =
       if opts.audioSpecificConfig?
         configspec = opts.audioSpecificConfig.toString 'hex'
       else if opts.audioObjectType? and opts.audioSampleRate? and opts.audioChannels?
-        # TODO: This should not occur. Throw an error?
-        logger.warn "warn: creating AudioSpecificConfig from scratch"
         configspec = new Buffer aac.createAudioSpecificConfig
           audioObjectType: opts.audioObjectType
           samplingFrequency: opts.audioSampleRate
@@ -94,6 +92,7 @@ api =
           frameLength: 1024  # TODO: How to detect 960?
         configspec = configspec.toString 'hex'
       else
+        logger.warn "[sdp] warn: audio configspec is not available"
         configspec = null
 
       rtpmap = "#{opts.audioPayloadType} #{opts.audioEncodingName}/#{opts.audioClockRate}"
