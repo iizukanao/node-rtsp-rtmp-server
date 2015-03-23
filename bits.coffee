@@ -41,6 +41,12 @@
     # => 10100011 11111111 
 ###
 
+zeropad = (width, num) ->
+  num += ''
+  while num.length < width
+    num = '0' + num
+  num
+
 class Bits
   constructor: (buffer) ->
     @buf = null
@@ -399,5 +405,37 @@ class Bits
         process.stdout.write ' '
     if col isnt 0
       console.log()
+
+  @hexdump: (buffer) ->
+    col = 0
+    strline = ''
+    dump = ''
+
+    endline = ->
+      pad = '  '
+      while col < 16
+        pad += '  '
+        if col % 2 is 0
+          pad += ' '
+        col++
+      dump += pad + strline + '\n'
+      strline = ''
+
+    for byte in buffer
+      if 0x20 <= byte <= 0x7e  # printable char
+        strline += String.fromCharCode byte
+      else
+        strline += ' '
+      dump += zeropad(2, byte.toString(16))
+      col++
+      if col is 16
+        endline()
+        col = 0
+      else if col % 2 is 0
+        dump += ' '
+    if col isnt 0
+      endline()
+
+    process.stdout.write dump
 
 module.exports = Bits
