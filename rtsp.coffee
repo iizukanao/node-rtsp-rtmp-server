@@ -1377,7 +1377,7 @@ class RTSPServer
 
       """.replace /\n/g, "\r\n"
       callback null, res
-    else
+    else  # PLAY mode
       if /trackID=1/.test req.uri  # audio
         track = 'audio'
         if client.useHTTP
