@@ -280,6 +280,18 @@ api =
       else
         throw new Error "#{channels} channels audio is not supported"
 
+  getChannelsByChannelConfiguration: (channelConfiguration) ->
+    switch channelConfiguration
+      when 1 then 1
+      when 2 then 2
+      when 3 then 3
+      when 4 then 4
+      when 5 then 5
+      when 6 then 6
+      when 7 then 8
+      else
+        throw new Error "Channel configuration #{channelConfiguration} is not supported"
+
   # @param opts: {
   #   frameLength (int): 1024 or 960
   #   dependsOnCoreCoder (boolean) (optional): true if core coder is used
