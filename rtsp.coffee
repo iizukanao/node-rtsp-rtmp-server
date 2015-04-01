@@ -351,7 +351,10 @@ class RTSPServer
       logger.raw " " + client.toString()
     return
 
-  start: (opts) ->
+  setLivePathConsumer: (func) ->
+    @livePathConsumer = func
+
+  start: (opts, callback) ->
     serverPort = opts?.port ? @port
 
     @videoRTPSocket = dgram.createSocket 'udp4'
@@ -1060,15 +1063,18 @@ class RTSPServer
     str
 
   consumePathname: (uri, callback) ->
-    pathname = url.parse(uri).pathname[1..]
-
-    # TODO: Implement authentication yourself
-    authSuccess = true
-
-    if authSuccess
-      callback null
+    if @livePathConsumer?
+      @livePathConsumer uri, callback
     else
-      callback new Error 'Invalid access'
+      pathname = url.parse(uri).pathname[1..]
+
+      # TODO: Implement authentication yourself
+      authSuccess = true
+
+      if authSuccess
+        callback null
+      else
+        callback new Error 'Invalid access'
 
   respondWithUnsupportedTransport: (callback, headers) ->
     res = 'RTSP/1.0 461 Unsupported Transport\n'
