@@ -40,6 +40,7 @@ zeropad = (width, num) ->
 class HTTPHandler
   constructor: (opts) ->
     @serverName = opts?.serverName ? DEFAULT_SERVER_NAME
+    @documentRoot = opts?.documentRoot ? STATIC_DIR
 
   setServerName: (name) ->
     @serverName = name
@@ -69,7 +70,7 @@ class HTTPHandler
     else if filepath is '/500'
       @serverError req, callback
     else
-      @respondStaticPath "#{STATIC_DIR}/#{filepath[1..]}", req, callback
+      @respondStaticPath "#{@documentRoot}/#{filepath[1..]}", req, callback
 
   createHeader: (params) ->
     protocol = params.protocol ? 'HTTP/1.1'
