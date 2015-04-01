@@ -3,6 +3,7 @@
   "version": "0.3.0",
   "description": "RTSP, RTMP/RTMPE/RTMPT/RTMPTE, and HTTP server implementation",
   "author": "Nao Iizuka <iizuka@kyu-mu.net>",
+  "main": "stream_server.js",
   "dependencies": {
     "ejs"    : "0.8.x",
     "sequent": ">= 0.1.2"
