@@ -412,10 +412,6 @@ class RTSPServer
     @server.on 'error', (err) ->
       logger.error "[#{TAG}] server error: #{err.message}"
 
-    logger.debug "[#{TAG}] starting server on port #{serverPort}"
-    @server.listen serverPort, '0.0.0.0', 511, =>
-      logger.info "[#{TAG}] server started on port #{serverPort}"
-
     udpVideoDataServer = dgram.createSocket 'udp4'
     udpVideoDataServer.on 'error', (err) ->
       logger.error "[#{TAG}] udp video data receiver error: #{err.message}"
@@ -475,6 +471,11 @@ class RTSPServer
       addr = udpAudioControlServer.address()
       logger.debug "[#{TAG}] udp audio control receiver is listening on port #{addr.port}"
     udpAudioControlServer.bind config.rtspAudioControlUDPListenPort
+
+    logger.debug "[#{TAG}] starting server on port #{serverPort}"
+    @server.listen serverPort, '0.0.0.0', 511, =>
+      logger.info "[#{TAG}] server started on port #{serverPort}"
+      callback?()
 
   stop: (callback) ->
     @server?.close callback
