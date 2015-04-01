@@ -143,7 +143,7 @@ api =
           info.ascInfo = aac.readAudioSpecificConfig bits
           info.audioSpecificConfig = bits.marked_bytes()
         else
-          logger.warn "warn: flv:parseAudio(): AAC sequence header is empty"
+          logger.warn "flv:parseAudio(): warn: AAC sequence header does not contain AudioSpecificConfig"
       when api.AAC_PACKET_TYPE_RAW
         info.rawDataBlock = bits.remaining_buffer()
       else
