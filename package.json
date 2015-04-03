@@ -8,5 +8,7 @@
     "ejs"    : "0.8.x",
     "sequent": ">= 0.1.2"
   },
-  "engine": "node = 0.12.x"
+  "engines": {
+    "node": ">= 0.10.0"
+  }
 }
