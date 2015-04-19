@@ -278,7 +278,10 @@ class Bits
   get_remaining_bytes: ->
     if @bit_index isnt 0
       console.warn "warning: bits.get_remaining_bytes: bit_index is not 0"
-    return @buf.length - @byte_index
+    remainingLen = @buf.length - @byte_index
+    if remainingLen < 0
+      remainingLen = 0
+    return remainingLen
 
   remaining_buffer: ->
     if @bit_index isnt 0
@@ -322,8 +325,11 @@ class Bits
     else
       Bits.parse_bits_uint @buf, byteOffset * 8, 8
 
-  last_get_byte_at: (byteOffset) ->
-    return @buf[@buf.length - 1 - byteOffset]
+  last_get_byte_at: (offsetFromEnd) ->
+    offsetFromStart = @buf.length - 1 - offsetFromEnd
+    if offsetFromStart < 0
+      throw new Error "error: last_get_byte_at: index out of range"
+    return @buf[offsetFromStart]
 
   remove_trailing_bytes: (numBytes) ->
     if @buf.length < numBytes
