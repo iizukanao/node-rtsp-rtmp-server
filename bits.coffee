@@ -41,6 +41,11 @@
     # => 10100011 11111111 
 ###
 
+try
+  buffertools = require 'buffertools'
+catch e
+  # buffertools is not available
+
 zeropad = (width, num) ->
   num += ''
   while num.length < width
@@ -352,24 +357,31 @@ class Bits
     return @buf[startIndex..@byte_index-1]
 
   @searchBytesInArray: (haystack, needle, from_pos=0) ->
-    if from_pos >= haystack.length
-      return -1
+    if buffertools?  # buffertools is available
+      if haystack not instanceof Buffer
+        haystack = new Buffer haystack
+      if needle not instanceof Buffer
+        needle = new Buffer needle
+      return buffertools.indexOf haystack, needle, from_pos
+    else  # buffertools is not available
+      haystack_len = haystack.length
+      if from_pos >= haystack_len
+        return -1
 
-    needle_idx = 0
-    haystack_idx = from_pos
-    haystack_len = haystack.length
-    loop
-      if haystack[haystack_idx] is needle[needle_idx]
-        needle_idx++
-        if needle_idx is needle.length
-          return haystack_idx - needle.length + 1
-      else
-        if needle_idx > 0
+      needle_idx = 0
+      needle_len = needle.length
+      haystack_idx = from_pos
+      loop
+        if haystack[haystack_idx] is needle[needle_idx]
+          needle_idx++
+          if needle_idx is needle_len
+            return haystack_idx - needle_len + 1
+        else if needle_idx > 0
           haystack_idx -= needle_idx
           needle_idx = 0
-      haystack_idx++
-      if haystack_idx is haystack_len
-        return -1
+        haystack_idx++
+        if haystack_idx is haystack_len
+          return -1
 
   @searchBitsInArray: (haystack, needle, fromPos=0) ->
     if fromPos >= haystack.length
