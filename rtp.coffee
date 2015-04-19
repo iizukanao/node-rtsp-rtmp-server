@@ -435,7 +435,7 @@ api =
         when api.H264_NAL_UNIT_TYPE_FU_A  # FU-A (28)
           info.fu_a = api.readH264FragmentationUnitA bits
         else
-          throw new Error "Not implemented: nal_unit_type=#{info.nal_unit_type}"
+          throw new Error "Not implemented: nal_unit_type=#{info.nal_unit_type} (please report this bug)"
     else
       throw new Error "Invalid nal_unit_type=#{info.nal_unit_type}"
     return info
