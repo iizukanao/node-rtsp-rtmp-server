@@ -281,6 +281,8 @@ class Bits
     return @buf.length - @byte_index
 
   remaining_buffer: ->
+    if @bit_index isnt 0
+      console.warn "warning: bits.remaining_buffer: bit_index is not 0"
     return @buf[@byte_index..]
 
   is_byte_aligned: ->
