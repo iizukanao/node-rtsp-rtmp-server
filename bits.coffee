@@ -275,6 +275,11 @@ class Bits
     total_read_bits = @byte_index * 8 + @bit_index
     return total_bits - total_read_bits
 
+  get_remaining_bytes: ->
+    if @bit_index isnt 0
+      console.warn "warning: bits.get_remaining_bytes: bit_index is not 0"
+    return @buf.length - @byte_index
+
   remaining_buffer: ->
     return @buf[@byte_index..]
 
@@ -314,6 +319,17 @@ class Bits
       return @buf[@byte_index + byteOffset]
     else
       Bits.parse_bits_uint @buf, byteOffset * 8, 8
+
+  last_get_byte_at: (byteOffset) ->
+    return @buf[@buf.length - 1 - byteOffset]
+
+  remove_trailing_bytes: (numBytes) ->
+    if @buf.length < numBytes
+      console.warn "warning: bits.remove_trailing_bytes: Buffer length (#{@buf.length}) is less than numBytes (#{numBytes})"
+      @buf = new Buffer []
+    else
+      @buf = @buf[0...@buf.length-numBytes]
+    return
 
   mark: ->
     if not @marks?
