@@ -139,7 +139,7 @@ class RTPParser
   onOrderedPacket: (tag, packet) ->
     if (match = /^h264:(.*)$/.exec tag)?
       clientId = match[1]
-      if packet.h264.fu_a?  # fragmentation unit
+      if packet.h264.fu_a?  # FU-A
         # startBit and endBit won't both be set to 1 in the same FU header
         if packet.h264.fu_a.fuHeader.startBit
           @fragmentedH264PacketBuffer[tag] = [
@@ -154,6 +154,9 @@ class RTPParser
         if packet.h264.fu_a.fuHeader.endBit
           @onH264NALUnit clientId, Buffer.concat(@fragmentedH264PacketBuffer[tag]), packet, packet.rtpHeader.timestamp
           @fragmentedH264PacketBuffer[tag] = null
+      else if packet.h264.stap_a?  # STAP-A
+        for nalUnit in packet.h264.stap_a.nalUnits
+          @onH264NALUnit clientId, nalUnit, packet, packet.rtpHeader.timestamp
       else # single NAL unit
         @onH264NALUnit clientId, packet.h264.nal_unit, packet, packet.rtpHeader.timestamp
     else if (match = /^aac:(.*)$/.exec tag)?
@@ -410,12 +413,25 @@ api =
       info.nal_unit = bits.remaining_buffer()
     else if 24 <= info.nal_unit_type <= 29
       switch info.nal_unit_type
-        when api.H264_NAL_UNIT_TYPE_FU_A  # FU-A
+        when api.H264_NAL_UNIT_TYPE_STAP_A  # STAP-A (24)
+          info.stap_a = api.readH264STAP_A bits
+        when api.H264_NAL_UNIT_TYPE_FU_A  # FU-A (28)
           info.fu_a = api.readH264FragmentationUnitA bits
         else
           throw new Error "Not implemented: nal_unit_type=#{info.nal_unit_type}"
     else
       throw new Error "Invalid nal_unit_type=#{info.nal_unit_type}"
+    return info
+
+  # Read Single-Time Aggregation Packet type A (STAP-A)
+  readH264STAP_A: (bits) ->
+    info =
+      nalUnits: []
+    while bits.get_remaining_bytes() >= 2
+      nalUnitSize = bits.read_bits 16
+      info.nalUnits.push bits.read_bytes nalUnitSize
+    if info.nalUnits.length < 1
+      logger.error "rtp: error: STAP-A does not contain a NAL unit"
     return info
 
   readH264FragmentationUnitA: (bits) ->
