@@ -184,12 +184,19 @@ api =
   H264_NAL_UNIT_TYPE_FU_A  : 28
   H264_NAL_UNIT_TYPE_FU_B  : 29
 
+  # Remove padding from the end of the buffer
+  removeTrailingPadding: (bits) ->
+    paddingLength = bits.last_get_byte_at 0
+    bits.remove_trailing_bytes paddingLength
+
   readRTCPSenderReport: (bits) ->
     # RFC 3550 - 6.4.1 SR: Sender Report RTCP Packet
     startBytePos = bits.current_position().byte
     info = {}
     info.version = bits.read_bits 2
     info.padding = bits.read_bit()
+    if info.padding is 1
+      api.removeTrailingPadding bits
     info.reportCount = bits.read_bits 5
     info.payloadType = bits.read_byte()  # == 200
     if info.payloadType isnt api.RTCP_PACKET_TYPE_SENDER_REPORT
@@ -228,6 +235,8 @@ api =
     info = {}
     info.version = bits.read_bits 2
     info.padding = bits.read_bit()
+    if info.padding is 1
+      api.removeTrailingPadding bits
     info.reportCount = bits.read_bits 5
     info.payloadType = bits.read_byte()  # == 201
     if info.payloadType isnt api.RTCP_PACKET_TYPE_RECEIVER_REPORT
@@ -260,6 +269,8 @@ api =
     info = {}
     info.version = bits.read_bits 2
     info.padding = bits.read_bit()
+    if info.padding is 1
+      api.removeTrailingPadding bits
     info.sourceCount = bits.read_bits 5
     info.payloadType = bits.read_byte()  # == 202
     if info.payloadType isnt api.RTCP_PACKET_TYPE_SOURCE_DESCRIPTION
@@ -327,6 +338,8 @@ api =
     info = {}
     info.version = bits.read_bits 2
     info.padding = bits.read_bit()
+    if info.padding is 1
+      api.removeTrailingPadding bits
     info.sourceCount = bits.read_bits 5
     info.payloadType = bits.read_byte()  # == 203
     if info.payloadType isnt api.RTCP_PACKET_TYPE_GOODBYE
@@ -352,6 +365,8 @@ api =
     info = {}
     info.version = bits.read_bits 2
     info.padding = bits.read_bit()
+    if info.padding is 1
+      api.removeTrailingPadding bits
     info.subtype = bits.read_bits 5
     info.payloadType = bits.read_byte()  # == 204
     if info.payloadType isnt api.RTCP_PACKET_TYPE_APPLICATION_DEFINED
@@ -375,6 +390,8 @@ api =
     info = {}
     info.version = bits.read_bits 2
     info.padding = bits.read_bit()
+    if info.padding is 1
+      api.removeTrailingPadding bits
     info.extension = bits.read_bit()
     info.csrcCount = bits.read_bits 4
     info.marker = bits.read_bit()
