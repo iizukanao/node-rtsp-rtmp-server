@@ -195,7 +195,7 @@ class Bits
       if Bits.is_warning_fatal
         throw new Error errmsg
       else
-        console.log "[warn] #{errmsg}"
+        console.log "warning: bits.read_bytes: #{errmsg}"
 
     range = @buf[@byte_index...@byte_index+len]
     @byte_index += len
