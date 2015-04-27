@@ -962,6 +962,8 @@ class RTMPSession
       @rejectConnect commandMessage, callback
       return
 
+    # TODO: use @chunkSize for createRTMPMessage()?
+
     windowAck = createRTMPMessage
       chunkStreamID: 2
       timestamp: 0
@@ -1513,6 +1515,8 @@ class RTMPSession
         createAMF0Data(false)
       ]
     , @chunkSize
+
+    # TODO: onStatus('NetStream.Data.Start')
 
     metadata =
       canSeekToEnd: false
