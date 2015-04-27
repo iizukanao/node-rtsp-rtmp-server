@@ -672,6 +672,47 @@ api =
       ssrc & 0xff,
     ]
 
+  # Create RTCP BYE (Goodbye) packet
+  createGoodbye: (opts) ->
+    if not opts?.ssrcs?
+      throw new Error "createGoodbye: ssrcs is required"
+    ssrcs = opts.ssrcs
+    if ssrcs.length > 0b11111
+      throw new Error "createGoodbye: too many ssrcs: #{ssrcs.length} (must be <= 31)"
+
+    # Reason for leaving
+    reason = [(new Buffer "End of stream", 'utf8')...]
+    if reason.length > 0xff
+      throw new Error "createGoodbye: reason is too long: #{reason.length} (must be <= 255)"
+
+    # Length of this RTCP packet in 32-bit words minus one
+    # including the header and any padding
+    length = (4 + ssrcs.length * 4 + 1 + reason.length) / 4 - 1
+
+    data = [
+      # See section 6.6 for details
+
+      # version(2): 2 (RTP version 2)
+      # padding(1): 0 (padding doesn't exist)
+      # source count(5): number of SSRC/CSRC identifiers
+      0b10000000 | ssrcs.length,
+
+      # packet type(8): 203 (RTCP BYE)
+      203,
+
+      # length(16)
+      length >> 8, length & 0xff,
+    ]
+
+    for ssrc in ssrcs
+      # Append SSRC
+      data.push (ssrc >>> 24) & 0xff, (ssrc >>> 16) & 0xff, (ssrc >>> 8) & 0xff, ssrc & 0xff
+
+    data.push reason.length
+    data = data.concat reason
+
+    return data
+
   # Create RTCP Sender Report packet
   # opts:
   #   time: timestamp of the packet

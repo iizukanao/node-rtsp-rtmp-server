@@ -85,6 +85,16 @@ createAudioMessage = (params) ->
     body: params.body
   , params.chunkSize
 
+queueRTMPMessages = (stream, messages, params) ->
+  for message in messages
+    message.originalTimestamp = message.timestamp
+  if queuedRTMPMessages[stream.id]?
+    queuedRTMPMessages[stream.id].push messages...
+  else
+    queuedRTMPMessages[stream.id] = [ messages... ] # Prevent copying array as reference
+
+  flushRTMPMessages stream, params
+
 queueVideoMessage = (stream, params) ->
   params.avType = 'video'
   params.chunkStreamID = 4
@@ -344,12 +354,13 @@ createAMF0ECMAArray = (obj, buf=null) ->
 
 counter = 0
 
-flushRTMPMessages = (stream) ->
+flushRTMPMessages = (stream, params) ->
   if not stream?
     logger.error "[rtmp] error: flushRTMPMessages: Invalid stream"
     return
 
-  if queuedRTMPMessages[stream.id].length < config.rtmpMessageQueueSize
+  if (params?.forceFlush isnt true) and
+  (queuedRTMPMessages[stream.id].length < config.rtmpMessageQueueSize)
     # not enough buffer
     return
 
@@ -424,15 +435,19 @@ flushRTMPMessages = (stream) ->
         # get milliseconds elapsed since play start
         rtmpMessage.timestamp = session.getScaledTimestamp(rtmpMessage.originalTimestamp) % TIMESTAMP_ROUNDOFF
 
-      if msgs.length > 1
+      if (params?.hasControlMessage isnt true) and (msgs.length > 1)
         buf = createRTMPAggregateMessage msgs, session.chunkSize
         if DEBUG_OUTGOING_RTMP_PACKETS
           logger.info "send RTMP aggregate message: #{buf.length} bytes"
+        session.sendData buf
       else
-        buf = createRTMPMessage msgs[0], session.chunkSize
+        bufs = []
+        for rtmpMessage in msgs
+          bufs.push createRTMPMessage rtmpMessage, session.chunkSize
+        buf = Buffer.concat bufs
         if DEBUG_OUTGOING_RTMP_PACKETS
           logger.info "send RTMP message: #{buf.length} bytes"
-      session.sendData buf
+        session.sendData buf
 
   return
 
@@ -623,33 +638,38 @@ createRTMPMessage = (params, chunkSize=128) ->
   return Buffer.concat bufs, totalLength
 
 createAMF0DataMessage = (params, chunkSize) ->
+  return createRTMPMessage createAMF0DataMessageParams(params), chunkSize
+
+createAMF0DataMessageParams = (params) ->
   len = 0
   for obj in params.objects
     len += obj.length
   amf0Bytes = Buffer.concat params.objects, len
-  return createRTMPMessage
+  return {
     chunkStreamID: params.chunkStreamID
     timestamp: params.timestamp
     messageTypeID: 0x12  # AMF0 Data
     messageStreamID: params.messageStreamID
     body: amf0Bytes
-  , chunkSize
+  }
 
 createAMF0CommandMessage = (params, chunkSize) ->
+  return createRTMPMessage createAMF0CommandMessageParams(params), chunkSize
+
+createAMF0CommandMessageParams = (params) ->
   commandBuf = createAMF0Data(params.command)
   transactionIDBuf = createAMF0Data(params.transactionID)
   len = commandBuf.length + transactionIDBuf.length
   for obj in params.objects
     len += obj.length
   amf0Bytes = Buffer.concat [commandBuf, transactionIDBuf, params.objects...], len
-
-  return createRTMPMessage
+  return {
     chunkStreamID: params.chunkStreamID
     timestamp: params.timestamp
     messageTypeID: 0x14  # AMF0 Command
     messageStreamID: params.messageStreamID
     body: amf0Bytes
-  , chunkSize
+  }
 
 class RTMPSession
   constructor: (socket) ->
@@ -674,6 +694,7 @@ class RTMPSession
   parseVideoMessage: (buf) ->
     info = flv.parseVideo buf
     nalUnitGlob = null
+    isEOS = false
     switch info.videoDataTag.avcPacketType
       when flv.AVC_PACKET_TYPE_SEQUENCE_HEADER
         # Retain AVC configuration
@@ -688,18 +709,17 @@ class RTMPSession
       when flv.AVC_PACKET_TYPE_NALU
         if not @avcInfo?
           throw new Error "[rtmp:publish] malformed video data: avcInfo is missing"
-
         # TODO: This must be too heavy and needs better alternative.
         nalUnits = flv.splitNALUnits info.nalUnits, @avcInfo.nalUnitLengthSize
         nalUnitGlob = h264.concatWithStartCodePrefix nalUnits
       when flv.AVC_PACKET_TYPE_EOS
-        logger.info "[rtmp:#{@clientid}] received EOS from uploading client"
-        # TODO: Do we have to handle EOS?
+        isEOS = true
       else
         throw new Error "unknown AVCPacketType: #{flv.AVC_PACKET_TYPE_SEQUENCE_HEADER}"
     return {
       info: info
       nalUnitGlob: nalUnitGlob
+      isEOS: isEOS
     }
 
   parseAudioMessage: (buf) ->
@@ -1881,6 +1901,12 @@ class RTMPSession
                 pts = flv.convertMsToPTS pts
                 dts = flv.convertMsToPTS dts
                 @emit 'video_data', @streamId, pts, dts, videoData.nalUnitGlob  # TODO pts, dts
+              if videoData.isEOS
+                logger.info "[rtmp:#{@clientid}] received EOS for stream: #{@streamId}"
+                stream = avstreams.get @streamId
+                if not stream?
+                  logger.error "[rtmp:#{@clientid}] error: unknown stream: #{@streamId}"
+                stream.emit 'end'
               seq.done()
             when 15  # AMF3 data message
               dataMessage = parseAMF0DataMessage rtmpMessage.body[1..]
@@ -2078,6 +2104,8 @@ class RTMPServer
       timestamp: timestamp
       isKeyFrame: hasKeyFrame
 
+    stream.rtmpLastTimestamp = timestamp
+
     return
 
   sendAudioPacket: (stream, rawDataBlock, timestamp) ->
@@ -2098,7 +2126,60 @@ class RTMPServer
       body: buf
       timestamp: timestamp
 
+    stream.rtmpLastTimestamp = timestamp
+
     return
+
+  sendEOS: (stream) ->
+    lastTimestamp = stream.rtmpLastTimestamp ? 0
+
+    playComplete = createAMF0DataMessageParams
+      chunkStreamID: 4
+      timestamp: lastTimestamp
+      messageStreamID: 1
+      objects: [
+        createAMF0Data('onPlayStatus'),
+        createAMF0Object({
+          level: 'status'
+          code: 'NetStream.Play.Complete'
+          duration: 0
+          bytes: 0
+        }),
+      ]
+
+    playStop = createAMF0CommandMessageParams
+      chunkStreamID: 4  # 5?
+      timestamp: lastTimestamp
+      messageStreamID: 1
+      command: 'onStatus'
+      transactionID: 0
+      objects: [
+        createAMF0Data(null),
+        createAMF0Object({
+          level: 'status'
+          code: 'NetStream.Play.Stop'
+          description: "Stopped playing #{config.rtmpApplicationName}."
+          clientid: @clientid
+          reason: ''
+          details: config.rtmpApplicationName
+        })
+      ]
+
+    streamEOF1 =
+      chunkStreamID: 2
+      timestamp: 0
+      messageTypeID: 0x04  # User Control Message
+      messageStreamID: 0
+      body: new Buffer [
+        # Stream EOF (see 7.1.7. User Control Message Events)
+        0, 1,
+        # Stream ID of the stream that reaches EOF
+        0, 0, 0, 1
+      ]
+
+    queueRTMPMessages stream, [ playComplete, playStop, streamEOF1 ],
+      forceFlush: true
+      hasControlMessage: true
 
   handleRTMPTRequest: (req, callback) ->
     # /fcs/ident2 will be handled in another place

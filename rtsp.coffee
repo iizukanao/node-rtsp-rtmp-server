@@ -345,6 +345,36 @@ class RTSPServer
                   logger.error "[audioRTPSend] error: #{err.message}"
     return
 
+  sendEOS: (stream) ->
+    for clientID, client of stream.rtspClients
+      buf = new Buffer rtp.createGoodbye
+        ssrcs: [ client.videoSSRC ]
+      if client.useTCPForVideo
+        if client.useHTTP
+          if client.httpClientType is 'GET'
+            @sendDataByTCP client.socket, client.videoTCPControlChannel, buf
+        else
+          @sendDataByTCP client.socket, client.videoTCPControlChannel, buf
+      else
+        if client.clientVideoRTCPPort?
+          @videoRTCPSocket.send buf, 0, buf.length, client.clientVideoRTCPPort, client.ip, (err, bytes) ->
+            if err
+              logger.error "[videoRTCPSend] error: #{err.message}"
+
+      buf = new Buffer rtp.createGoodbye
+        ssrcs: [ client.audioSSRC ]
+      if client.useTCPForAudio
+        if client.useHTTP
+          if client.httpClientType is 'GET'
+            @sendDataByTCP client.socket, client.audioTCPControlChannel, buf
+        else
+          @sendDataByTCP client.socket, client.audioTCPControlChannel, buf
+      else
+        if client.clientAudioRTCPPort?
+          @audioRTCPSocket.send buf, 0, buf.length, client.clientAudioRTCPPort, client.ip, (err, bytes) ->
+            if err
+              logger.error "[audioRTCPSend] error: #{err.message}"
+
   dumpClients: ->
     logger.raw "[rtsp/http: #{Object.keys(@clients).length} clients]"
     for clientID, client of @clients
@@ -1590,6 +1620,7 @@ class RTSPServer
     if client is stream?.rtspUploadingClient
       logger.info "[rtsp] client #{client.id} finished uploading stream #{stream.id}"
       stream.rtspUploadingClient = null
+      stream.emit 'end'
     if not socket.isAuthenticated
       @respondWithNotFound 'RTSP', callback
       return
