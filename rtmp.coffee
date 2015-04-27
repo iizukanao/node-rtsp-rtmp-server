@@ -1988,7 +1988,7 @@ class RTMPServer
           sessionsCount--
         @dumpSessions()
       c.on 'error', (err) ->
-        logger.error "[rtmp] socket error: #{err}"
+        logger.error "[rtmp:#{sess.clientid}] socket error: #{err}"
         c.destroy()
       c.on 'data', (data) =>
         c.rtmpSession.handleData data, (err, output) ->
