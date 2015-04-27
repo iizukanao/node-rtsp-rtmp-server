@@ -1959,9 +1959,9 @@ class RTMPSession
       consumeNextRTMPMessage()
 
 class RTMPServer
-  constructor: ->
+  constructor: (opts) ->
     @eventListeners = {}
-    @port = 1935
+    @port = opts?.rtmpServerPort ? 1935
     @server = net.createServer (c) =>
       c.clientId = ++clientMaxId
       sess = new RTMPSession c
@@ -1999,10 +1999,12 @@ class RTMPServer
               c.write output
       @dumpSessions()
 
-  start: (callback) ->
-    logger.debug "[rtmp] starting server on port #{@port}"
-    @server.listen @port, '0.0.0.0', 511, =>
-      logger.info "[rtmp] server started on port #{@port}"
+  start: (opts, callback) ->
+    serverPort = opts?.port ? @port
+
+    logger.debug "[rtmp] starting server on port #{serverPort}"
+    @server.listen serverPort, '0.0.0.0', 511, =>
+      logger.info "[rtmp] server started on port #{serverPort}"
       callback?()
 
   stop: (callback) ->

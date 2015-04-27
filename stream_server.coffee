@@ -109,7 +109,7 @@ class StreamServer
   start: (callback) ->
     seq = new Sequent
 
-    @rtmpServer.start ->
+    @rtmpServer.start { port: config.rtmpServerPort }, ->
       seq.done()
       # RTMP server is ready
 
