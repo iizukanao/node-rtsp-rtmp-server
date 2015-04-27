@@ -24,7 +24,7 @@ or use Node.js directly:
     $ coffee -c .
     $ sudo node server.js
 
-If `serverPort` is above 1023 in config.coffee, you can omit `sudo`.
+If both `serverPort` and `rtmpServerPort` are above 1023 in config.coffee, you can omit `sudo`.
 
 ### Publishing streams
 
