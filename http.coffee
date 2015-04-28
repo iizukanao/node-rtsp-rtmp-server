@@ -129,6 +129,7 @@ class HTTPHandler
     bodyBytes = new Buffer 'Not Found', 'utf8'
     bodyLength = bodyBytes.length
     headerBytes = new Buffer @createHeader({
+      statusCode: 404
       contentLength: bodyLength
       req: req
       contentType: "text/plain; charset=utf-8"
