@@ -94,6 +94,10 @@ class StreamServer
       if DEBUG_INCOMING_PACKET_HASH
         stream.lastSentVideoTimestamp = 0
 
+    avstreams.on 'end', (stream) =>
+      @rtspServer.sendEOS stream
+      @rtmpServer.sendEOS stream
+
     ## TODO: Do we need to do something for remove_stream event?
     #avstreams.on 'remove_stream', (stream) ->
     #  logger.raw "received remove_stream event from stream #{stream.id}"
@@ -105,7 +109,7 @@ class StreamServer
   start: (callback) ->
     seq = new Sequent
 
-    @rtmpServer.start ->
+    @rtmpServer.start { port: config.rtmpServerPort }, ->
       seq.done()
       # RTMP server is ready
 

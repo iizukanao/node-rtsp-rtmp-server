@@ -1,7 +1,7 @@
 {
   "name": "node-rtsp-rtmp-server",
-  "version": "0.3.0",
-  "description": "RTSP, RTMP/RTMPE/RTMPT/RTMPTE, and HTTP server implementation",
+  "version": "0.3.1",
+  "description": "RTSP/RTMP/HTTP hybrid server",
   "author": "Nao Iizuka <iizuka@kyu-mu.net>",
   "main": "stream_server.js",
   "dependencies": {
