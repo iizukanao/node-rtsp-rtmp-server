@@ -356,6 +356,15 @@ class Bits
     startIndex = @marks.pop()
     return @buf[startIndex..@byte_index-1]
 
+  # Returns a null-terminated string
+  get_string: (encoding='utf8') ->
+    nullPos = @buf.indexOf 0x00, @byte_index
+    if nullPos is -1
+      throw new Error "bits.get_string: the string is not null-terminated"
+    str = @buf[@byte_index...nullPos].toString encoding
+    @byte_index = nullPos + 1
+    return str
+
   @searchBytesInArray: (haystack, needle, from_pos=0) ->
     if buffertools?  # buffertools is available
       if haystack not instanceof Buffer
