@@ -127,7 +127,7 @@ class Bits
     remaining_bits = @get_remaining_bits()
     console.log "byteIndex=#{@byte_index+1} bitIndex=#{@bit_index} remaining_bits=#{remaining_bits}"
 
-  peak_bytes: ->
+  peek: ->
     console.log @buf[@byte_index..]
     console.log "bit_index=#{@bit_index} (byte_index=#{@byte_index})"
 

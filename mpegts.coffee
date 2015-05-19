@@ -546,7 +546,7 @@ api =
     packet_start_code_prefix = bits.read_bits 24  # must be 0x000001
     if packet_start_code_prefix isnt 0x000001
       bits.push_back_bytes 3
-      bits.peak_bytes()
+      bits.peek()
       bits.print_position()
       throw new Error "packet_start_code_prefix must be 0x000001: #{packet_start_code_prefix}"
     info.stream_id = bits.read_byte()
