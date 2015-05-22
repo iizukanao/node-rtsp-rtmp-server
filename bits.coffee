@@ -206,6 +206,12 @@ class Bits
     @byte_index += len
     return range
 
+  read_bytes_sum: (len) ->
+    sum = 0
+    for i in [len...0]
+      sum += @read_byte()
+    return sum
+
   read_byte: ->
     if @bit_index is 0
       if @byte_index >= @buf.length
