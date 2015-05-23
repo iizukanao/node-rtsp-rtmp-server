@@ -1,6 +1,8 @@
 Bits = require './bits'
 fs = require 'fs'
 
+TAG_CTOO = new Buffer([0xa9, 0x74, 0x6f, 0x6f]).toString 'utf8'
+
 class MP4File
   constructor: (filename) ->
     if filename?
@@ -16,7 +18,7 @@ class MP4File
     startTime = process.hrtime()
     while @bits.has_more_data()
       box = Box.parse @bits, null  # null == root box
-      process.stdout.write box.getTree()
+      process.stdout.write box.getTree 0, 1
     diffTime = process.hrtime startTime
     console.log "took #{(diffTime[0] * 1e9 + diffTime[1]) / 1000000} ms to parse"
     console.log "EOF"
@@ -27,15 +29,23 @@ class Box
   @mp4TimeToDate: (time) ->
     return new Date(new Date('1904-01-01 00:00:00+0000').getTime() + time * 1000)
 
-  getTree: (depth=0) ->
+  getTree: (depth=0, detailLevel=0) ->
     str = ''
     for i in [0...depth]
       str += '  '
-    str += "#{@typeStr}\n"
+    str += "#{@typeStr}"
+    if detailLevel > 0
+      detailString = @getDetails detailLevel
+      if detailString?
+        str += " (#{detailString})"
+    str += "\n"
     if @children?
       for child in @children
-        str += child.getTree depth+1
+        str += child.getTree depth+1, detailLevel
     return str
+
+  getDetails: (detailLevel) ->
+    return null
 
   constructor: (info) ->
     for name, value of info
@@ -198,12 +208,18 @@ class Box
         return new MP4AudioSampleEntry info
       when 'esds'
         return new ESDBox info
+      when 'free'
+        return new FreeSpaceBox info
+      when 'ctts'
+        return new CompositionOffsetBox info
+      when TAG_CTOO
+        return new CTOOBox info
       else
         if cls?
           return new cls info
         else
-          console.log "warning: mp4: skipping unknown (not implemented) box type: #{info.typeStr}"
-          return new Box
+          console.log "warning: mp4: skipping unknown (not implemented) box type: #{info.typeStr} (0x#{info.type.toString('hex')})"
+          return new Box info
 
 class Container extends Box
   read: (buf) ->
@@ -213,6 +229,9 @@ class Container extends Box
       box = Box.parse bits, this
       @children.push box
     return
+
+  getDetails: (detailLevel) ->
+    "#{@children.length} children"
 
 # moov
 class MovieBox extends Container
@@ -243,6 +262,7 @@ class FileTypeBox extends Box
   read: (buf) ->
     bits = new Bits buf
     @majorBrand = bits.read_uint32()
+    @majorBrandStr = Bits.uintToString @majorBrand, 4
     @minorVersion = bits.read_uint32()
     @compatibleBrands = []
     while bits.has_more_data()
@@ -252,6 +272,9 @@ class FileTypeBox extends Box
         brand: brand
         brandStr: brandStr
     return
+
+  getDetails: (detailLevel) ->
+    "MajorBrand=#{@majorBrandStr} MinorVersion=#{@minorVersion}"
 
 # mvhd
 class MovieHeaderBox extends Box
@@ -340,8 +363,8 @@ class TrackHeaderBox extends Box
     if @layer isnt 0
       console.log "layer is not 0: #{@layer}"
     @alternateGroup = bits.read_int 16
-    if @alternateGroup isnt 0
-      console.log "alternate_group is not 0: #{@alternateGroup}"
+#    if @alternateGroup isnt 0
+#      console.log "tkhd: alternate_group is not 0: #{@alternateGroup}"
     @volume = bits.read_int 16
     if @volume is 0x0100
       @isAudioTrack = true
@@ -847,35 +870,57 @@ class ItemInfoBox extends Box
 # ilst: list of actual metadata values
 class MetadataItemListBox extends Container
 
-# gsst: unknown
-class GoogleGSSTBox extends Box
+class GenericDataBox extends Box
   read: (buf) ->
-    @str = buf.toString 'utf8'
+    bits = new Bits buf
+    @length = bits.read_uint32()
+    @name = bits.read_bytes(4).toString 'utf8'
+    @entryCount = bits.read_uint32()
+    zeroBytes = bits.read_bytes_sum 4
+    if zeroBytes isnt 0
+      console.log "warning: mp4: zeroBytes are not all zeros (got #{zeroBytes})"
+    @value = bits.read_bytes(@length - 16)
+    nullPos = @value.indexOf 0x00
+    if nullPos is 0
+      @valueStr = null
+    else if nullPos isnt -1
+      @valueStr = @value[0...nullPos].toString 'utf8'
+    else
+      @valueStr = @value.toString 'utf8'
+    return
+
+  getDetails: (detailLevel) ->
+    return "#{@name}=#{@valueStr}"
+
+# gsst: unknown
+class GoogleGSSTBox extends GenericDataBox
+  read: (buf) ->
+    super buf
 
 # gstd: unknown
-class GoogleGSTDBox extends Box
+class GoogleGSTDBox extends GenericDataBox
   read: (buf) ->
-    @str = buf.toString 'utf8'
+    super buf
 
 # gssd: unknown
-class GoogleGSSDBox extends Box
+class GoogleGSSDBox extends GenericDataBox
   read: (buf) ->
-    @str = buf.toString 'utf8'
+    super buf
 
 # gspu: unknown
-class GoogleGSPUBox extends Box
+class GoogleGSPUBox extends GenericDataBox
   read: (buf) ->
-    @str = buf.toString 'utf8'
+    super buf
 
 # gspm: unknown
-class GoogleGSPMBox extends Box
+class GoogleGSPMBox extends GenericDataBox
   read: (buf) ->
-    @str = buf.toString 'utf8'
+    super buf
 
 # gshh: unknown
-class GoogleGSHHBox extends Box
+class GoogleGSHHBox extends GenericDataBox
   read: (buf) ->
-    @str = buf.toString 'utf8'
+    super buf
 
 # Media Data Box (mdat): audio/video frames
 # Defined in ISO 14496-12
@@ -947,6 +992,13 @@ class AVCConfigurationBox extends Box
 
     return
 
+  getDetails: (detailLevel) ->
+    'SPS=' + @sequenceParameterSets.map((sps) ->
+      "0x#{sps.toString 'hex'}"
+    ).join(',') + ' PPS=' + @pictureParameterSets.map((pps) ->
+      "0x#{pps.toString 'hex'}"
+    ).join(',')
+
 # esds
 class ESDBox extends Box
   readDecoderConfigDescriptor: (bits) ->
@@ -954,7 +1006,7 @@ class ESDBox extends Box
     info.tag = bits.read_byte()
     if info.tag isnt 0x04  # 0x04 == DecoderConfigDescrTag
       throw new Error "ESDBox: DecoderConfigDescrTag is not 4 (got #{info.tag})"
-    info.length = bits.read_byte()
+    info.length = @readDescriptorLength bits
     info.objectProfileIndication = bits.read_byte()
     info.streamType = bits.read_bits 6
     info.upStream = bits.read_bit()
@@ -972,7 +1024,7 @@ class ESDBox extends Box
     info.tag = bits.read_byte()
     if info.tag isnt 0x05  # 0x05 == DecSpecificInfoTag
       throw new Error "ESDBox: DecSpecificInfoTag is not 5 (got #{info.tag})"
-    info.length = bits.read_byte()
+    info.length = @readDescriptorLength bits
     info.specificInfo = bits.read_bytes info.length
     return info
 
@@ -981,7 +1033,7 @@ class ESDBox extends Box
     info.tag = bits.read_byte()
     if info.tag isnt 0x06  # 0x06 == SLConfigDescrTag
       throw new Error "ESDBox: SLConfigDescrTag is not 6 (got #{info.tag})"
-    info.length = bits.read_byte()
+    info.length = @readDescriptorLength bits
     info.predefined = bits.read_byte()
     if info.predefined is 0
       info.useAccessUnitStartFlag = bits.read_bit()
@@ -1024,26 +1076,35 @@ class ESDBox extends Box
         info.startCompositionTimeStamp = bits.read_bits info.timeStamplength
     return info
 
+  readDescriptorLength: (bits) ->
+    len = bits.read_byte()
+    if len >= 0x80
+      len = ((len & 0x7f) << 21) |
+        ((bits.read_byte() & 0x7f) << 14) |
+        ((bits.read_byte() & 0x7f) << 7) |
+        bits.read_byte()
+    return len
+
   read: (buf) ->
     bits = new Bits buf
     @readFullBoxHeader bits
 
-    # ES_Descriptor is defined in ISO 14496-1
+    # ES_Descriptor (defined in ISO 14496-1)
     @tag = bits.read_byte()
     if @tag isnt 0x03  # 0x03 == ES_DescrTag
       throw new Error "ESDBox: tag is not #{0x03} (got #{@tag})"
-    @length = bits.read_byte()
+    @length = @readDescriptorLength bits
     @ES_ID = bits.read_bits 16
     @streamDependenceFlag = bits.read_bit()
     @urlFlag = bits.read_bit()
     @ocrStreamFlag = bits.read_bit()
     @streamPriority = bits.read_bits 5
-    if @streamDependenceFlag
+    if @streamDependenceFlag is 1
       @depenedsOnES_ID = bits.read_bits 16
-    if @urlFlag
+    if @urlFlag is 1
       @urlLength = bits.read_byte()
       @urlString = bits.read_bytes(@urlLength)
-    if @ocrStreamFlag
+    if @ocrStreamFlag is 1
       @ocrES_ID = bits.read_bits 16
 
     @decoderConfigDescriptor = @readDecoderConfigDescriptor bits
@@ -1063,6 +1124,9 @@ class ESDBox extends Box
 
     return
 
+  getDetails: (detailLevel) ->
+    "AudioSpecificConfig=0x#{@decoderConfigDescriptor.decoderSpecificInfo.specificInfo.toString 'hex'} MaxBitrate=#{@decoderConfigDescriptor.maxBitrate} AvgBitrate=#{@decoderConfigDescriptor.avgBitrate}"
+
 # mp4a
 # Defined in ISO 14496-14
 class MP4AudioSampleEntry extends AudioSampleEntry
@@ -1073,6 +1137,30 @@ class MP4AudioSampleEntry extends AudioSampleEntry
       Box.parse bits, this, ESDBox
     ]
     return
+
+# free: can be ignored
+# Defined in ISO 14496-12
+class FreeSpaceBox extends Box
+
+# ctts: offset between decoding time and composition time
+class CompositionOffsetBox extends Box
+  read: (buf) ->
+    bits = new Bits buf
+    @readFullBoxHeader bits
+
+    @entryCount = bits.read_uint32()
+    @entries = []
+    for i in [0...@entryCount]
+      sampleCount = bits.read_uint32()
+      sampleOffset = bits.read_uint32()
+      @entries.push
+        sampleCount: sampleCount
+        sampleOffset: sampleOffset
+    return
+
+class CTOOBox extends GenericDataBox
+  read: (buf) ->
+    super buf
 
 mp4file = new MP4File 'example.mp4'
 mp4file.parse()
