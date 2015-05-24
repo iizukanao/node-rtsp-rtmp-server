@@ -1,6 +1,9 @@
 Bits = require './bits'
 fs = require 'fs'
 
+formatDate = (date) ->
+  date.toISOString()
+
 TAG_CTOO = new Buffer([0xa9, 0x74, 0x6f, 0x6f]).toString 'utf8'
 
 class MP4File
@@ -230,8 +233,8 @@ class Container extends Box
       @children.push box
     return
 
-  getDetails: (detailLevel) ->
-    "#{@children.length} children"
+#  getDetails: (detailLevel) ->
+#    "Container"
 
 # moov
 class MovieBox extends Container
@@ -274,7 +277,7 @@ class FileTypeBox extends Box
     return
 
   getDetails: (detailLevel) ->
-    "MajorBrand=#{@majorBrandStr} MinorVersion=#{@minorVersion}"
+    "brand=#{@majorBrandStr} version=#{@minorVersion}"
 
 # mvhd
 class MovieHeaderBox extends Box
@@ -320,6 +323,8 @@ class MovieHeaderBox extends Box
     if bits.has_more_data()
       throw new Error "mvhd box has more data"
 
+  getDetails: (detailLevel) ->
+    "created=#{formatDate @creationDate} modified=#{formatDate @modificationDate} timescale=#{@timescale} durationSeconds=#{@durationSeconds}"
 
 # Object Descriptor Box: contains an Object Descriptor or an Initial Object Descriptor
 # (iods)
@@ -374,11 +379,19 @@ class TrackHeaderBox extends Box
     if reserved isnt 0
       throw new Error "tkhd: reserved bits are not zero: #{reserved}"
     bits.skip_bytes 4 * 9
-    @width = bits.read_uint32()
-    @height = bits.read_uint32()
+    @width = bits.read_uint32() / 65536  # fixed-point 16.16 value
+    @height = bits.read_uint32() / 65536  # fixed-point 16.16 value
 
     if bits.has_more_data()
       throw new Error "tkhd box has more data"
+
+  getDetails: (detailLevel) ->
+    str = "created=#{formatDate @creationDate} modified=#{formatDate @modificationDate}"
+    if @isAudioTrack
+      str += " audio"
+    else
+      str += " video; width=#{@width} height=#{@height}"
+    return str
 
 # elst
 # Edit list box: explicit timeline map
@@ -386,6 +399,15 @@ class EditListBox extends Box
   read: (buf) ->
     bits = new Bits buf
     @readFullBoxHeader bits
+
+    # moov
+    #   mvhd <- find target
+    #   iods
+    #   trak
+    #     tkhd
+    #     edts
+    #       elst <- self
+    mvhdBox = @findParent('moov').find('mvhd')
 
     entryCount = bits.read_uint32()
     @entries = []
@@ -402,12 +424,17 @@ class EditListBox extends Box
         console.log "media_rate_fraction is not 0: #{mediaRateFraction}"
       @entries.push
         segmentDuration: segmentDuration
+        segmentDurationSeconds: segmentDuration / mvhdBox.timescale
         mediaTime: mediaTime
-        mediaRateInteger: mediaRateInteger
-        mediaRateFraction: mediaRateFraction
+        mediaRate: mediaRateInteger + mediaRateFraction / 65536 # TODO: Is this correct?
 
     if bits.has_more_data()
       throw new Error "elst box has more data"
+
+  getDetails: (detailLevel) ->
+    @entries.map((entry) ->
+      "segmentDurationSeconds=#{entry.segmentDurationSeconds} mediaTime=#{entry.mediaTime} mediaRate=#{entry.mediaRate}"
+    ).join(',')
 
 # Media Header Box (mdhd): declares overall information
 # Container: Media Box ('mdia')
@@ -431,6 +458,7 @@ class MediaHeaderBox extends Box
       @modificationDate = Box.mp4TimeToDate @modificationTime
       @timescale = bits.read_uint32()
       @duration = bits.read_uint32()
+    @durationSeconds = @duration / @timescale
     pad = bits.read_bit()
     if pad isnt 0
       throw new Error "mdhd: pad is not 0: #{pad}"
@@ -438,6 +466,9 @@ class MediaHeaderBox extends Box
     pre_defined = bits.read_bits 16
     if pre_defined isnt 0
       throw new Error "mdhd: pre_defined is not 0: #{pre_defined}"
+
+  getDetails: (detailLevel) ->
+    "created=#{formatDate @creationDate} modified=#{formatDate @modificationDate} timescale=#{@timescale} durationSeconds=#{@durationSeconds} lang=#{@language}"
 
 # Handler Reference Box (hdlr): declares the nature of the media in a track
 # Container: Media Box ('mdia') or Meta Box ('meta')
@@ -459,6 +490,9 @@ class HandlerBox extends Box
     @name = bits.get_string()
     return
 
+  getDetails: (detailLevel) ->
+    "handlerType=#{@handlerType} name=#{@name}"
+
 # Video Media Header Box (vmhd): general presentation information
 class VideoMediaHeaderBox extends Box
   read: (buf) ->
@@ -472,6 +506,9 @@ class VideoMediaHeaderBox extends Box
     @opcolor.red = bits.read_bits 16
     @opcolor.green = bits.read_bits 16
     @opcolor.blue = bits.read_bits 16
+
+#  getDetails: (detailLevel) ->
+#    "graphicsMode=#{@graphicsmode} opColor=0x#{Bits.zeropad 2, @opcolor.red.toString 16}#{Bits.zeropad 2, @opcolor.green.toString 16}#{Bits.zeropad 2, @opcolor.blue.toString 16}"
 
 # Data Reference Box (dref): table of data references that declare
 #                            locations of the media data
@@ -497,6 +534,12 @@ class DataEntryUrlBox extends Box
     else
       @location = null
     return
+
+  getDetails: (detailLevel) ->
+    if @location?
+      "location=#{@location}"
+    else
+      "empty location value"
 
 # "urn "
 class DataEntryUrnBox extends Box
@@ -687,9 +730,9 @@ class TimeToSampleBox extends Box
     bits = new Bits buf
     @readFullBoxHeader bits
 
-    entryCount = bits.read_uint32()
+    @entryCount = bits.read_uint32()
     @entries = []
-    for i in [0...entryCount]
+    for i in [0...@entryCount]
       sampleCount = bits.read_uint32()
       sampleDelta = bits.read_uint32()
       @entries.push
@@ -697,18 +740,31 @@ class TimeToSampleBox extends Box
         sampleDelta: sampleDelta
     return
 
+  getDetails: (detailLevel) ->
+    if detailLevel >= 2
+      @entries.map((entry) ->
+        "sampleCount=#{entry.sampleCount} sampleDelta=#{entry.sampleDelta}"
+      ).join(',')
+    else
+      "entryCount=#{@entryCount}"
+
 # stss
 class SyncSampleBox extends Box
   read: (buf) ->
     bits = new Bits buf
     @readFullBoxHeader bits
 
-    entryCount = bits.read_uint32()
-    @entries = []
-    for i in [0...entryCount]
-      @entries.push
-        sampleNumber: bits.read_uint32()
+    @entryCount = bits.read_uint32()
+    @sampleNumbers = []
+    for i in [0...@entryCount]
+      @sampleNumbers.push bits.read_uint32()
     return
+
+  getDetails: (detailLevel) ->
+    if detailLevel >= 2
+      "sampleNumbers=#{@sampleNumbers.join ','}"
+    else
+      "entryCount=#{@entryCount}"
 
 # stsc
 class SampleToChunkBox extends Box
@@ -716,9 +772,9 @@ class SampleToChunkBox extends Box
     bits = new Bits buf
     @readFullBoxHeader bits
 
-    entryCount = bits.read_uint32()
+    @entryCount = bits.read_uint32()
     @entries = []
-    for i in [0...entryCount]
+    for i in [0...@entryCount]
       firstChunk = bits.read_uint32()
       samplesPerChunk = bits.read_uint32()
       sampleDescriptionIndex = bits.read_uint32()
@@ -727,6 +783,14 @@ class SampleToChunkBox extends Box
         samplesPerChunk: samplesPerChunk
         sampleDescriptionIndex: sampleDescriptionIndex
     return
+
+  getDetails: (detailLevel) ->
+    if detailLevel >= 2
+      @entries.map((entry) ->
+        "firstChunk=#{entry.firstChunk} samplesPerChunk=#{entry.samplesPerChunk} sampleDescriptionIndex=#{entry.sampleDescriptionIndex}"
+      ).join(', ')
+    else
+      "entryCount=#{@entryCount}"
 
 # stsz
 class SampleSizeBox extends Box
@@ -737,11 +801,19 @@ class SampleSizeBox extends Box
     @sampleSize = bits.read_uint32()
     @sampleCount = bits.read_uint32()
     if @sampleSize is 0
-      @entries = []
+      @entrySizes = []
       for i in [1..@sampleCount]
-        @entries.push
-          entrySize: bits.read_uint32()
+        @entrySizes.push bits.read_uint32()
     return
+
+  getDetails: (detailLevel) ->
+    str = "sampleSize=#{@sampleSize} sampleCount=#{@sampleCount}"
+    if @entires?
+      if detailLevel >= 2
+        str += " entrySizes=#{@entrySizes.join ','}"
+      else
+        str += " num_entrySizes=#{@entrySizes.length}"
+    return str
 
 # stco
 class ChunkOffsetBox extends Box
@@ -749,12 +821,17 @@ class ChunkOffsetBox extends Box
     bits = new Bits buf
     @readFullBoxHeader bits
 
-    entryCount = bits.read_uint32()
-    @entries = []
-    for i in [1..entryCount]
-      @entries.push
-        chunkOffset: bits.read_uint32()
+    @entryCount = bits.read_uint32()
+    @chunkOffsets = []
+    for i in [1..@entryCount]
+      @chunkOffsets.push bits.read_uint32()
     return
+
+  getDetails: (detailLevel) ->
+    if detailLevel >= 2
+      "chunkOffsets=#{@chunkOffsets.join ','}"
+    else
+      "entryCount=#{@entryCount}"
 
 # smhd
 class SoundMediaHeaderBox extends Box
@@ -951,6 +1028,9 @@ class MPEG4BitRateBox extends Box
     @maxBitrate = bits.read_uint32()
     @avgBitrate = bits.read_uint32()
 
+  getDetails: (detailLevel) ->
+    "bufferSizeDB=#{@bufferSizeDB} maxBitrate=#{@maxBitrate} avgBitrate=#{@avgBitrate}"
+
 # m4ds
 # Defined in ISO 14496-15
 class MPEG4ExtensionDescriptorsBox
@@ -993,9 +1073,9 @@ class AVCConfigurationBox extends Box
     return
 
   getDetails: (detailLevel) ->
-    'SPS=' + @sequenceParameterSets.map((sps) ->
+    'sps=' + @sequenceParameterSets.map((sps) ->
       "0x#{sps.toString 'hex'}"
-    ).join(',') + ' PPS=' + @pictureParameterSets.map((pps) ->
+    ).join(',') + ' pps=' + @pictureParameterSets.map((pps) ->
       "0x#{pps.toString 'hex'}"
     ).join(',')
 
@@ -1125,7 +1205,7 @@ class ESDBox extends Box
     return
 
   getDetails: (detailLevel) ->
-    "AudioSpecificConfig=0x#{@decoderConfigDescriptor.decoderSpecificInfo.specificInfo.toString 'hex'} MaxBitrate=#{@decoderConfigDescriptor.maxBitrate} AvgBitrate=#{@decoderConfigDescriptor.avgBitrate}"
+    "audioSpecificConfig=0x#{@decoderConfigDescriptor.decoderSpecificInfo.specificInfo.toString 'hex'} maxBitrate=#{@decoderConfigDescriptor.maxBitrate} avgBitrate=#{@decoderConfigDescriptor.avgBitrate}"
 
 # mp4a
 # Defined in ISO 14496-14
