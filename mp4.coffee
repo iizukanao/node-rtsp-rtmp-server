@@ -27,6 +27,8 @@ class MP4File
       box = Box.parse @bits, null  # null == root box
       process.stdout.write box.dump 0, 1
       @tree.boxes.push box.getTree()
+      if box instanceof MediaDataBox  # found mdat
+        console.log box
     diffTime = process.hrtime startTime
     console.log "took #{(diffTime[0] * 1e9 + diffTime[1]) / 1000000} ms to parse"
     console.log "EOF"
