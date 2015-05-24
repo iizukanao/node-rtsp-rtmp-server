@@ -12,7 +12,10 @@ class MP4File
       @open filename
 
   open: (filename) ->
+    startTime = process.hrtime()
     @bits = new Bits fs.readFileSync filename  # up to 1GB
+    diffTime = process.hrtime startTime
+    console.log "took #{(diffTime[0] * 1e9 + diffTime[1]) / 1000000} ms to read"
 
   close: ->
     @bits = null
