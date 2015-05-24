@@ -123,7 +123,8 @@ class Bits
 
   peek: ->
     console.log @buf[@byte_index..]
-    console.log "bit_index=#{@bit_index} (byte_index=#{@byte_index})"
+    remainingBits = @get_remaining_bits()
+    console.log "bit=#{@bit_index} bytes_read=#{@byte_index} remaining=#{remainingBits} bits (#{Math.ceil(remainingBits/8)} bytes)"
 
   skip_bits: (len) ->
     @bit_index += len
