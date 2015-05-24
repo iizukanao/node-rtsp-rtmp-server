@@ -1258,6 +1258,7 @@ class ESDBox extends Box
 
   readDescriptorLength: (bits) ->
     len = bits.read_byte()
+    # TODO: Is this correct?
     if len >= 0x80
       len = ((len & 0x7f) << 21) |
         ((bits.read_byte() & 0x7f) << 14) |
