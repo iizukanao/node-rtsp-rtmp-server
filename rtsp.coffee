@@ -1746,8 +1746,10 @@ class RTSPServer
     streamId = RTSPServer.getStreamIdFromUri req.uri
     logger.info "[rtsp] client #{client.id} started uploading stream #{streamId}"
     stream = avstreams.getOrCreate streamId
-    @emit 'video_start', stream
-    @emit 'audio_start', stream
+    if client.announceSDPInfo.video?  # has video
+      @emit 'video_start', stream
+    if client.announceSDPInfo.audio?  # has audio
+      @emit 'audio_start', stream
     res = """
     RTSP/1.0 200 OK
     Session: #{client.sessionID};timeout=60
