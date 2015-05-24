@@ -1343,6 +1343,8 @@ class CompositionOffsetBox extends Box
         sampleOffset: sampleOffset
     return
 
+# '\xa9too' (actually '\xa9' expands to [0xc2, 0xa9])
+# (copyright sign) + 'too'
 class CTOOBox extends GenericDataBox
 
 mp4file = new MP4File 'example.mp4'
