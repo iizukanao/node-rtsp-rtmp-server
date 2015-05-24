@@ -18,7 +18,7 @@ class MP4File
     startTime = process.hrtime()
     while @bits.has_more_data()
       box = Box.parse @bits, null  # null == root box
-      process.stdout.write box.getTree 0, 1
+      process.stdout.write box.dump 0, 1
     diffTime = process.hrtime startTime
     console.log "took #{(diffTime[0] * 1e9 + diffTime[1]) / 1000000} ms to parse"
     console.log "EOF"
@@ -29,7 +29,7 @@ class Box
   @mp4TimeToDate: (time) ->
     return new Date(new Date('1904-01-01 00:00:00+0000').getTime() + time * 1000)
 
-  getTree: (depth=0, detailLevel=0) ->
+  dump: (depth=0, detailLevel=0) ->
     str = ''
     for i in [0...depth]
       str += '  '
@@ -41,7 +41,7 @@ class Box
     str += "\n"
     if @children?
       for child in @children
-        str += child.getTree depth+1, detailLevel
+        str += child.dump depth+1, detailLevel
     return str
 
   getDetails: (detailLevel) ->
