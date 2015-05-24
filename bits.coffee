@@ -366,6 +366,13 @@ class Bits
     @byte_index = nullPos + 1
     return str
 
+  # Returns a string constructed by a number
+  @uintToString: (num, numBytes, encoding='utf8') ->
+    arr = []
+    for i in [numBytes..1]
+      arr.push (num * Math.pow(2, -(i-1)*8)) & 0xff
+    return new Buffer(arr).toString encoding
+
   @searchBytesInArray: (haystack, needle, from_pos=0) ->
     if buffertools?  # buffertools is available
       if haystack not instanceof Buffer
