@@ -46,12 +46,6 @@ try
 catch e
   # buffertools is not available
 
-zeropad = (width, num) ->
-  num += ''
-  while num.length < width
-    num = '0' + num
-  num
-
 class Bits
   constructor: (buffer) ->
     @buf = null
@@ -477,7 +471,7 @@ class Bits
         strline += String.fromCharCode byte
       else
         strline += ' '
-      dump += zeropad(2, byte.toString(16))
+      dump += Bits.zeropad(2, byte.toString(16))
       col++
       if col is 16
         endline()
@@ -488,5 +482,11 @@ class Bits
       endline()
 
     process.stdout.write dump
+
+  @zeropad: (width, num) ->
+    num += ''
+    while num.length < width
+      num = '0' + num
+    num
 
 module.exports = Bits
