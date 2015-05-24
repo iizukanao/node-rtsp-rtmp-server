@@ -1068,33 +1068,21 @@ class GenericDataBox extends Box
 
 # gsst: unknown
 class GoogleGSSTBox extends GenericDataBox
-  read: (buf) ->
-    super buf
 
 # gstd: unknown
 class GoogleGSTDBox extends GenericDataBox
-  read: (buf) ->
-    super buf
 
 # gssd: unknown
 class GoogleGSSDBox extends GenericDataBox
-  read: (buf) ->
-    super buf
 
 # gspu: unknown
 class GoogleGSPUBox extends GenericDataBox
-  read: (buf) ->
-    super buf
 
 # gspm: unknown
 class GoogleGSPMBox extends GenericDataBox
-  read: (buf) ->
-    super buf
 
 # gshh: unknown
 class GoogleGSHHBox extends GenericDataBox
-  read: (buf) ->
-    super buf
 
 # Media Data Box (mdat): audio/video frames
 # Defined in ISO 14496-12
@@ -1356,8 +1344,6 @@ class CompositionOffsetBox extends Box
     return
 
 class CTOOBox extends GenericDataBox
-  read: (buf) ->
-    super buf
 
 mp4file = new MP4File 'example.mp4'
 mp4file.parse()
