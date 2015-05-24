@@ -19,9 +19,11 @@ class MP4File
 
   parse: ->
     startTime = process.hrtime()
+    @tree = { boxes: [] }
     while @bits.has_more_data()
       box = Box.parse @bits, null  # null == root box
       process.stdout.write box.dump 0, 1
+      @tree.boxes.push box.getTree()
     diffTime = process.hrtime startTime
     console.log "took #{(diffTime[0] * 1e9 + diffTime[1]) / 1000000} ms to parse"
     console.log "EOF"
@@ -31,6 +33,15 @@ class Box
   # time: seconds since midnight, Jan. 1, 1904 UTC
   @mp4TimeToDate: (time) ->
     return new Date(new Date('1904-01-01 00:00:00+0000').getTime() + time * 1000)
+
+  getTree: ->
+    obj =
+      type: @typeStr
+    if @children?
+      obj.children = []
+      for child in @children
+        obj.children.push child.getTree()
+    return obj
 
   dump: (depth=0, detailLevel=0) ->
     str = ''
@@ -279,6 +290,12 @@ class FileTypeBox extends Box
   getDetails: (detailLevel) ->
     "brand=#{@majorBrandStr} version=#{@minorVersion}"
 
+  getTree: ->
+    obj = super
+    obj.brand = @majorBrandStr
+    obj.version = @minorVersion
+    return obj
+
 # mvhd
 class MovieHeaderBox extends Box
   read: (buf) ->
@@ -325,6 +342,15 @@ class MovieHeaderBox extends Box
 
   getDetails: (detailLevel) ->
     "created=#{formatDate @creationDate} modified=#{formatDate @modificationDate} timescale=#{@timescale} durationSeconds=#{@durationSeconds}"
+
+  getTree: ->
+    obj = super
+    obj.creationDate = @creationDate
+    obj.modificationDate = @modificationDate
+    obj.timescale = @timescale
+    obj.duration = @duration
+    obj.durationSeconds = @durationSeconds
+    return obj
 
 # Object Descriptor Box: contains an Object Descriptor or an Initial Object Descriptor
 # (iods)
@@ -393,6 +419,15 @@ class TrackHeaderBox extends Box
       str += " video; width=#{@width} height=#{@height}"
     return str
 
+  getTree: ->
+    obj = super
+    obj.creationDate = @creationDate
+    obj.modificationDate = @modificationDate
+    obj.isAudioTrack = @isAudioTrack
+    obj.width = @width
+    obj.height = @height
+    return obj
+
 # elst
 # Edit list box: explicit timeline map
 class EditListBox extends Box
@@ -436,6 +471,11 @@ class EditListBox extends Box
       "segmentDurationSeconds=#{entry.segmentDurationSeconds} mediaTime=#{entry.mediaTime} mediaRate=#{entry.mediaRate}"
     ).join(',')
 
+  getTree: ->
+    obj = super
+    obj.entries = @entries
+    return obj
+
 # Media Header Box (mdhd): declares overall information
 # Container: Media Box ('mdia')
 # Defined in ISO 14496-12
@@ -470,6 +510,16 @@ class MediaHeaderBox extends Box
   getDetails: (detailLevel) ->
     "created=#{formatDate @creationDate} modified=#{formatDate @modificationDate} timescale=#{@timescale} durationSeconds=#{@durationSeconds} lang=#{@language}"
 
+  getTree: ->
+    obj = super
+    obj.creationDate = @creationDate
+    obj.modificationDate = @modificationDate
+    obj.timescale = @timescale
+    obj.duration = @duration
+    obj.durationSeconds = @durationSeconds
+    obj.language = @language
+    return obj
+
 # Handler Reference Box (hdlr): declares the nature of the media in a track
 # Container: Media Box ('mdia') or Meta Box ('meta')
 # Defined in ISO 14496-12
@@ -492,6 +542,12 @@ class HandlerBox extends Box
 
   getDetails: (detailLevel) ->
     "handlerType=#{@handlerType} name=#{@name}"
+
+  getTree: ->
+    obj = super
+    obj.handlerType = @handlerType
+    obj.name = @name
+    return obj
 
 # Video Media Header Box (vmhd): general presentation information
 class VideoMediaHeaderBox extends Box
@@ -540,6 +596,11 @@ class DataEntryUrlBox extends Box
       "location=#{@location}"
     else
       "empty location value"
+
+  getTree: ->
+    obj = super
+    obj.location = @location
+    return obj
 
 # "urn "
 class DataEntryUrnBox extends Box
@@ -748,6 +809,11 @@ class TimeToSampleBox extends Box
     else
       "entryCount=#{@entryCount}"
 
+  getTree: ->
+    obj = super
+    obj.entries = @entries
+    return obj
+
 # stss
 class SyncSampleBox extends Box
   read: (buf) ->
@@ -765,6 +831,11 @@ class SyncSampleBox extends Box
       "sampleNumbers=#{@sampleNumbers.join ','}"
     else
       "entryCount=#{@entryCount}"
+
+  getTree: ->
+    obj = super
+    obj.sampleNumbers = @sampleNumbers
+    return obj
 
 # stsc
 class SampleToChunkBox extends Box
@@ -792,6 +863,11 @@ class SampleToChunkBox extends Box
     else
       "entryCount=#{@entryCount}"
 
+  getTree: ->
+    obj = super
+    obj.entries = @entries
+    return obj
+
 # stsz
 class SampleSizeBox extends Box
   read: (buf) ->
@@ -815,6 +891,14 @@ class SampleSizeBox extends Box
         str += " num_entrySizes=#{@entrySizes.length}"
     return str
 
+  getTree: ->
+    obj = super
+    obj.sampleSize = @sampleSize
+    obj.sampleCount = @sampleCount
+    if @entrySizes?
+      obj.entrySizes = @entrySizes
+    return obj
+
 # stco
 class ChunkOffsetBox extends Box
   read: (buf) ->
@@ -832,6 +916,11 @@ class ChunkOffsetBox extends Box
       "chunkOffsets=#{@chunkOffsets.join ','}"
     else
       "entryCount=#{@entryCount}"
+
+  getTree: ->
+    obj = super
+    obj.chunkOffsets = @chunkOffsets
+    return obj
 
 # smhd
 class SoundMediaHeaderBox extends Box
@@ -969,6 +1058,11 @@ class GenericDataBox extends Box
   getDetails: (detailLevel) ->
     return "#{@name}=#{@valueStr}"
 
+  getTree: ->
+    obj = super
+    obj.data = @valueStr
+    return obj
+
 # gsst: unknown
 class GoogleGSSTBox extends GenericDataBox
   read: (buf) ->
@@ -1031,6 +1125,13 @@ class MPEG4BitRateBox extends Box
   getDetails: (detailLevel) ->
     "bufferSizeDB=#{@bufferSizeDB} maxBitrate=#{@maxBitrate} avgBitrate=#{@avgBitrate}"
 
+  getTree: ->
+    obj = super
+    obj.bufferSizeDB = @bufferSizeDB
+    obj.maxBitrate = @maxBitrate
+    obj.avgBitrate = @avgBitrate
+    return obj
+
 # m4ds
 # Defined in ISO 14496-15
 class MPEG4ExtensionDescriptorsBox
@@ -1078,6 +1179,12 @@ class AVCConfigurationBox extends Box
     ).join(',') + ' pps=' + @pictureParameterSets.map((pps) ->
       "0x#{pps.toString 'hex'}"
     ).join(',')
+
+  getTree: ->
+    obj = super
+    obj.sps = @sequenceParameterSets.map((sps) -> [sps...])
+    obj.pps = @pictureParameterSets.map((pps) -> [pps...])
+    return obj
 
 # esds
 class ESDBox extends Box
@@ -1206,6 +1313,13 @@ class ESDBox extends Box
 
   getDetails: (detailLevel) ->
     "audioSpecificConfig=0x#{@decoderConfigDescriptor.decoderSpecificInfo.specificInfo.toString 'hex'} maxBitrate=#{@decoderConfigDescriptor.maxBitrate} avgBitrate=#{@decoderConfigDescriptor.avgBitrate}"
+
+  getTree: ->
+    obj = super
+    obj.audioSpecificConfig = [@decoderConfigDescriptor.decoderSpecificInfo.specificInfo...]
+    obj.maxBitrate = @decoderConfigDescriptor.maxBitrate
+    obj.avgBitrate = @decoderConfigDescriptor.avgBitrate
+    return obj
 
 # mp4a
 # Defined in ISO 14496-14
