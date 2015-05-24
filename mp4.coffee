@@ -1350,5 +1350,9 @@ class CompositionOffsetBox extends Box
 # (copyright sign) + 'too'
 class CTOOBox extends GenericDataBox
 
-mp4file = new MP4File 'example.mp4'
+if process.argv.length < 3
+  console.log "Error: specify an mp4 filename"
+  return 1
+
+mp4file = new MP4File process.argv[2]
 mp4file.parse()
