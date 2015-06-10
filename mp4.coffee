@@ -840,7 +840,8 @@ class TimeToSampleBox extends Box
     obj.entries = @entries
     return obj
 
-# stss
+# stss: random access points
+# If stss is not present, every sample is a random access point.
 class SyncSampleBox extends Box
   read: (buf) ->
     bits = new Bits buf
@@ -848,8 +849,13 @@ class SyncSampleBox extends Box
 
     @entryCount = bits.read_uint32()
     @sampleNumbers = []
+    lastSampleNumber = -1
     for i in [0...@entryCount]
-      @sampleNumbers.push bits.read_uint32()
+      sampleNumber = bits.read_uint32()
+      if sampleNumber < lastSampleNumber
+        throw new Error "stss: sample number must be in increasing order: #{sampleNumber} < #{lastSampleNumber}"
+      lastSampleNumber = sampleNumber
+      @sampleNumbers.push sampleNumber
     return
 
   getDetails: (detailLevel) ->
