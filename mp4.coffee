@@ -623,8 +623,7 @@ class DataEntryUrnBox extends Box
       @location = null
     return
 
-# Sample Description Box (stsd): information about the coding type used,
-# and any initialization information
+# Sample Description Box (stsd): coding type and any initialization information
 # Defined in ISO 14496-12
 class SampleDescriptionBox extends Box
   read: (buf) ->
@@ -799,20 +798,42 @@ class TimeToSampleBox extends Box
     @entryCount = bits.read_uint32()
     @entries = []
     for i in [0...@entryCount]
+      # number of consecutive samples that have the given duration
       sampleCount = bits.read_uint32()
+      # delta of these samples in the time-scale of the media
       sampleDelta = bits.read_uint32()
+      if sampleDelta < 0
+        throw new Error "stts: negative sampleDelta is not allowed: #{sampleDelta}"
       @entries.push
         sampleCount: sampleCount
         sampleDelta: sampleDelta
     return
 
+  getTotalLength: ->
+    time = 0
+    for entry in @entries
+      time += entry.sampleDelta * entry.sampleCount
+    return time
+
+  # Returns a decoding time for the given sample number
+  getDecodingTime: (sampleNumber) ->
+    time = 0
+    for entry in @entries
+      if sampleNumber > entry.sampleCount
+        time += entry.sampleDelta * entry.sampleCount
+        sampleNumber -= entry.sampleCount
+      else
+        time += entry.sampleDelta * sampleNumber
+        break
+    return time
+
   getDetails: (detailLevel) ->
+    str = "entryCount=#{@entryCount}"
     if detailLevel >= 2
-      @entries.map((entry) ->
+      str += ' ' + @entries.map((entry) ->
         "sampleCount=#{entry.sampleCount} sampleDelta=#{entry.sampleDelta}"
       ).join(',')
-    else
-      "entryCount=#{@entryCount}"
+    return str
 
   getTree: ->
     obj = super
