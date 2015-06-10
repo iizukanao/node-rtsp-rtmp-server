@@ -900,19 +900,30 @@ class SampleToChunkBox extends Box
     obj.entries = @entries
     return obj
 
-# stsz
+# stsz: sample sizes
 class SampleSizeBox extends Box
   read: (buf) ->
     bits = new Bits buf
     @readFullBoxHeader bits
 
+    # Default sample size
+    # 0: samples have different sizes
     @sampleSize = bits.read_uint32()
+
+    # Number of samples in the track
     @sampleCount = bits.read_uint32()
     if @sampleSize is 0
       @entrySizes = []
       for i in [1..@sampleCount]
         @entrySizes.push bits.read_uint32()
     return
+
+  # Returns the sample size for the given sample number
+  getSampleSize: (sampleNumber) ->
+    if @sampleSize is 0  # the samples have different sizes
+      return @entrySizes
+    else  # all samples are the same size
+      return @entrySizes[sampleNumber]  # TODO: sampleNumber - 1?
 
   getDetails: (detailLevel) ->
     str = "sampleSize=#{@sampleSize} sampleCount=#{@sampleCount}"
