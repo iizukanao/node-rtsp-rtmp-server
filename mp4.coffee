@@ -809,11 +809,28 @@ class TimeToSampleBox extends Box
         sampleDelta: sampleDelta
     return
 
+  # Returns the total length of this media in seconds
   getTotalLength: ->
+    # mdia
+    #   mdhd <- find target
+    #   hdlr
+    #   minf
+    #     vmhd
+    #     dinf
+    #       dref
+    #         url
+    #     stbl
+    #       stsd
+    #         avc1
+    #           avcC
+    #           btrt
+    #       stts <- self
+    mdhdBox = @findParent('mdia').find('mdhd')
+
     time = 0
     for entry in @entries
       time += entry.sampleDelta * entry.sampleCount
-    return time
+    return time / mdhdBox.timescale
 
   # Returns a decoding time for the given sample number
   getDecodingTime: (sampleNumber) ->
