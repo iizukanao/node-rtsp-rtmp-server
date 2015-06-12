@@ -886,7 +886,7 @@ class SyncSampleBox extends Box
     obj.sampleNumbers = @sampleNumbers
     return obj
 
-# stsc
+# stsc: sample-to-chunk, partial data-offset information
 class SampleToChunkBox extends Box
   read: (buf) ->
     bits = new Bits buf
@@ -902,7 +902,32 @@ class SampleToChunkBox extends Box
         firstChunk: firstChunk
         samplesPerChunk: samplesPerChunk
         sampleDescriptionIndex: sampleDescriptionIndex
+
+    # Determine the number of chunks of each entry
+    endIndex = @entries.length - 1
+    for i in [0...endIndex]
+      if i is endIndex
+        break
+      @entries[i].numChunks = @entries[i+1].firstChunk - @entries[i].firstChunk
+
     return
+
+  getNumSamplesInChunk: (chunk) ->
+    for entry in @entries
+      if not entry.numChunks?
+        return null  # the last chunk
+      if chunk < entry.firstChunk + entry.numChunks
+        return entry.samplesPerChunk * entry.numChunks
+    throw new Error "Chunk not found: #{chunk}"
+
+  findChunk: (sampleNumber) ->
+    for entry in @entries
+      if not entry.numChunks?
+        return entry.firstChunk + Math.floor((sampleNumber-1) / entry.samplesPerChunk)
+      if sampleNumber <= entry.samplesPerChunk * entry.numChunks
+        return entry.firstChunk + Math.floor((sampleNumber-1) / entry.samplesPerChunk)
+      sampleNumber -= entry.samplesPerChunk * entry.numChunks
+    throw new Error "Chunk for sample number #{sampleNumber} is not found"
 
   getDetails: (detailLevel) ->
     if detailLevel >= 2
