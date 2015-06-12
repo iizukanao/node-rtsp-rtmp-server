@@ -917,7 +917,7 @@ class SampleToChunkBox extends Box
       if not entry.numChunks?
         return null  # the last chunk
       if chunk < entry.firstChunk + entry.numChunks
-        return entry.samplesPerChunk * entry.numChunks
+        return entry.samplesPerChunk
     throw new Error "Chunk not found: #{chunk}"
 
   findChunk: (sampleNumber) ->
