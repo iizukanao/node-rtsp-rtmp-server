@@ -984,7 +984,7 @@ class SampleSizeBox extends Box
       obj.entrySizes = @entrySizes
     return obj
 
-# stco
+# stco: index of each chunk
 class ChunkOffsetBox extends Box
   read: (buf) ->
     bits = new Bits buf
@@ -995,6 +995,11 @@ class ChunkOffsetBox extends Box
     for i in [1..@entryCount]
       @chunkOffsets.push bits.read_uint32()
     return
+
+  getChunkOffset: (chunkNumber) ->
+    if (chunkNumber < 0) or (chunkNumber >= @chunkOffsets.length)
+      throw new Error "Chunk number of out of range: #{chunkNumber}"
+    return @chunkOffsets[chunkNumber - 1]
 
   getDetails: (detailLevel) ->
     if detailLevel >= 2
