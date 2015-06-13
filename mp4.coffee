@@ -1003,7 +1003,7 @@ class ChunkOffsetBox extends Box
     return
 
   getChunkOffset: (chunkNumber) ->
-    if (chunkNumber < 0) or (chunkNumber >= @chunkOffsets.length)
+    if (chunkNumber <= 0) or (chunkNumber > @chunkOffsets.length)
       throw new Error "Chunk number of out of range: #{chunkNumber}"
     return @chunkOffsets[chunkNumber - 1]
 
