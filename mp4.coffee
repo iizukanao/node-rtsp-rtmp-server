@@ -809,6 +809,12 @@ class TimeToSampleBox extends Box
         sampleDelta: sampleDelta
     return
 
+  getTotalSamples: ->
+    samples = 0
+    for entry in @entries
+      samples += entry.sampleCount
+    return samples
+
   # Returns the total length of this media in seconds
   getTotalLength: ->
     # mdia
