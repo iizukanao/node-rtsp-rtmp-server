@@ -1,10 +1,19 @@
 Bits = require './bits'
+EventEmitterModule = require './event_emitter'
+Sequent = require 'sequent'
 fs = require 'fs'
 
 formatDate = (date) ->
   date.toISOString()
 
 TAG_CTOO = new Buffer([0xa9, 0x74, 0x6f, 0x6f]).toString 'utf8'
+MIN_TIME_DIFF = 0.01  # seconds
+READ_BUFFER_TIME = 3.0
+QUEUE_BUFFER_TIME = 1.5
+
+getCurrentTime = ->
+  time = process.hrtime()
+  return time[0] + time[1] / 1e9
 
 class MP4File
   constructor: (filename) ->
@@ -13,7 +22,8 @@ class MP4File
 
   open: (filename) ->
     startTime = process.hrtime()
-    @bits = new Bits fs.readFileSync filename  # up to 1GB
+    @fileBuf = fs.readFileSync filename  # up to 1GB
+    @bits = new Bits @fileBuf
     diffTime = process.hrtime startTime
     console.log "took #{(diffTime[0] * 1e9 + diffTime[1]) / 1000000} ms to read"
 
@@ -25,14 +35,241 @@ class MP4File
     @tree = { boxes: [] }
     while @bits.has_more_data()
       box = Box.parse @bits, null  # null == root box
-      process.stdout.write box.dump 0, 1
+      if box instanceof MovieBox
+        @moovBox = box
+      else if box instanceof MediaDataBox
+        @mdatBox = box
+#      process.stdout.write box.dump 0, 1
       @tree.boxes.push box.getTree()
-      if box instanceof MediaDataBox  # found mdat
-        console.log box
     diffTime = process.hrtime startTime
     console.log "took #{(diffTime[0] * 1e9 + diffTime[1]) / 1000000} ms to parse"
     console.log "EOF"
+
+    for child in @moovBox.children
+      if child instanceof TrackBox  # trak
+        tkhdBox = child.find 'tkhd'
+        if tkhdBox.isAudioTrack
+          @audioTrakBox = child
+        else
+          @videoTrakBox = child
+
     return
+
+  getSPS: ->
+    avcCBox = @videoTrakBox.find 'avcC'
+    return avcCBox.sequenceParameterSets[0]
+
+  getPPS: ->
+    avcCBox = @videoTrakBox.find 'avcC'
+    return avcCBox.pictureParameterSets[0]
+
+  getAudioSpecificConfig: ->
+    esdsBox = @audioTrakBox.find 'esds'
+    return esdsBox.decoderConfigDescriptor.decoderSpecificInfo.specificInfo
+
+  play: ->
+    @currentTime = 0
+    @consumedAudioSamples = 0
+    @consumedVideoSamples = 0
+    @consumedAudioChunks = 0
+    @consumedVideoChunks = 0
+    startTime = process.hrtime()
+    @numVideoSamples = @getNumVideoSamples()
+    @numAudioSamples = @getNumAudioSamples()
+
+    seq = new Sequent
+
+    @bufferedAudioTime = 0
+    @bufferedVideoTime = 0
+    @queuedAudioTime = 0
+    @queuedVideoTime = 0
+    @currentPlayTime = 0
+    @playStartTime = getCurrentTime()
+    @bufferedAudioSamples = []
+    @bufferedVideoSamples = []
+
+    @isAudioEOF = false
+    @isVideoEOF = false
+
+    @bufferAudio =>
+      # audio samples has been buffered
+      seq.done()
+
+    @bufferVideo =>
+      # video samples has been buffered
+      seq.done()
+
+    seq.wait 2, =>
+      # ready to play
+      @startStreaming()
+
+  checkAudioBuffer: ->
+    timeDiff = @bufferedAudioTime - @currentPlayTime
+    if timeDiff < READ_BUFFER_TIME
+      # fill buffer
+      if @readNextAudioChunk()
+        @queueBufferedSamples()
+    else
+      @queueBufferedSamples()
+    return
+
+  checkVideoBuffer: ->
+    timeDiff = @bufferedVideoTime - @currentPlayTime
+    if timeDiff < READ_BUFFER_TIME
+      if @readNextVideoChunk()
+        @queueBufferedSamples()
+    else
+      @queueBufferedSamples()
+    return
+
+  startStreaming: ->
+    @queueBufferedSamples()
+
+  updateCurrentPlayTime: ->
+    @currentPlayTime = getCurrentTime() - @playStartTime
+
+  queueBufferedAudioSamples: ->
+    audioSample = @bufferedAudioSamples.shift()
+    if not audioSample?  # @bufferedAudioSamples is empty
+      return
+    timeDiff = audioSample.time - @currentPlayTime
+    if timeDiff <= MIN_TIME_DIFF
+      @emit 'audio_data', audioSample.data, audioSample.pts
+      @updateCurrentPlayTime()
+    else
+      setTimeout =>
+        @emit 'audio_data', audioSample.data, audioSample.pts
+        @updateCurrentPlayTime()
+        @checkAudioBuffer()
+      , timeDiff * 1000
+    @queuedAudioTime = audioSample.time
+    if @queuedAudioTime - @currentPlayTime < QUEUE_BUFFER_TIME
+      @queueBufferedSamples()
+
+  queueBufferedVideoSamples: ->
+    videoSample = @bufferedVideoSamples.shift()
+    if not videoSample?  # read buffer is empty
+      return
+    timeDiff = videoSample.time - @currentPlayTime
+    if timeDiff <= MIN_TIME_DIFF
+      console.log "emit1"
+      @emit 'video_data', videoSample.data, videoSample.pts
+      @updateCurrentPlayTime()
+    else
+      setTimeout =>
+        @emit 'video_data', videoSample.data, videoSample.pts
+        @updateCurrentPlayTime()
+        @checkVideoBuffer()
+      , timeDiff * 1000
+    @queuedVideoTime = videoSample.time
+    if @queuedVideoTime - @currentPlayTime < QUEUE_BUFFER_TIME
+      @queueBufferedSamples()
+
+  queueBufferedSamples: ->
+    @queueBufferedAudioSamples()
+    @queueBufferedVideoSamples()
+
+  bufferAudio: (callback) ->
+    # TODO: Use async
+    while @bufferedAudioTime < @currentPlayTime + READ_BUFFER_TIME
+      if not @readNextAudioChunk()
+        @isAudioEOF = true
+    callback?()
+
+  bufferVideo: (callback) ->
+    # TODO: Use async
+    while @bufferedVideoTime < @currentPlayTime + READ_BUFFER_TIME
+      if not @readNextVideoChunk()
+        @isVideoEOF = true
+    callback?()
+
+  getNumVideoSamples: ->
+    sttsBox = @videoTrakBox.find 'stts'
+    return sttsBox.getTotalSamples()
+
+  getNumAudioSamples: ->
+    sttsBox = @audioTrakBox.find 'stts'
+    return sttsBox.getTotalSamples()
+
+  parseH264Sample: (buf) ->
+    # The format is defined in ISO 14496-15 5.2.3
+
+    # Why do we need a length header here even we
+    # already have the same data in stsz box???
+    avcCBox = @videoTrakBox.find 'avcC'
+    lengthSize = avcCBox.lengthSizeMinusOne + 1
+    bits = new Bits buf
+    length = bits.read_bits lengthSize * 8
+    nalUnitType = bits.get_byte_at(0) & 0x1f
+    bits.skip_bytes length
+
+    if bits.get_remaining_bits() isnt 0
+      throw new Error "remaining bits is not zero: #{bits.get_remaining_bits()}"
+
+  readChunk: (chunkNumber, sampleNumber, trakBox) ->
+    sttsBox = trakBox.find 'stts'
+    stscBox = trakBox.find 'stsc'
+    numSamplesInChunk = stscBox.getNumSamplesInChunk chunkNumber
+    stcoBox = trakBox.find 'stco'
+    chunkOffset = stcoBox.getChunkOffset chunkNumber
+    stszBox = trakBox.find 'stsz'
+    sampleSizes = stszBox.getSampleSizes sampleNumber, numSamplesInChunk
+    chunkLength = stszBox.getSampleSize sampleNumber, numSamplesInChunk
+    samples = []
+    sampleOffset = 0
+    for sampleSize, i in sampleSizes
+      sampleTime = sttsBox.getDecodingTime sampleNumber + i
+      samples.push {
+        pts: sampleTime.pts
+        time: sampleTime.seconds
+        data: @fileBuf[chunkOffset+sampleOffset...chunkOffset+sampleOffset+sampleSize]
+      }
+      sampleOffset += sampleSize
+
+    return samples
+
+  readNextVideoChunk: ->
+    if @consumedVideoSamples >= @numVideoSamples
+      return false
+    nextChunkNumber = @consumedVideoChunks + 1
+    nextSampleNumber = @consumedVideoSamples + 1
+
+    samples = @readChunk nextChunkNumber, nextSampleNumber, @videoTrakBox
+
+    for sample in samples
+#      @parseH264Sample sample.data
+      # Remove length header
+      sample.data = sample.data[4..]
+
+    @consumedVideoChunks++
+    @consumedVideoSamples += samples.length
+    @bufferedVideoTime = samples[samples.length-1].time
+    @bufferedVideoSamples = @bufferedVideoSamples.concat samples
+
+    return true
+
+  parseAACSample: (buf) ->
+    # nop
+
+  readNextAudioChunk: ->
+    if @consumedAudioSamples >= @numAudioSamples
+      return false
+    nextChunkNumber = @consumedAudioChunks + 1
+    nextSampleNumber = @consumedAudioSamples + 1
+
+    samples = @readChunk nextChunkNumber, nextSampleNumber, @audioTrakBox
+
+#    for sample in samples
+#      @parseAACSample sample.data
+
+    @consumedAudioChunks++
+    @consumedAudioSamples += samples.length
+    @bufferedAudioTime = samples[samples.length-1].time
+    @bufferedAudioSamples = @bufferedAudioSamples.concat samples
+
+    return true
+
+EventEmitterModule.mixin MP4File
 
 class Box
   # time: seconds since midnight, Jan. 1, 1904 UTC
@@ -838,8 +1075,12 @@ class TimeToSampleBox extends Box
       time += entry.sampleDelta * entry.sampleCount
     return time / mdhdBox.timescale
 
-  # Returns a decoding time for the given sample number
+  # Returns a decoding time for the given sample number.
+  # The sample number starts at 1.
   getDecodingTime: (sampleNumber) ->
+    mdhdBox = @findParent('mdia').find('mdhd')
+
+    sampleNumber--
     time = 0
     for entry in @entries
       if sampleNumber > entry.sampleCount
@@ -848,7 +1089,15 @@ class TimeToSampleBox extends Box
       else
         time += entry.sampleDelta * sampleNumber
         break
-    return time
+    if mdhdBox.timescale isnt 90000
+      pts = Math.round(time * 90000 / mdhdBox.timescale)
+    else
+      pts = time
+    return {
+      time: time
+      seconds: time / mdhdBox.timescale
+      pts: pts
+    }
 
   getDetails: (detailLevel) ->
     str = "entryCount=#{@entryCount}"
@@ -918,10 +1167,19 @@ class SampleToChunkBox extends Box
 
     return
 
+  getNumSamplesExceptLastChunk: ->
+    samples = 0
+    for entry in @entries
+      if entry.numChunks?
+        samples += entry.samplesPerChunk * entry.numChunks
+    return samples
+
   getNumSamplesInChunk: (chunk) ->
     for entry in @entries
       if not entry.numChunks?
-        return null  # the last chunk
+        # TOOD: too heavy
+        sttsBox = @findParent('stbl').find 'stts'
+        return sttsBox.getTotalSamples() - @getNumSamplesExceptLastChunk()
       if chunk < entry.firstChunk + entry.numChunks
         return entry.samplesPerChunk
     throw new Error "Chunk not found: #{chunk}"
@@ -966,12 +1224,29 @@ class SampleSizeBox extends Box
         @entrySizes.push bits.read_uint32()
     return
 
+  getSampleSizes: (sampleNumber, len=1) ->
+    sizes = []
+    if @sampleSize isnt 0
+      for i in [len...0]
+        sizes.push @sampleSize
+    else
+      for i in [len...0]
+        sizes.push @entrySizes[sampleNumber - 1]
+        sampleNumber++
+    return sizes
+
   # Returns the sample size for the given sample number
-  getSampleSize: (sampleNumber) ->
-    if @sampleSize is 0  # the samples have different sizes
-      return @entrySizes
-    else  # all samples are the same size
-      return @entrySizes[sampleNumber]  # TODO: sampleNumber - 1?
+  getSampleSize: (sampleNumber, len=1) ->
+    if @sampleSize isnt 0  # all samples are the same size
+      return @sampleSize * len
+    else  # the samples have different sizes
+      totalLength = 0
+      for i in [len...0]
+        if sampleNumber > @entrySizes.length
+          throw new Error "Sample number is out of range: #{sampleNumber} > #{@entrySizes.length}"
+        totalLength += @entrySizes[sampleNumber - 1]  # TODO: Is -1 correct?
+        sampleNumber++
+      return totalLength
 
   getDetails: (detailLevel) ->
     str = "sampleSize=#{@sampleSize} sampleCount=#{@sampleCount}"
@@ -1441,9 +1716,45 @@ class CompositionOffsetBox extends Box
 # (copyright sign) + 'too'
 class CTOOBox extends GenericDataBox
 
+
+# test
 if process.argv.length < 3
   console.log "Error: specify an mp4 filename"
   return 1
 
 mp4file = new MP4File process.argv[2]
+lastAudioReceivedTime = null
+lastAudioActualTime = null
+mp4file.on 'audio_data', (data, pts) ->
+  console.log "received audio_data: pts=#{pts} time=#{pts / 90000}"
+  currentTime = getCurrentTime()
+  if lastAudioReceivedTime?
+    receivedDiff = mp4file.currentPlayTime - lastAudioReceivedTime
+    actualDiff = currentTime - lastAudioActualTime
+    timeDiff = receivedDiff - actualDiff
+    if Math.abs(timeDiff) >= 0.1
+      throw new Error "ERROR: too much audio time difference: lastAudioReceivedTime=#{lastAudioReceivedTime} playTime=#{mp4file.currentPlayTime} lastAudioActualTime=#{lastAudioActualTime} currentTime=#{currentTime} received=#{receivedDiff} actual=#{actualDiff} diff=#{timeDiff}"
+  lastAudioReceivedTime = mp4file.currentPlayTime
+  lastAudioActualTime = currentTime
+
+lastVideoReceivedTime = null
+lastVideoActualTime = null
+mp4file.on 'video_data', (data, pts) ->
+  console.log "received video_data: pts=#{pts} time=#{pts / 90000}"
+  currentTime = getCurrentTime()
+  if lastVideoReceivedTime?
+    receivedDiff = mp4file.currentPlayTime - lastVideoReceivedTime
+    actualDiff = currentTime - lastVideoActualTime
+    timeDiff = receivedDiff - actualDiff
+    if Math.abs(timeDiff) >= 0.1
+      throw new Error "ERROR: too much video time difference: lastVideoReceivedTime=#{lastVideoReceivedTime} playTime=#{mp4file.currentPlayTime} lastVideoActualTime=#{lastVideoActualTime} currentTime=#{currentTime} received=#{receivedDiff} actual=#{actualDiff} diff=#{timeDiff}"
+  lastVideoReceivedTime = mp4file.currentPlayTime
+  lastVideoActualTime = currentTime
+
 mp4file.parse()
+mp4file.play()
+
+api =
+  MP4File: MP4File
+
+module.exports = api
