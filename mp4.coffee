@@ -1717,43 +1717,6 @@ class CompositionOffsetBox extends Box
 class CTOOBox extends GenericDataBox
 
 
-# test
-if process.argv.length < 3
-  console.log "Error: specify an mp4 filename"
-  return 1
-
-mp4file = new MP4File process.argv[2]
-lastAudioReceivedTime = null
-lastAudioActualTime = null
-mp4file.on 'audio_data', (data, pts) ->
-  console.log "received audio_data: pts=#{pts} time=#{pts / 90000}"
-  currentTime = getCurrentTime()
-  if lastAudioReceivedTime?
-    receivedDiff = mp4file.currentPlayTime - lastAudioReceivedTime
-    actualDiff = currentTime - lastAudioActualTime
-    timeDiff = receivedDiff - actualDiff
-    if Math.abs(timeDiff) >= 0.1
-      throw new Error "ERROR: too much audio time difference: lastAudioReceivedTime=#{lastAudioReceivedTime} playTime=#{mp4file.currentPlayTime} lastAudioActualTime=#{lastAudioActualTime} currentTime=#{currentTime} received=#{receivedDiff} actual=#{actualDiff} diff=#{timeDiff}"
-  lastAudioReceivedTime = mp4file.currentPlayTime
-  lastAudioActualTime = currentTime
-
-lastVideoReceivedTime = null
-lastVideoActualTime = null
-mp4file.on 'video_data', (data, pts) ->
-  console.log "received video_data: pts=#{pts} time=#{pts / 90000}"
-  currentTime = getCurrentTime()
-  if lastVideoReceivedTime?
-    receivedDiff = mp4file.currentPlayTime - lastVideoReceivedTime
-    actualDiff = currentTime - lastVideoActualTime
-    timeDiff = receivedDiff - actualDiff
-    if Math.abs(timeDiff) >= 0.1
-      throw new Error "ERROR: too much video time difference: lastVideoReceivedTime=#{lastVideoReceivedTime} playTime=#{mp4file.currentPlayTime} lastVideoActualTime=#{lastVideoActualTime} currentTime=#{currentTime} received=#{receivedDiff} actual=#{actualDiff} diff=#{timeDiff}"
-  lastVideoReceivedTime = mp4file.currentPlayTime
-  lastVideoActualTime = currentTime
-
-mp4file.parse()
-mp4file.play()
-
 api =
   MP4File: MP4File
 
