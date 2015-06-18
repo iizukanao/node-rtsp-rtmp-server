@@ -1,6 +1,19 @@
+crypto = require 'crypto'
+
 h264 = require './h264'
 EventEmitterModule = require './event_emitter'
 logger = require './logger'
+
+createStreamId = ->
+  try
+    buf = crypto.randomBytes 256
+  catch e
+    logger.error "crypto.randomBytes() failed: #{e}"
+    buf = crypto.pseudoRandomBytes 256
+
+  shasum = crypto.createHash 'sha512'
+  shasum.update buf
+  return shasum.digest 'hex'
 
 class AVStream
   constructor: (id) ->
@@ -177,7 +190,21 @@ api =
   get: (streamId) ->
     return streams[streamId]
 
+  createNewStreamId: ->
+    retryCount = 0
+    loop
+      id = createStreamId()
+      if not api.exists id
+        return id
+      retryCount++
+      if retryCount >= 100
+        throw new Error "avstreams.createNewStreamId: Too many retries"
+
+  # Creates a new stream.
+  # If streamId is not given, a unique id will be generated.
   create: (streamId) ->
+    if not streamId?
+      streamId = api.createNewStreamId()
     stream = new AVStream streamId
     api.emit 'new', stream
     api.add stream
