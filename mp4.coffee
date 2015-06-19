@@ -1517,12 +1517,12 @@ class AVCConfigurationBox extends Box
     @profileCompatibility = bits.read_byte()
     @AVCLevelIndication = bits.read_byte()
     reserved = bits.read_bits 6
-    if reserved isnt 0b111111
-      throw new Error "AVCConfigurationBox: reserved-1 is not #{0b111111} (got #{reserved})"
+#    if reserved isnt 0b111111  # XXX: not always 0b111111?
+#      throw new Error "AVCConfigurationBox: reserved-1 is not #{0b111111} (got #{reserved})"
     @lengthSizeMinusOne = bits.read_bits 2
     reserved = bits.read_bits 3
-    if reserved isnt 0b111
-      throw new Error "AVCConfigurationBox: reserved-2 is not #{0b111} (got #{reserved})"
+#    if reserved isnt 0b111  # XXX: not always 0b111?
+#      throw new Error "AVCConfigurationBox: reserved-2 is not #{0b111} (got #{reserved})"
 
     # SPS
     @numOfSequenceParameterSets = bits.read_bits 5
