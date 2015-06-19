@@ -33,6 +33,7 @@ class MP4File
   parse: ->
     startTime = process.hrtime()
     @tree = { boxes: [] }
+    @boxes = []
     while @bits.has_more_data()
       box = Box.parse @bits, null  # null == root box
       if box instanceof MovieBox
@@ -41,6 +42,7 @@ class MP4File
         @mdatBox = box
 #      process.stdout.write box.dump 0, 1
       @tree.boxes.push box.getTree()
+      @boxes.push box
     diffTime = process.hrtime startTime
     console.log "took #{(diffTime[0] * 1e9 + diffTime[1]) / 1000000} ms to parse"
     console.log "EOF"
@@ -53,6 +55,13 @@ class MP4File
         else
           @videoTrakBox = child
 
+    return
+
+  dump: ->
+    if not @boxes?
+      throw new Error "parse() must be called before dump"
+    for box in @boxes
+      process.stdout.write box.dump 0, 1
     return
 
   getSPS: ->
