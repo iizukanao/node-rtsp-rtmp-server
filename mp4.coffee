@@ -11,6 +11,8 @@ MIN_TIME_DIFF = 0.01  # seconds
 READ_BUFFER_TIME = 3.0
 QUEUE_BUFFER_TIME = 1.5
 
+DEBUG = false
+
 getCurrentTime = ->
   time = process.hrtime()
   return time[0] + time[1] / 1e9
@@ -21,18 +23,21 @@ class MP4File
       @open filename
 
   open: (filename) ->
-    startTime = process.hrtime()
+    if DEBUG
+      startTime = process.hrtime()
     @fileBuf = fs.readFileSync filename  # up to 1GB
     @bits = new Bits @fileBuf
-    diffTime = process.hrtime startTime
-    console.log "took #{(diffTime[0] * 1e9 + diffTime[1]) / 1000000} ms to read"
+    if DEBUG
+      diffTime = process.hrtime startTime
+      console.log "took #{(diffTime[0] * 1e9 + diffTime[1]) / 1000000} ms to read"
 
   close: ->
     @bits = null
 
   parse: ->
-    startTime = process.hrtime()
     @tree = { boxes: [] }
+    if DEBUG
+      startTime = process.hrtime()
     @boxes = []
     while @bits.has_more_data()
       box = Box.parse @bits, null  # null == root box
@@ -43,9 +48,10 @@ class MP4File
 #      process.stdout.write box.dump 0, 1
       @tree.boxes.push box.getTree()
       @boxes.push box
-    diffTime = process.hrtime startTime
-    console.log "took #{(diffTime[0] * 1e9 + diffTime[1]) / 1000000} ms to parse"
-    console.log "EOF"
+    if DEBUG
+      diffTime = process.hrtime startTime
+      console.log "took #{(diffTime[0] * 1e9 + diffTime[1]) / 1000000} ms to parse"
+      console.log "EOF"
 
     for child in @moovBox.children
       if child instanceof TrackBox  # trak
