@@ -152,7 +152,6 @@ class MP4File
       return
     timeDiff = videoSample.time - @currentPlayTime
     if timeDiff <= MIN_TIME_DIFF
-      console.log "emit1"
       @emit 'video_data', videoSample.data, videoSample.pts
       @updateCurrentPlayTime()
     else
