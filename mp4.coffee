@@ -35,7 +35,6 @@ class MP4File
     @bits = null
 
   parse: ->
-    @tree = { boxes: [] }
     if DEBUG
       startTime = process.hrtime()
     @boxes = []
@@ -45,8 +44,6 @@ class MP4File
         @moovBox = box
       else if box instanceof MediaDataBox
         @mdatBox = box
-#      process.stdout.write box.dump 0, 1
-      @tree.boxes.push box.getTree()
       @boxes.push box
     if DEBUG
       diffTime = process.hrtime startTime
@@ -62,6 +59,14 @@ class MP4File
           @videoTrakBox = child
 
     return
+
+  getTree: ->
+    if not @boxes?
+      throw new Error "parse() must be called before dump"
+    tree = { root: [] }
+    for box in @boxes
+      tree.root.push box.getTree()
+    return tree
 
   dump: ->
     if not @boxes?
