@@ -1269,7 +1269,7 @@ class SampleSizeBox extends Box
 
   getDetails: (detailLevel) ->
     str = "sampleSize=#{@sampleSize} sampleCount=#{@sampleCount}"
-    if @entires?
+    if @entrySizes?
       if detailLevel >= 2
         str += " entrySizes=#{@entrySizes.join ','}"
       else
