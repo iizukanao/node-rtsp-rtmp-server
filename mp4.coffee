@@ -1198,7 +1198,7 @@ class SampleToChunkBox extends Box
       if not entry.numChunks?
         # TOOD: too heavy
         sttsBox = @findParent('stbl').find 'stts'
-        return sttsBox.getTotalSamples() - @getNumSamplesExceptLastChunk()
+        return entry.samplesPerChunk
       if chunk < entry.firstChunk + entry.numChunks
         return entry.samplesPerChunk
     throw new Error "Chunk not found: #{chunk}"
