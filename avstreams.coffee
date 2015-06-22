@@ -130,13 +130,13 @@ class AVStream
         logger.debug "[stream:#{@id}] video avcprofile: #{@videoAVCProfile}"
         isConfigUpdated = true
       if isConfigUpdated
-        logger.debug "[stream:#{@id}] updated SPS"
+        logger.debug "[stream:#{@id}] updated SPS: 0x#{nalUnit.toString 'hex'}"
         @emit 'updateConfig'
 
   # nal_unit_type 8
   updatePPS: (nalUnit) ->
     if (not @ppsNALUnit?) or (nalUnit.compare(@ppsNALUnit) isnt 0)
-      logger.debug "[stream:#{@id}] updated PPS"
+      logger.debug "[stream:#{@id}] updated PPS: 0x#{nalUnit.toString 'hex'}"
       @ppsNALUnit = nalUnit
       @updateSpropParam nalUnit
       @emit 'updateConfig'
