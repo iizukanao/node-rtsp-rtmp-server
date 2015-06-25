@@ -212,18 +212,22 @@ class MP4File
 
   parseH264Sample: (buf) ->
     # The format is defined in ISO 14496-15 5.2.3
+    # <length><NAL unit> <length><NAL unit> ...
 
-    # Why do we need a length header here even we
-    # already have the same data in stsz box???
     avcCBox = @videoTrakBox.find 'avcC'
     lengthSize = avcCBox.lengthSizeMinusOne + 1
     bits = new Bits buf
-    length = bits.read_bits lengthSize * 8
-    nalUnitType = bits.get_byte_at(0) & 0x1f
-    bits.skip_bytes length
+
+    nalUnits = []
+
+    while bits.has_more_data()
+      length = bits.read_bits lengthSize * 8
+      nalUnits.push bits.read_bytes(length)
 
     if bits.get_remaining_bits() isnt 0
-      throw new Error "remaining bits is not zero: #{bits.get_remaining_bits()}"
+      throw new Error "number of remaining bits is not zero: #{bits.get_remaining_bits()}"
+
+    return nalUnits
 
   readChunk: (chunkNumber, sampleNumber, trakBox) ->
     sttsBox = trakBox.find 'stts'
@@ -255,13 +259,26 @@ class MP4File
 
     samples = @readChunk nextChunkNumber, nextSampleNumber, @videoTrakBox
 
-    for sample in samples
-#      @parseH264Sample sample.data
-      # Remove length header
-      sample.data = sample.data[4..]
+    numSamples = samples.length
+    index = 0
+    # The size of samples array may be altered in-place
+    while index < samples.length
+      nalUnits = @parseH264Sample samples[index].data
+      if nalUnits.length >= 1
+        pts = samples[index].pts
+        time = samples[index].time
+
+        samples[index].data = nalUnits[0]
+        for nalUnit in nalUnits[1..]
+          index++
+          samples[index...index] =
+            pts: pts
+            time: time
+            data: nalUnit
+      index++
 
     @consumedVideoChunks++
-    @consumedVideoSamples += samples.length
+    @consumedVideoSamples += numSamples
     @bufferedVideoTime = samples[samples.length-1].time
     @bufferedVideoSamples = @bufferedVideoSamples.concat samples
 
