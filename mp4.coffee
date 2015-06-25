@@ -238,12 +238,22 @@ class MP4File
     stszBox = trakBox.find 'stsz'
     sampleSizes = stszBox.getSampleSizes sampleNumber, numSamplesInChunk
     chunkLength = stszBox.getSampleSize sampleNumber, numSamplesInChunk
+    cttsBox = trakBox.find 'ctts'
     samples = []
     sampleOffset = 0
+    mdhdBox = trakBox.find('mdia').find('mdhd')
     for sampleSize, i in sampleSizes
+      compositionTimeOffset = 0
+      if cttsBox?
+        compositionTimeOffset = cttsBox.getCompositionTimeOffset sampleNumber + i
       sampleTime = sttsBox.getDecodingTime sampleNumber + i
+      compositionTime = sampleTime.time + compositionTimeOffset
+      if mdhdBox.timescale isnt 90000
+        pts = Math.round(compositionTime * 90000 / mdhdBox.timescale)
+      else
+        pts = compositionTime
       samples.push {
-        pts: sampleTime.pts
+        pts: pts
         time: sampleTime.seconds
         data: @fileBuf[chunkOffset+sampleOffset...chunkOffset+sampleOffset+sampleSize]
       }
@@ -1125,14 +1135,9 @@ class TimeToSampleBox extends Box
       else
         time += entry.sampleDelta * sampleNumber
         break
-    if mdhdBox.timescale isnt 90000
-      pts = Math.round(time * 90000 / mdhdBox.timescale)
-    else
-      pts = time
     return {
       time: time
       seconds: time / mdhdBox.timescale
-      pts: pts
     }
 
   getDetails: (detailLevel) ->
@@ -1747,6 +1752,14 @@ class CompositionOffsetBox extends Box
         sampleCount: sampleCount
         sampleOffset: sampleOffset
     return
+
+  # sampleNumber is indexed from 1
+  getCompositionTimeOffset: (sampleNumber) ->
+    for entry in @entries
+      if sampleNumber <= entry.sampleCount
+        return entry.sampleOffset
+      sampleNumber -= entry.sampleCount
+    throw new Error "mp4: ctts: composition time for sample number #{sampleNumber} not found"
 
 # '\xa9too' (actually '\xa9' expands to [0xc2, 0xa9])
 # (copyright sign) + 'too'
