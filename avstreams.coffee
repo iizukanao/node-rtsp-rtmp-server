@@ -13,7 +13,7 @@ createStreamId = ->
 
   shasum = crypto.createHash 'sha512'
   shasum.update buf
-  return shasum.digest 'hex'
+  return shasum.digest('hex')[0..7]
 
 class AVStream
   constructor: (id) ->
