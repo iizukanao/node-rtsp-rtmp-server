@@ -21,6 +21,7 @@ class MP4File
   constructor: (filename) ->
     if filename?
       @open filename
+    @isStopped = false
 
   open: (filename) ->
     if DEBUG
@@ -32,7 +33,11 @@ class MP4File
       console.log "took #{(diffTime[0] * 1e9 + diffTime[1]) / 1000000} ms to read"
 
   close: ->
+    if not @isStopped
+      @stop()
     @bits = null
+    @emit 'close'
+    return
 
   parse: ->
     if DEBUG
@@ -87,6 +92,9 @@ class MP4File
     esdsBox = @audioTrakBox.find 'esds'
     return esdsBox.decoderConfigDescriptor.decoderSpecificInfo.specificInfo
 
+  stop: ->
+    @isStopped = true
+
   play: ->
     @currentTime = 0
     @consumedAudioSamples = 0
@@ -129,6 +137,10 @@ class MP4File
       # fill buffer
       if @readNextAudioChunk()
         @queueBufferedSamples()
+      else
+        if not @isAudioEOF
+          @isAudioEOF = true
+          @checkEOF()
     else
       @queueBufferedSamples()
     return
@@ -138,6 +150,10 @@ class MP4File
     if timeDiff < READ_BUFFER_TIME
       if @readNextVideoChunk()
         @queueBufferedSamples()
+      else
+        if not @isVideoEOF
+          @isVideoEOF = true
+          @checkEOF()
     else
       @queueBufferedSamples()
     return
@@ -185,14 +201,21 @@ class MP4File
       @queueBufferedSamples()
 
   queueBufferedSamples: ->
+    if @isStopped
+      return
     @queueBufferedAudioSamples()
     @queueBufferedVideoSamples()
+
+  checkEOF: ->
+    if @isAudioEOF and @isVideoEOF
+      @close()
 
   bufferAudio: (callback) ->
     # TODO: Use async
     while @bufferedAudioTime < @currentPlayTime + READ_BUFFER_TIME
       if not @readNextAudioChunk()
         @isAudioEOF = true
+        @checkEOF()
     callback?()
 
   bufferVideo: (callback) ->
@@ -200,6 +223,7 @@ class MP4File
     while @bufferedVideoTime < @currentPlayTime + READ_BUFFER_TIME
       if not @readNextVideoChunk()
         @isVideoEOF = true
+        @checkEOF()
     callback?()
 
   getNumVideoSamples: ->
