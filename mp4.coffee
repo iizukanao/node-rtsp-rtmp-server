@@ -1206,7 +1206,7 @@ class SyncSampleBox extends Box
     obj.sampleNumbers = @sampleNumbers
     return obj
 
-# stsc: sample-to-chunk, partial data-offset information
+# stsc: number of samples for each chunk
 class SampleToChunkBox extends Box
   read: (buf) ->
     bits = new Bits buf
@@ -1330,7 +1330,7 @@ class SampleSizeBox extends Box
       obj.entrySizes = @entrySizes
     return obj
 
-# stco: index of each chunk
+# stco: chunk offsets relative to the beginning of the file
 class ChunkOffsetBox extends Box
   read: (buf) ->
     bits = new Bits buf
@@ -1342,6 +1342,7 @@ class ChunkOffsetBox extends Box
       @chunkOffsets.push bits.read_uint32()
     return
 
+  # Returns a position of the chunk relative to the beginning of the file
   getChunkOffset: (chunkNumber) ->
     if (chunkNumber <= 0) or (chunkNumber > @chunkOffsets.length)
       throw new Error "Chunk number of out of range: #{chunkNumber}"
