@@ -12,6 +12,8 @@ http = require './http'
 rtsp = require './rtsp'
 h264 = require './h264'
 aac = require './aac'
+mp4 = require './mp4'
+Bits = require './bits'
 avstreams = require './avstreams'
 CustomReceiver = require './custom_receiver'
 logger = require './logger'
@@ -101,6 +103,42 @@ class StreamServer
     ## TODO: Do we need to do something for remove_stream event?
     #avstreams.on 'remove_stream', (stream) ->
     #  logger.raw "received remove_stream event from stream #{stream.id}"
+
+  attachMP4: (filename, streamName) ->
+    logger.info "attachMP4: filename=#{filename} streamName=#{streamName}"
+
+    generator = new avstreams.AVStreamGenerator
+      # Generate an AVStream upon request
+      generate: =>
+        mp4File = new mp4.MP4File filename
+        mp4Stream = avstreams.create()
+        audioSpecificConfig = null
+        mp4File.on 'audio_data', (data, pts) =>
+          @onReceiveAudioAccessUnits mp4Stream, [ data ], pts, pts
+        mp4File.on 'video_data', (data, pts) =>
+          @onReceiveVideoNALUnits mp4Stream, [ data ], pts, pts
+        mp4File.on 'close', =>
+          logger.info "received EOF from mp4 file #{filename}"
+          mp4Stream.emit 'end'
+        mp4File.parse()
+        mp4Stream.updateSPS mp4File.getSPS()
+        mp4Stream.updatePPS mp4File.getPPS()
+        ascBuf = mp4File.getAudioSpecificConfig()
+        bits = new Bits ascBuf
+        ascInfo = aac.readAudioSpecificConfig bits
+        mp4Stream.updateConfig
+          audioSpecificConfig: ascBuf
+          audioASCInfo: ascInfo
+          audioSampleRate: ascInfo.samplingFrequency
+          audioClockRate: 90000
+          audioChannels: ascInfo.channelConfiguration
+          audioObjectType: ascInfo.audioObjectType
+        mp4File.play()
+        @onReceiveAudioControlBuffer mp4Stream
+        @onReceiveVideoControlBuffer mp4Stream
+        return mp4Stream
+
+    avstreams.addGenerator streamName, generator
 
   stop: (callback) ->
     @customReceiver.deleteReceiverSocketsSync()
