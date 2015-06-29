@@ -15,6 +15,20 @@ createStreamId = ->
   shasum.update buf
   return shasum.digest('hex')[0..7]
 
+# Generates stream upon request
+class AVStreamGenerator
+  constructor: (methods) ->
+    if methods?.generate?
+      @generate = methods.generate
+    if methods?.teardown?
+      @teardown = methods.teardown
+
+    methods?.init?()
+
+  generate: ->
+
+  teardown: (stream) ->
+
 class AVStream
   constructor: (id) ->
     @id = id  # string
@@ -158,9 +172,11 @@ EventEmitterModule.mixin AVStream
 
 eventListeners = {}
 streams = {}
+streamGenerators = {}
 
 api =
   AVStream: AVStream
+  AVStreamGenerator: AVStreamGenerator
 
   emit: (name, data...) ->
     if eventListeners[name]?
@@ -188,7 +204,20 @@ api =
     return streams[streamId]?
 
   get: (streamId) ->
-    return streams[streamId]
+    if streamGenerators[streamId]?
+      return streamGenerators[streamId].generate()
+    else
+      return streams[streamId]
+
+  addGenerator: (streamId, generator) ->
+    if streamGenerators[streamId]?
+      logger.warn "warning: avstreams.addGenerator(): overwriting generator: #{streamId}"
+    streamGenerators[streamId] = generator
+
+  removeGenerator: (streamId) ->
+    if streamGenerators[streamId]?
+      streamGenerators[streamId].teardown()
+    delete streamGenerators[streamId]
 
   createNewStreamId: ->
     retryCount = 0
