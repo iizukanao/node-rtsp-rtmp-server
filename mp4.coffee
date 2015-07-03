@@ -77,7 +77,7 @@ class MP4File
     if not @boxes?
       throw new Error "parse() must be called before dump"
     for box in @boxes
-      process.stdout.write box.dump 0, 1
+      process.stdout.write box.dump 0, 2
     return
 
   getSPS: ->
