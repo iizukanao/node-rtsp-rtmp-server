@@ -2048,7 +2048,7 @@ class RTMPServer
   # Packets must be come in DTS ascending order
   sendVideoPacket: (stream, nalUnits, pts, dts) ->
     if DEBUG_INCOMING_RTMP_PACKETS
-      logger.info "received video: stream=#{stream.id} #{nalUnits.length} NAL units; pts=#{pts}"
+      logger.info "received video: stream=#{stream.id} #{nalUnits.length} NAL units (#{nalUnits.map((nalu) -> nalu[0] & 0x1f).join(',')}); pts=#{pts}"
     if dts > pts
       throw new Error "pts must be >= dts (pts=#{pts} dts=#{dts})"
     timestamp = convertPTSToMilliseconds dts
