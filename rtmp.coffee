@@ -738,7 +738,7 @@ class RTMPSession
           logger.warn "[rtmp] skipping empty AudioSpecificConfig"
       when flv.AAC_PACKET_TYPE_RAW
         if not stream.audioASCInfo?
-          throw new Error "[rtmp:publish] malformed audio data: AudioSpecificConfig is missing"
+          logger.error "[rtmp:publish] malformed audio data: AudioSpecificConfig is missing"
 
         # TODO: This must be a little heavy and needs better alternative.
         adtsHeader = new Buffer aac.createADTSHeader stream.audioASCInfo, info.rawDataBlock.length
