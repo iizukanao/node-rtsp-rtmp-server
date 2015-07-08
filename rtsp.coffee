@@ -347,6 +347,7 @@ class RTSPServer
 
   sendEOS: (stream) ->
     for clientID, client of stream.rtspClients
+      logger.debug "[rtsp:#{stream.id}] sending goodbye to client #{clientID}"
       buf = new Buffer rtp.createGoodbye
         ssrcs: [ client.videoSSRC ]
       if client.useTCPForVideo
