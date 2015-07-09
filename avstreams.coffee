@@ -55,6 +55,7 @@ class AVStream
     @spsNALUnit          = null  # buffer
     @ppsNALUnit          = null  # buffer
     @spropParameterSets  = ''    # string
+    @type                = null  # string
 
   reset: ->
     logger.debug "[stream:#{@id}] reset"
