@@ -43,7 +43,7 @@ MONTH_NAMES = [
 
 # If true, RTSP requests/response will be printed to the console
 DEBUG_RTSP = false
-DEBUG_RTSP_ONLY_HEADERS = false
+DEBUG_RTSP_HEADERS_ONLY = false
 
 # If true, outgoing video/audio packets are printed to the console
 DEBUG_OUTGOING_PACKET_DATA = false
@@ -837,7 +837,7 @@ class RTSPServer
       req.body = req.rawbody.toString 'utf8'
       if DEBUG_RTSP
         logger.info "===RTSP/HTTP request (cont) from #{id_str}==="
-        if DEBUG_RTSP_ONLY_HEADERS
+        if DEBUG_RTSP_HEADERS_ONLY
           logger.info "(redacted)"
         else
           process.stdout.write data.toString 'utf8'
@@ -848,7 +848,7 @@ class RTSPServer
         return
       if DEBUG_RTSP
         logger.info "===RTSP/HTTP request from #{id_str}==="
-        if DEBUG_RTSP_ONLY_HEADERS
+        if DEBUG_RTSP_HEADERS_ONLY
           process.stdout.write bufString.replace(/\r\n\r\n[\s\S]*/, '\n')
         else
           process.stdout.write bufString
@@ -894,7 +894,7 @@ class RTSPServer
           c.write out
       else
         if DEBUG_RTSP
-          if DEBUG_RTSP_ONLY_HEADERS
+          if DEBUG_RTSP_HEADERS_ONLY
             delimPos = Bits.searchBytesInArray output, [ 0x0d, 0x0a, 0x0d, 0x0a ]
             if delimPos isnt -1
               headerBytes = output[0..delimPos+1]
