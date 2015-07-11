@@ -419,7 +419,7 @@ class RTSPServer
         c.on 'close', =>
           logger.info "[#{TAG}] client #{id_str} is closed"
 
-          logger.debug "[client:#{@id}] teardown: session=#{@sessionID}"
+          logger.debug "[client:#{id_str}] teardown: session=#{sessionID}"
           try
             c.end()
           catch e
