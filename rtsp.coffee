@@ -1244,6 +1244,8 @@ class RTSPServer
       client.bandwidth = req.headers.bandwidth
 
       stream = @getStreamByUri req.uri
+      client.stream = stream
+
       if not stream?
         @respondWithNotFound 'RTSP', callback
         return
@@ -1520,7 +1522,7 @@ class RTSPServer
       return
 
     preventFromPlaying = false
-    stream = @getStreamByUri req.uri
+    stream = client.stream
     if not stream?
       @respondWithNotFound 'RTSP', callback
       return
@@ -1617,7 +1619,7 @@ class RTSPServer
 
   respondTeardown: (socket, req, callback) ->
     client = @clients[socket.clientID]
-    stream = @getStreamByUri req.uri
+    stream = client.stream
     if client is stream?.rtspUploadingClient
       logger.info "[rtsp] client #{client.id} finished uploading stream #{stream.id}"
       stream.rtspUploadingClient = null
