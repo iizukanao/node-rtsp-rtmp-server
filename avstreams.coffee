@@ -206,7 +206,9 @@ api =
 
   get: (streamId) ->
     if streamGenerators[streamId]?
-      return streamGenerators[streamId].generate()
+      stream = streamGenerators[streamId].generate()
+      logger.debug "created stream #{stream.id}"
+      return stream
     else
       return streams[streamId]
 
