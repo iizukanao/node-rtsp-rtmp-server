@@ -1842,6 +1842,7 @@ class RTSPServer
         stream.rtspUploadingClient.uploadingTimestampInfo.audio.rtpTimestamp = packet.rtcpSenderReport.rtpTimestamp
         stream.rtspUploadingClient.uploadingTimestampInfo.audio.time = packet.rtcpSenderReport.ntpTimestampInMs
 
+# Represents an RTSP session
 class RTSPClient
   constructor: (opts) ->
     @videoPacketCount = 0
