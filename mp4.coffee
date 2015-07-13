@@ -2,6 +2,7 @@ Bits = require './bits'
 EventEmitterModule = require './event_emitter'
 Sequent = require 'sequent'
 fs = require 'fs'
+logger = require './logger'
 
 formatDate = (date) ->
   date.toISOString()
@@ -24,6 +25,7 @@ class MP4File
     @isStopped = false
 
   open: (filename) ->
+    @filename = filename
     if DEBUG
       startTime = process.hrtime()
     @fileBuf = fs.readFileSync filename  # up to 1GB
@@ -93,6 +95,7 @@ class MP4File
     return esdsBox.decoderConfigDescriptor.decoderSpecificInfo.specificInfo
 
   stop: ->
+    logger.debug "[mp4:#{@filename}]: stop"
     @isStopped = true
 
   play: ->
