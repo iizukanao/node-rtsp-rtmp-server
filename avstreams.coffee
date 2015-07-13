@@ -176,6 +176,9 @@ streams = {}
 streamGenerators = {}
 
 api =
+  STREAM_TYPE_LIVE: 'live'
+  STREAM_TYPE_RECORDED: 'recorded'
+
   AVStream: AVStream
   AVStreamGenerator: AVStreamGenerator
 
@@ -207,6 +210,7 @@ api =
   get: (streamId) ->
     if streamGenerators[streamId]?
       stream = streamGenerators[streamId].generate()
+      stream.teardown = streamGenerators[streamId].teardown
       logger.debug "created stream #{stream.id}"
       return stream
     else

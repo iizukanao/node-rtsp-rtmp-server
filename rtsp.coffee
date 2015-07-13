@@ -1620,6 +1620,8 @@ class RTSPServer
   respondTeardown: (socket, req, callback) ->
     client = @clients[socket.clientID]
     stream = client.stream
+    if stream.type is avstreams.STREAM_TYPE_RECORDED
+      stream.teardown?()
     if client is stream?.rtspUploadingClient
       logger.info "[rtsp] client #{client.id} finished uploading stream #{stream.id}"
       stream.rtspUploadingClient = null

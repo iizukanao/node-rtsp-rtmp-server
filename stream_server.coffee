@@ -107,11 +107,14 @@ class StreamServer
   attachMP4: (filename, streamName) ->
     logger.info "attachMP4: filename=#{filename} streamName=#{streamName}"
 
+    mp4File = null
+
     generator = new avstreams.AVStreamGenerator
       # Generate an AVStream upon request
       generate: =>
         mp4File = new mp4.MP4File filename
         mp4Stream = avstreams.create()
+        mp4Stream.type = avstreams.STREAM_TYPE_RECORDED
         audioSpecificConfig = null
         mp4File.on 'audio_data', (data, pts) =>
           @onReceiveAudioAccessUnits mp4Stream, [ data ], pts, pts
@@ -137,6 +140,11 @@ class StreamServer
         @onReceiveAudioControlBuffer mp4Stream
         @onReceiveVideoControlBuffer mp4Stream
         return mp4Stream
+
+      play: =>
+
+      teardown: =>
+        mp4File.stop()
 
     avstreams.addGenerator streamName, generator
 
