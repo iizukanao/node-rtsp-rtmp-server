@@ -392,7 +392,7 @@ flushRTMPMessages = (stream, params) ->
     allSessions.push session
 
   for session in allSessions
-    if session.streamId isnt stream.id  # The session is not associated with current stream
+    if session.stream?.id isnt stream.id  # The session is not associated with current stream
       continue
     msgs = null
 
@@ -687,6 +687,7 @@ class RTMPSession
     @windowAckSize = null
     @lastSentAckBytes = 0
     @receivedBytes = 0
+    @stream = null # AVStream
 
   toString: ->
     return "#{@clientid}: addr=#{@socket.remoteAddress} port=#{@socket.remotePort}"
@@ -725,9 +726,9 @@ class RTMPSession
   parseAudioMessage: (buf) ->
     info = flv.parseAudio buf
     adtsFrame = null
-    stream = avstreams.get @streamId
+    stream = @stream
     if not stream?
-      throw new Error "[rtmp] Unknown stream: #{@streamId}"
+      throw new Error "[rtmp] Stream not set for this session"
     switch info.audioDataTag.aacPacketType
       when flv.AAC_PACKET_TYPE_SEQUENCE_HEADER
         if info.audioSpecificConfig?
@@ -808,6 +809,8 @@ class RTMPSession
     if @isTearedDown
       logger.debug "[rtmp] already teared down"
       return
+    if @stream?.type is avstreams.STREAM_TYPE_RECORDED
+      @stream.teardown?()
     @isTearedDown = true
     @clearTimeout()
     @stopPlaying()
@@ -1378,6 +1381,7 @@ class RTMPSession
       stream.reset()
     else
       stream = avstreams.create @streamId
+    @stream = stream
     # TODO: Check if streamId is already used
     publishingType = requestCommand.objects[2]?.value
     if publishingType isnt 'live'
@@ -1441,6 +1445,10 @@ class RTMPSession
     callback null, _result
 
   respondPlay: (commandMessage, callback) ->
+    streamId = commandMessage.objects[1]?.value
+    logger.info "[rtmp:#{@clientid}] requested stream #{streamId}"
+    @stream = avstreams.get streamId
+
     @chunkSize = config.rtmpPlayChunkSize
 
     # 5.4.1.  Set Chunk Size (1)
@@ -1524,8 +1532,9 @@ class RTMPSession
       hasMetadata : true
       hasCuePoints: false
 
-    if @streamId?
-      stream = avstreams.get @streamId
+    if @stream?
+      stream = @stream
+
       if stream?
         if stream.isVideoStarted
           metadata.hasVideo      = true
@@ -1547,9 +1556,9 @@ class RTMPSession
           metadata.audiochannels   = stream.audioChannels
           metadata.aacaot          = stream.audioObjectType
       else
-        logger.error "[rtmp] error: respondPlay: no such stream: #{@streamId}"
+        logger.error "[rtmp] error: respondPlay: no such stream: #{stream.id}"
     else
-      logger.error "[rtmp] error: respondPlay: no streamId defined"
+      logger.error "[rtmp] error: respondPlay: stream not set for this session"
 
     logger.debug "[rtmp] metadata:"
     logger.debug metadata
@@ -1582,13 +1591,9 @@ class RTMPSession
   getCodecConfigs: ->
     configMessages = []
 
-    if not @streamId?
-      logger.error "[rtmp] error: getCodecConfigs: no streamId defined"
-      return new Buffer []
-
-    stream = avstreams.get @streamId
+    stream = @stream
     if not stream?
-      logger.error "[rtmp] error: getCodecConfigs: no such stream: #{@streamId}"
+      logger.error "[rtmp] error: getCodecConfigs: stream not set for this session"
       return new Buffer []
 
     if stream.isVideoStarted
@@ -1719,8 +1724,8 @@ class RTMPSession
       when 'createStream'
         @respondCreateStream commandMessage, callback
       when 'play'
-        @streamId = commandMessage.objects[1]?.value
-        logger.info "[rtmp:#{@clientid}] requested stream #{@streamId}"
+        streamId = commandMessage.objects[1]?.value
+        logger.info "[rtmp:#{@clientid}] requested stream #{streamId}"
         @respondPlay commandMessage, callback
       when 'closeStream'
         @closeStream callback
@@ -1889,27 +1894,27 @@ class RTMPSession
               audioData = @parseAudioMessage rtmpMessage.body
               if audioData.adtsFrame?
                 if not @isFirstAudioReceived
-                  @emit 'audio_start', @streamId
+                  @emit 'audio_start', @stream.id
                   @isFirstAudioReceived = true
                 pts = dts = flv.convertMsToPTS rtmpMessage.timestamp
-                @emit 'audio_data', @streamId, pts, dts, audioData.adtsFrame
+                @emit 'audio_data', @stream.id, pts, dts, audioData.adtsFrame
               seq.done()
             when 9  # Video Message (incoming)
               videoData = @parseVideoMessage rtmpMessage.body
               if videoData.nalUnitGlob?
                 if not @isFirstVideoReceived
-                  @emit 'video_start', @streamId
+                  @emit 'video_start', @stream.id
                   @isFirstVideoReceived = true
                 dts = rtmpMessage.timestamp
                 pts = dts + videoData.info.videoDataTag.compositionTime
                 pts = flv.convertMsToPTS pts
                 dts = flv.convertMsToPTS dts
-                @emit 'video_data', @streamId, pts, dts, videoData.nalUnitGlob  # TODO pts, dts
+                @emit 'video_data', @stream.id, pts, dts, videoData.nalUnitGlob  # TODO pts, dts
               if videoData.isEOS
-                logger.info "[rtmp:#{@clientid}] received EOS for stream: #{@streamId}"
-                stream = avstreams.get @streamId
+                logger.info "[rtmp:#{@clientid}] received EOS for stream: #{@stream.id}"
+                stream = avstreams.get @stream.id
                 if not stream?
-                  logger.error "[rtmp:#{@clientid}] error: unknown stream: #{@streamId}"
+                  logger.error "[rtmp:#{@clientid}] error: unknown stream: #{@stream.id}"
                 stream.emit 'end'
               seq.done()
             when 15  # AMF3 data message

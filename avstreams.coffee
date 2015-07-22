@@ -22,6 +22,10 @@ class AVStreamGenerator
       @generate = methods.generate
     if methods?.teardown?
       @teardown = methods.teardown
+    if methods?.pause?
+      @pause = methods.pause
+    if methods?.resume?
+      @resume = methods.resume
 
     methods?.init?()
 
