@@ -61,6 +61,9 @@ class AVStream
     @spropParameterSets  = ''    # string
     @type                = null  # string ('live' or 'recorded')
 
+  isRecorded: ->
+    return @type is api.STREAM_TYPE_RECORDED
+
   reset: ->
     logger.debug "[stream:#{@id}] reset"
     @initAVParams()
