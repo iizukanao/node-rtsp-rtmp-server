@@ -95,7 +95,7 @@ class MP4File
     return esdsBox.decoderConfigDescriptor.decoderSpecificInfo.specificInfo
 
   stop: ->
-    logger.debug "[mp4:#{@filename}]: stop"
+    logger.debug "[mp4:#{@filename}] stop"
     @isStopped = true
 
   play: ->
