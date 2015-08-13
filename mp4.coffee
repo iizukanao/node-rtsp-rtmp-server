@@ -98,6 +98,21 @@ class MP4File
     logger.debug "[mp4:#{@filename}] stop"
     @isStopped = true
 
+  pause: ->
+    if @isStopped
+      @resume()
+    else
+      @isStopped = true
+      logger.debug "[mp4:#{@filename}] pause"
+      @pausedTime = getCurrentTime()
+
+  resume: ->
+    logger.debug "[mp4:#{@filename}] resume"
+    @isStopped = false
+    @playStartTime += getCurrentTime() - @pausedTime
+    @updateCurrentPlayTime()
+    @queueBufferedSamples()
+
   play: ->
     @currentTime = 0
     @consumedAudioSamples = 0
@@ -117,7 +132,9 @@ class MP4File
     @currentPlayTime = 0
     @playStartTime = getCurrentTime()
     @bufferedAudioSamples = []
+    @queuedAudioSampleIndex = 0
     @bufferedVideoSamples = []
+    @queuedVideoSampleIndex = 0
 
     @isAudioEOF = false
     @isVideoEOF = false
@@ -168,37 +185,49 @@ class MP4File
     @currentPlayTime = getCurrentTime() - @playStartTime
 
   queueBufferedAudioSamples: ->
-    audioSample = @bufferedAudioSamples.shift()
+    audioSample = @bufferedAudioSamples[@queuedAudioSampleIndex]
     if not audioSample?  # @bufferedAudioSamples is empty
       return
     timeDiff = audioSample.time - @currentPlayTime
     if timeDiff <= MIN_TIME_DIFF
+      @bufferedAudioSamples.shift()
+      @queuedAudioSampleIndex--
       @emit 'audio_data', audioSample.data, audioSample.pts
       @updateCurrentPlayTime()
     else
       setTimeout =>
-        @emit 'audio_data', audioSample.data, audioSample.pts
-        @updateCurrentPlayTime()
-        @checkAudioBuffer()
+        @queuedAudioSampleIndex--
+        if not @isStopped
+          @bufferedAudioSamples.shift()
+          @emit 'audio_data', audioSample.data, audioSample.pts
+          @updateCurrentPlayTime()
+          @checkAudioBuffer()
       , timeDiff * 1000
+    @queuedAudioSampleIndex++
     @queuedAudioTime = audioSample.time
     if @queuedAudioTime - @currentPlayTime < QUEUE_BUFFER_TIME
       @queueBufferedSamples()
 
   queueBufferedVideoSamples: ->
-    videoSample = @bufferedVideoSamples.shift()
+    videoSample = @bufferedVideoSamples[@queuedVideoSampleIndex]
     if not videoSample?  # read buffer is empty
       return
     timeDiff = videoSample.time - @currentPlayTime
     if timeDiff <= MIN_TIME_DIFF
+      @bufferedVideoSamples.shift()
+      @queuedVideoSampleIndex--
       @emit 'video_data', videoSample.data, videoSample.pts
       @updateCurrentPlayTime()
     else
       setTimeout =>
-        @emit 'video_data', videoSample.data, videoSample.pts
-        @updateCurrentPlayTime()
-        @checkVideoBuffer()
+        @queuedVideoSampleIndex--
+        if not @isStopped
+          @bufferedVideoSamples.shift()
+          @emit 'video_data', videoSample.data, videoSample.pts
+          @updateCurrentPlayTime()
+          @checkVideoBuffer()
       , timeDiff * 1000
+    @queuedVideoSampleIndex++
     @queuedVideoTime = videoSample.time
     if @queuedVideoTime - @currentPlayTime < QUEUE_BUFFER_TIME
       @queueBufferedSamples()
