@@ -1711,6 +1711,7 @@ class RTMPSession
         @receiveSetDataFrame dataMessage
       else
         logger.warn "[rtmp:receive] unknown (not implemented) AMF data: #{dataMessage.objects[0].value}"
+        logger.debug dataMessage
     return
 
   handleAMFCommandMessage: (commandMessage, callback) ->
