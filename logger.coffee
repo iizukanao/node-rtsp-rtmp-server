@@ -87,6 +87,6 @@ api =
   fatal: (str, raw=false) ->
     api.msg api.LEVEL_FATAL, str, raw
 
-logLevel = api.LEVEL_DEBUG
+logLevel = api.LEVEL_INFO  # default verbosity
 
 module.exports = api
