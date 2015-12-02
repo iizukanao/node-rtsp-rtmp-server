@@ -54,7 +54,7 @@ module.exports =
 
   # If true, the server waits for the first keyframe
   # before starting to send video/audio over RTMP.
-  rtmpWaitForKeyFrame: true
+  rtmpWaitForKeyFrame: false
 
   # Enable RTMPT and RTMPTE
   enableRTMPT: true
