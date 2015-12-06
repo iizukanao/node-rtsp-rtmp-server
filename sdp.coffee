@@ -32,6 +32,7 @@ api =
   #   videoWidth (number): video frame width
   #   videoFrameRate (string): video frame rate. Either <integer> or
   #                            <integer>.<fraction> is allowed.
+  #   durationSeconds (number): duration of the stream in seconds
   createSDP: (opts) ->
     mandatoryOpts = [
       'username'
@@ -75,7 +76,7 @@ api =
     c=IN #{opts.addressType} #{opts.unicastAddress}
     t=0 0
     a=sdplang:en
-    a=range:npt=0.0-
+    a=range:npt=0.0-#{opts.durationSeconds ? ''}
     a=control:*
 
     """

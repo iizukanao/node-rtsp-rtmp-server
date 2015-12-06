@@ -26,6 +26,14 @@ class AVStreamGenerator
       @pause = methods.pause
     if methods?.resume?
       @resume = methods.resume
+    if methods?.seek?
+      @seek = methods.seek
+    if methods?.sendVideoPacketsSinceLastKeyFrame?
+      @sendVideoPacketsSinceLastKeyFrame = methods.sendVideoPacketsSinceLastKeyFrame
+    if methods?.getCurrentPlayTime?
+      @getCurrentPlayTime = methods.getCurrentPlayTime
+    if methods?.isPaused?
+      @isPaused = methods.isPaused
 
     methods?.init?()
 
@@ -82,7 +90,7 @@ class AVStream
   resetFrameRate: ->
     @frameRateCalcBasePTS = null
     @frameRateCalcNumFrames = null
-    @videoFrameRate = 30.0  # TODO: What value should we use?
+    @videoFrameRate = 30.0  # TODO: What value should we use as a default frame rate?
 
   calcFrameRate: (pts) ->
     if @frameRateCalcBasePTS?
@@ -217,8 +225,20 @@ api =
   get: (streamId) ->
     if streamGenerators[streamId]?
       stream = streamGenerators[streamId].generate()
-      stream.teardown = streamGenerators[streamId].teardown
-      logger.debug "created stream #{stream.id}"
+      if stream?
+        stream.teardown = streamGenerators[streamId].teardown
+        stream.pause = streamGenerators[streamId].pause
+        stream.resume = ->
+          stream.resetFrameRate()
+          return streamGenerators[streamId].resume.apply this, arguments
+        stream.seek = ->
+          stream.resetFrameRate()
+          streamGenerators[streamId].seek.apply this, arguments
+        stream.getCurrentPlayTime = streamGenerators[streamId].getCurrentPlayTime
+        stream.sendVideoPacketsSinceLastKeyFrame =
+          streamGenerators[streamId].sendVideoPacketsSinceLastKeyFrame
+        stream.isPaused = streamGenerators[streamId].isPaused
+        logger.debug "created stream #{stream.id}"
       return stream
     else
       return streams[streamId]

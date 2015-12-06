@@ -3,16 +3,23 @@ EventEmitterModule = require './event_emitter'
 Sequent = require 'sequent'
 fs = require 'fs'
 logger = require './logger'
+h264 = require './h264'
 
 formatDate = (date) ->
   date.toISOString()
 
+# copyright sign + 'too' (we should not use literal '\xa9'
+# since it expands to [0xc2, 0xa9])
 TAG_CTOO = new Buffer([0xa9, 0x74, 0x6f, 0x6f]).toString 'utf8'
+
 MIN_TIME_DIFF = 0.01  # seconds
 READ_BUFFER_TIME = 3.0
 QUEUE_BUFFER_TIME = 1.5
 
 DEBUG = false
+
+# If true, outgoing audio/video packets will be printed
+DEBUG_OUTGOING_MP4_DATA = false
 
 getCurrentTime = ->
   time = process.hrtime()
@@ -24,6 +31,21 @@ class MP4File
       @open filename
     @isStopped = false
 
+  clearBuffers: ->
+    @consumedAudioChunks = 0
+    @consumedVideoChunks = 0
+    @bufferedAudioTime = 0
+    @bufferedVideoTime = 0
+    @queuedAudioTime = 0
+    @queuedVideoTime = 0
+    @bufferedAudioSamples = []
+    @queuedAudioSampleIndex = 0
+    @bufferedVideoSamples = []
+    @queuedVideoSampleIndex = 0
+    @isAudioEOF = false
+    @isVideoEOF = false
+    @sessionId++
+
   open: (filename) ->
     @filename = filename
     if DEBUG
@@ -32,7 +54,17 @@ class MP4File
     @bits = new Bits @fileBuf
     if DEBUG
       diffTime = process.hrtime startTime
-      console.log "took #{(diffTime[0] * 1e9 + diffTime[1]) / 1000000} ms to read"
+      logger.debug "[mp4] took #{(diffTime[0] * 1e9 + diffTime[1]) / 1000000} ms to read #{filename}"
+
+    @consumedAudioSamples = 0
+    @consumedVideoSamples = 0
+    @clearBuffers()
+
+    @currentPlayTime = 0
+    @playStartTime = null
+
+    # sessionId will change when buffer is cleared
+    @sessionId = 0
 
   close: ->
     if not @isStopped
@@ -54,8 +86,7 @@ class MP4File
       @boxes.push box
     if DEBUG
       diffTime = process.hrtime startTime
-      console.log "took #{(diffTime[0] * 1e9 + diffTime[1]) / 1000000} ms to parse"
-      console.log "EOF"
+      logger.debug "[mp4] took #{(diffTime[0] * 1e9 + diffTime[1]) / 1000000} ms to parse #{@filename}"
 
     for child in @moovBox.children
       if child instanceof TrackBox  # trak
@@ -64,6 +95,9 @@ class MP4File
           @audioTrakBox = child
         else
           @videoTrakBox = child
+
+    @numVideoSamples = @getNumVideoSamples()
+    @numAudioSamples = @getNumAudioSamples()
 
     return
 
@@ -98,46 +132,82 @@ class MP4File
     logger.debug "[mp4:#{@filename}] stop"
     @isStopped = true
 
+  isPaused: ->
+    return @isStopped
+
   pause: ->
-    if @isStopped
-      @resume()
-    else
+    if not @isStopped
       @isStopped = true
-      logger.debug "[mp4:#{@filename}] pause"
-      @pausedTime = getCurrentTime()
+      logger.debug "[mp4:#{@filename}] paused at #{@currentPlayTime} (server mp4 head time)"
+    else
+      logger.debug "[mp4:#{@filename}] already paused"
+
+  sendVideoPacketsSinceLastKeyFrame: (endSeconds, callback) ->
+    # Get next sample number
+    stblBox = @videoTrakBox.child('mdia').child('minf').child('stbl')
+    sttsBox = stblBox.child('stts') # TimeToSampleBox
+    videoSample = sttsBox.getSampleAtSeconds endSeconds
+    if videoSample?
+      videoSampleNumber = videoSample.sampleNumber
+    else
+      videoSampleNumber = @numVideoSamples + 1
+
+    samples = []
+    isFirstSample = true
+    loop
+      rawSample = @getSample videoSampleNumber, @videoTrakBox
+      isKeyFrameFound = false
+      if rawSample?
+        nalUnits = @parseH264Sample rawSample.data
+        for nalUnit in nalUnits
+          if not isFirstSample
+            samples.unshift
+              pts: rawSample.pts
+              dts: rawSample.dts
+              time: rawSample.time
+              data: nalUnit
+          if (nalUnit[0] & 0x1f) is h264.NAL_UNIT_TYPE_IDR_PICTURE
+            isKeyFrameFound = true
+            break
+      if isFirstSample
+        isFirstSample = false
+      if isKeyFrameFound
+        break
+      videoSampleNumber--
+      if videoSampleNumber <= 0
+        break
+    for sample in samples
+      @emit 'video_data', sample.data, sample.pts, sample.dts
+
+    callback? null
 
   resume: ->
-    logger.debug "[mp4:#{@filename}] resume"
-    @isStopped = false
-    @playStartTime += getCurrentTime() - @pausedTime
-    @updateCurrentPlayTime()
-    @queueBufferedSamples()
+    logger.debug "[mp4:#{@filename}] resumed at #{@currentPlayTime} (server mp4 head time)"
+    @seek @currentPlayTime
+    @fillBuffer =>
+      @isStopped = false
+      @playStartTime = getCurrentTime() - @currentPlayTime
+      if @isAudioEOFReached()
+        @isAudioEOF = true
+      if @isVideoEOFReached()
+        @isVideoEOF = true
+      if @checkEOF()
+        # EOF reached
+        return false
+      else
+        @queueBufferedSamples()
+        return true
 
-  play: ->
-    @currentTime = 0
-    @consumedAudioSamples = 0
-    @consumedVideoSamples = 0
-    @consumedAudioChunks = 0
-    @consumedVideoChunks = 0
-    startTime = process.hrtime()
-    @numVideoSamples = @getNumVideoSamples()
-    @numAudioSamples = @getNumAudioSamples()
+  isAudioEOFReached: ->
+    return (@bufferedAudioSamples.length is 0) and
+      (@consumedAudioSamples is @numAudioSamples)
 
+  isVideoEOFReached: ->
+    return (@bufferedVideoSamples.length is 0) and
+      (@consumedVideoSamples is @numVideoSamples)
+
+  fillBuffer: (callback) ->
     seq = new Sequent
-
-    @bufferedAudioTime = 0
-    @bufferedVideoTime = 0
-    @queuedAudioTime = 0
-    @queuedVideoTime = 0
-    @currentPlayTime = 0
-    @playStartTime = getCurrentTime()
-    @bufferedAudioSamples = []
-    @queuedAudioSampleIndex = 0
-    @bufferedVideoSamples = []
-    @queuedVideoSampleIndex = 0
-
-    @isAudioEOF = false
-    @isVideoEOF = false
 
     @bufferAudio =>
       # audio samples has been buffered
@@ -147,20 +217,60 @@ class MP4File
       # video samples has been buffered
       seq.done()
 
-    seq.wait 2, =>
-      # ready to play
-      @startStreaming()
+    seq.wait 2, callback
+
+  seek: (seekSeconds=0) ->
+    @clearBuffers()
+
+    # Find out starting play time by video sample
+    stblBox = @videoTrakBox.child('mdia').child('minf').child('stbl')
+    sttsBox = stblBox.child('stts') # TimeToSampleBox
+    videoSample = sttsBox.getSampleAtSeconds seekSeconds
+    if videoSample?
+      videoSampleSeconds = videoSample.seconds
+      @currentPlayTime = videoSampleSeconds
+      videoSampleNumber = videoSample.sampleNumber
+    else
+      # No video sample left
+      @isVideoEOF = true
+      @currentPlayTime = @getDurationSeconds()
+      videoSampleNumber = @numVideoSamples + 1
+      videoSampleSeconds = @currentPlayTime
+
+    # Look for the corresponding audio sample
+    stblBox = @audioTrakBox.child('mdia').child('minf').child('stbl')
+    sttsBox = stblBox.child('stts') # TimeToSampleBox
+    audioSample = sttsBox.getSampleAtSeconds seekSeconds
+    if audioSample?
+      audioSampleNumber = audioSample.sampleNumber
+
+      if videoSampleSeconds <= audioSample.seconds
+        minTime = videoSampleSeconds
+      else
+        minTime = audioSample.seconds
+      if @currentPlayTime isnt minTime
+        @currentPlayTime = minTime
+    else
+      # No audio sample left
+      audioSampleNumber = @numAudioSamples + 1
+      @isAudioEOF = true
+
+    @consumedAudioSamples = audioSampleNumber - 1
+    @consumedVideoSamples = videoSampleNumber - 1
+
+    return @currentPlayTime
+
+  play: ->
+    @playStartTime = getCurrentTime() - @currentPlayTime
+    @startStreaming()
 
   checkAudioBuffer: ->
     timeDiff = @bufferedAudioTime - @currentPlayTime
     if timeDiff < READ_BUFFER_TIME
-      # fill buffer
+      # Fill audio buffer
       if @readNextAudioChunk()
+        # Audio EOF not reached
         @queueBufferedSamples()
-      else
-        if not @isAudioEOF
-          @isAudioEOF = true
-          @checkEOF()
     else
       @queueBufferedSamples()
     return
@@ -168,12 +278,10 @@ class MP4File
   checkVideoBuffer: ->
     timeDiff = @bufferedVideoTime - @currentPlayTime
     if timeDiff < READ_BUFFER_TIME
+      # Fill video buffer
       if @readNextVideoChunk()
+        # Video EOF not reached
         @queueBufferedSamples()
-      else
-        if not @isVideoEOF
-          @isVideoEOF = true
-          @checkEOF()
     else
       @queueBufferedSamples()
     return
@@ -192,17 +300,32 @@ class MP4File
     if timeDiff <= MIN_TIME_DIFF
       @bufferedAudioSamples.shift()
       @queuedAudioSampleIndex--
+      if DEBUG_OUTGOING_MP4_DATA
+        logger.info "emit audio_data pts=#{audioSample.pts}"
       @emit 'audio_data', audioSample.data, audioSample.pts
       @updateCurrentPlayTime()
+      if (@queuedAudioSampleIndex is 0) and (@consumedAudioSamples is @numAudioSamples)
+        # No audio sample left
+        @isAudioEOF = true
+        @checkEOF()
     else
-      setTimeout =>
-        @queuedAudioSampleIndex--
-        if not @isStopped
-          @bufferedAudioSamples.shift()
-          @emit 'audio_data', audioSample.data, audioSample.pts
-          @updateCurrentPlayTime()
-          @checkAudioBuffer()
-      , timeDiff * 1000
+      if not @isStopped
+        sessionId = @sessionId
+        setTimeout =>
+          if (not @isStopped) and (@sessionId is sessionId)
+            @bufferedAudioSamples.shift()
+            @queuedAudioSampleIndex--
+            if DEBUG_OUTGOING_MP4_DATA
+              logger.info "emit timed audio_data pts=#{audioSample.pts}"
+            @emit 'audio_data', audioSample.data, audioSample.pts
+            @updateCurrentPlayTime()
+            if (@queuedAudioSampleIndex is 0) and (@consumedAudioSamples is @numAudioSamples)
+              # No audio sample left
+              @isAudioEOF = true
+              @checkEOF()
+            else
+              @checkAudioBuffer()
+        , timeDiff * 1000
     @queuedAudioSampleIndex++
     @queuedAudioTime = audioSample.time
     if @queuedAudioTime - @currentPlayTime < QUEUE_BUFFER_TIME
@@ -210,23 +333,38 @@ class MP4File
 
   queueBufferedVideoSamples: ->
     videoSample = @bufferedVideoSamples[@queuedVideoSampleIndex]
-    if not videoSample?  # read buffer is empty
+    if not videoSample?  # @bufferedVideoSamples is empty
       return
     timeDiff = videoSample.time - @currentPlayTime
     if timeDiff <= MIN_TIME_DIFF
       @bufferedVideoSamples.shift()
       @queuedVideoSampleIndex--
-      @emit 'video_data', videoSample.data, videoSample.pts
+      if DEBUG_OUTGOING_MP4_DATA
+        logger.info "emit video_data pts=#{videoSample.pts} dts=#{videoSample.dts}"
+      @emit 'video_data', videoSample.data, videoSample.pts, videoSample.dts
       @updateCurrentPlayTime()
+      if (@queuedVideoSampleIndex is 0) and (@consumedVideoSamples is @numVideoSamples)
+        # No video sample left
+        @isVideoEOF = true
+        @checkEOF()
     else
-      setTimeout =>
-        @queuedVideoSampleIndex--
-        if not @isStopped
-          @bufferedVideoSamples.shift()
-          @emit 'video_data', videoSample.data, videoSample.pts
-          @updateCurrentPlayTime()
-          @checkVideoBuffer()
-      , timeDiff * 1000
+      if not @isStopped
+        sessionId = @sessionId
+        setTimeout =>
+          if (not @isStopped) and (@sessionId is sessionId)
+            @bufferedVideoSamples.shift()
+            @queuedVideoSampleIndex--
+            if DEBUG_OUTGOING_MP4_DATA
+              logger.info "emit timed video_data pts=#{videoSample.pts} dts=#{videoSample.dts}"
+            @emit 'video_data', videoSample.data, videoSample.pts, videoSample.dts
+            @updateCurrentPlayTime()
+            if (@queuedVideoSampleIndex is 0) and (@consumedVideoSamples is @numVideoSamples)
+              # No video sample left
+              @isVideoEOF = true
+              @checkEOF()
+            else
+              @checkVideoBuffer()
+        , timeDiff * 1000
     @queuedVideoSampleIndex++
     @queuedVideoTime = videoSample.time
     if @queuedVideoTime - @currentPlayTime < QUEUE_BUFFER_TIME
@@ -235,27 +373,41 @@ class MP4File
   queueBufferedSamples: ->
     if @isStopped
       return
-    @queueBufferedAudioSamples()
-    @queueBufferedVideoSamples()
+
+    # Determine which of audio or video should be sent first
+    firstAudioTime = @bufferedAudioSamples[@queuedAudioSampleIndex]?.time
+    firstVideoTime = @bufferedVideoSamples[@queuedVideoSampleIndex]?.time
+    if firstAudioTime? and firstVideoTime?
+      if firstVideoTime <= firstAudioTime
+        @queueBufferedVideoSamples()
+        @queueBufferedAudioSamples()
+      else
+        @queueBufferedAudioSamples()
+        @queueBufferedVideoSamples()
+    else
+      @queueBufferedAudioSamples()
+      @queueBufferedVideoSamples()
 
   checkEOF: ->
     if @isAudioEOF and @isVideoEOF
       @close()
+      return true
+    return false
 
   bufferAudio: (callback) ->
     # TODO: Use async
     while @bufferedAudioTime < @currentPlayTime + READ_BUFFER_TIME
       if not @readNextAudioChunk()
-        @isAudioEOF = true
-        @checkEOF()
+        # No audio sample left
+        break
     callback?()
 
   bufferVideo: (callback) ->
     # TODO: Use async
     while @bufferedVideoTime < @currentPlayTime + READ_BUFFER_TIME
       if not @readNextVideoChunk()
-        @isVideoEOF = true
-        @checkEOF()
+        # No video sample left
+        break
     callback?()
 
   getNumVideoSamples: ->
@@ -265,6 +417,25 @@ class MP4File
   getNumAudioSamples: ->
     sttsBox = @audioTrakBox.find 'stts'
     return sttsBox.getTotalSamples()
+
+  # Returns the timestamp of the last sample in the file
+  getLastTimestamp: ->
+    numVideoSamples = @getNumVideoSamples()
+    sttsBox = @videoTrakBox.find 'stts'
+    videoLastTimestamp = sttsBox.getDecodingTime(numVideoSamples).seconds
+
+    numAudioSamples = @getNumAudioSamples()
+    sttsBox = @audioTrakBox.find 'stts'
+    audioLastTimestamp = sttsBox.getDecodingTime(numAudioSamples).seconds
+
+    if audioLastTimestamp > videoLastTimestamp
+      return audioLastTimestamp
+    else
+      return videoLastTimestamp
+
+  getDurationSeconds: ->
+    mvhdBox = @moovBox.child('mvhd')
+    return mvhdBox.durationSeconds
 
   parseH264Sample: (buf) ->
     # The format is defined in ISO 14496-15 5.2.3
@@ -285,34 +456,89 @@ class MP4File
 
     return nalUnits
 
-  readChunk: (chunkNumber, sampleNumber, trakBox) ->
-    sttsBox = trakBox.find 'stts'
-    stscBox = trakBox.find 'stsc'
-    numSamplesInChunk = stscBox.getNumSamplesInChunk chunkNumber
-    stcoBox = trakBox.find 'stco'
+  getSample: (sampleNumber, trakBox) ->
+    stblBox = trakBox.child('mdia').child('minf').child('stbl')
+    sttsBox = stblBox.child 'stts'
+    stscBox = stblBox.child 'stsc'
+    chunkNumber = stscBox.findChunk sampleNumber
+
+    # Get chunk offset in the file
+    stcoBox = stblBox.child 'stco'
     chunkOffset = stcoBox.getChunkOffset chunkNumber
-    stszBox = trakBox.find 'stsz'
-    sampleSizes = stszBox.getSampleSizes sampleNumber, numSamplesInChunk
-    chunkLength = stszBox.getSampleSize sampleNumber, numSamplesInChunk
-    cttsBox = trakBox.find 'ctts'
+
+    firstSampleNumberInChunk = stscBox.getFirstSampleNumberInChunk chunkNumber
+
+    # Get an array of sample sizes in this chunk
+    stszBox = stblBox.child 'stsz'
+    sampleSizes = stszBox.getSampleSizes firstSampleNumberInChunk,
+      sampleNumber - firstSampleNumberInChunk + 1
+
+    cttsBox = stblBox.child 'ctts'
     samples = []
     sampleOffset = 0
-    mdhdBox = trakBox.find('mdia').find('mdhd')
+    mdhdBox = trakBox.child('mdia').child('mdhd')
     for sampleSize, i in sampleSizes
-      compositionTimeOffset = 0
-      if cttsBox?
-        compositionTimeOffset = cttsBox.getCompositionTimeOffset sampleNumber + i
-      sampleTime = sttsBox.getDecodingTime sampleNumber + i
-      compositionTime = sampleTime.time + compositionTimeOffset
-      if mdhdBox.timescale isnt 90000
-        pts = Math.round(compositionTime * 90000 / mdhdBox.timescale)
-      else
-        pts = compositionTime
-      samples.push {
-        pts: pts
-        time: sampleTime.seconds
-        data: @fileBuf[chunkOffset+sampleOffset...chunkOffset+sampleOffset+sampleSize]
-      }
+      if firstSampleNumberInChunk + i is sampleNumber
+        compositionTimeOffset = 0
+        if cttsBox?
+          compositionTimeOffset = cttsBox.getCompositionTimeOffset sampleNumber
+        sampleTime = sttsBox.getDecodingTime sampleNumber
+        compositionTime = sampleTime.time + compositionTimeOffset
+        if mdhdBox.timescale isnt 90000
+          pts = Math.floor(compositionTime * 90000 / mdhdBox.timescale)
+          dts = Math.floor(sampleTime.time * 90000 / mdhdBox.timescale)
+        else
+          pts = compositionTime
+          dts = sampleTime.time
+        return {
+          pts: pts
+          dts: dts
+          time: sampleTime.seconds
+          data: @fileBuf[chunkOffset+sampleOffset...chunkOffset+sampleOffset+sampleSize]
+        }
+      sampleOffset += sampleSize
+
+    return null
+
+  readChunk: (chunkNumber, fromSampleNumber, trakBox) ->
+    stblBox = trakBox.child('mdia').child('minf').child('stbl')
+    sttsBox = stblBox.child 'stts'
+    stscBox = stblBox.child 'stsc'
+    numSamplesInChunk = stscBox.getNumSamplesInChunk chunkNumber
+
+    # Get chunk offset in the file
+    stcoBox = stblBox.child 'stco'
+    chunkOffset = stcoBox.getChunkOffset chunkNumber
+
+    firstSampleNumberInChunk = stscBox.getFirstSampleNumberInChunk chunkNumber
+
+    # Get an array of sample sizes in this chunk
+    stszBox = stblBox.child 'stsz'
+    sampleSizes = stszBox.getSampleSizes firstSampleNumberInChunk, numSamplesInChunk
+
+    cttsBox = stblBox.child 'ctts'
+    samples = []
+    sampleOffset = 0
+    mdhdBox = trakBox.child('mdia').child('mdhd')
+    for sampleSize, i in sampleSizes
+      if firstSampleNumberInChunk + i >= fromSampleNumber
+        compositionTimeOffset = 0
+        if cttsBox?
+          compositionTimeOffset = cttsBox.getCompositionTimeOffset firstSampleNumberInChunk + i
+        sampleTime = sttsBox.getDecodingTime firstSampleNumberInChunk + i
+        compositionTime = sampleTime.time + compositionTimeOffset
+        if mdhdBox.timescale isnt 90000
+          pts = Math.floor(compositionTime * 90000 / mdhdBox.timescale)
+          dts = Math.floor(sampleTime.time * 90000 / mdhdBox.timescale)
+        else
+          pts = compositionTime
+          dts = sampleTime.time
+        samples.push {
+          pts: pts
+          dts: dts
+          time: sampleTime.seconds
+          data: @fileBuf[chunkOffset+sampleOffset...chunkOffset+sampleOffset+sampleSize]
+        }
       sampleOffset += sampleSize
 
     return samples
@@ -320,10 +546,15 @@ class MP4File
   readNextVideoChunk: ->
     if @consumedVideoSamples >= @numVideoSamples
       return false
-    nextChunkNumber = @consumedVideoChunks + 1
-    nextSampleNumber = @consumedVideoSamples + 1
 
-    samples = @readChunk nextChunkNumber, nextSampleNumber, @videoTrakBox
+    if @consumedVideoChunks is 0 and @consumedVideoSamples isnt 0 # seeked
+      stscBox = @videoTrakBox.find 'stsc'
+      chunkNumber = stscBox.findChunk @consumedVideoSamples + 1
+      samples = @readChunk chunkNumber, @consumedVideoSamples + 1, @videoTrakBox
+      @consumedVideoChunks = chunkNumber
+    else
+      samples = @readChunk @consumedVideoChunks + 1, @consumedVideoSamples + 1, @videoTrakBox
+      @consumedVideoChunks++
 
     numSamples = samples.length
     index = 0
@@ -332,6 +563,7 @@ class MP4File
       nalUnits = @parseH264Sample samples[index].data
       if nalUnits.length >= 1
         pts = samples[index].pts
+        dts = samples[index].dts
         time = samples[index].time
 
         samples[index].data = nalUnits[0]
@@ -339,11 +571,11 @@ class MP4File
           index++
           samples[index...index] =
             pts: pts
+            dts: dts
             time: time
             data: nalUnit
       index++
 
-    @consumedVideoChunks++
     @consumedVideoSamples += numSamples
     @bufferedVideoTime = samples[samples.length-1].time
     @bufferedVideoSamples = @bufferedVideoSamples.concat samples
@@ -356,15 +588,19 @@ class MP4File
   readNextAudioChunk: ->
     if @consumedAudioSamples >= @numAudioSamples
       return false
-    nextChunkNumber = @consumedAudioChunks + 1
-    nextSampleNumber = @consumedAudioSamples + 1
 
-    samples = @readChunk nextChunkNumber, nextSampleNumber, @audioTrakBox
+    if @consumedAudioChunks is 0 and @consumedAudioSamples isnt 0 # seeked
+      stscBox = @audioTrakBox.find 'stsc'
+      chunkNumber = stscBox.findChunk @consumedAudioSamples + 1
+      samples = @readChunk chunkNumber, @consumedAudioSamples + 1, @audioTrakBox
+      @consumedAudioChunks = chunkNumber
+    else
+      samples = @readChunk @consumedAudioChunks + 1, @consumedAudioSamples + 1, @audioTrakBox
+      @consumedAudioChunks++
 
 #    for sample in samples
 #      @parseAACSample sample.data
 
-    @consumedAudioChunks++
     @consumedAudioSamples += samples.length
     @bufferedAudioTime = samples[samples.length-1].time
     @bufferedAudioSamples = @bufferedAudioSamples.concat samples
@@ -423,6 +659,16 @@ class Box
       else
         return @parent.findParent typeStr
     else
+      return null
+
+  child: (typeStr) ->
+    if @typeStr is typeStr
+      return this
+    else
+      if @children?
+        for child in @children
+          if child.typeStr is typeStr
+            return child
       return null
 
   find: (typeStr) ->
@@ -576,7 +822,7 @@ class Box
         if cls?
           return new cls info
         else
-          console.log "warning: mp4: skipping unknown (not implemented) box type: #{info.typeStr} (0x#{info.type.toString('hex')})"
+          logger.warn "[mp4] warning: skipping unknown (not implemented) box type: #{info.typeStr} (0x#{info.type.toString('hex')})"
           return new Box info
 
 class Container extends Box
@@ -664,10 +910,10 @@ class MovieHeaderBox extends Box
       @durationSeconds = @duration / @timescale
     @rate = bits.read_int 32
     if @rate isnt 0x00010000  # 1.0
-      console.log "Irregular rate: #{@rate}"
+      logger.warn "[mp4] warning: Irregular rate found in mvhd box: #{@rate}"
     @volume = bits.read_int 16
     if @volume isnt 0x0100  # full volume
-      console.log "Irregular volume: #{@volume}"
+      logger.warn "[mp4] warning: Irregular volume found in mvhd box: #{@volume}"
     reserved = bits.read_bits 16
     if reserved isnt 0
       throw new Error "reserved bits are not all zero: #{reserved}"
@@ -736,10 +982,10 @@ class TrackHeaderBox extends Box
       throw new Error "tkhd: reserved bits are not zero: #{reserved}"
     @layer = bits.read_int 16
     if @layer isnt 0
-      console.log "layer is not 0: #{@layer}"
+      logger.warn "[mp4] warning: layer is not 0 in tkhd box: #{@layer}"
     @alternateGroup = bits.read_int 16
 #    if @alternateGroup isnt 0
-#      console.log "tkhd: alternate_group is not 0: #{@alternateGroup}"
+#      logger.warn "[mp4] warning: alternate_group is not 0 in tkhd box: #{@alternateGroup}"
     @volume = bits.read_int 16
     if @volume is 0x0100
       @isAudioTrack = true
@@ -800,7 +1046,7 @@ class EditListBox extends Box
       mediaRateInteger = bits.read_int 16
       mediaRateFraction = bits.read_int 16
       if mediaRateFraction isnt 0
-        console.log "media_rate_fraction is not 0: #{mediaRateFraction}"
+        logger.warn "[mp4] warning: media_rate_fraction is not 0 in elst box: #{mediaRateFraction}"
       @entries.push
         segmentDuration: segmentDuration
         segmentDurationSeconds: segmentDuration / mvhdBox.timescale
@@ -901,7 +1147,7 @@ class VideoMediaHeaderBox extends Box
 
     @graphicsmode = bits.read_bits 16
     if @graphicsmode isnt 0
-      console.warn "warning: vmhd: non-standard graphicsmode: #{@graphicsmode}"
+      logger.warn "[mp4] warning: vmhd: non-standard graphicsmode: #{@graphicsmode}"
     @opcolor = {}
     @opcolor.red = bits.read_bits 16
     @opcolor.green = bits.read_bits 16
@@ -1001,7 +1247,7 @@ class SampleDescriptionBox extends Box
         when 'hint'  # hint track
           @children.push Box.parse bits, this, HintSampleEntry
         else
-          console.log "warning: mp4: ignoring a sample entry for unknown handlerType: #{handlerType}"
+          logger.warn "[mp4] warning: ignoring a sample entry for unknown handlerType in stsd box: #{handlerType}"
     return
 
 class HintSampleEntry extends Box
@@ -1177,6 +1423,27 @@ class TimeToSampleBox extends Box
       time += entry.sampleDelta * entry.sampleCount
     return time / mdhdBox.timescale
 
+  getSampleAtSeconds: (sec) ->
+    timescale = @findParent('mdia').find('mdhd').timescale
+
+    remainingTime = sec * timescale
+    sampleNumber = 1
+    totalTime = 0
+    for entry in @entries
+      samples = Math.ceil(remainingTime / entry.sampleDelta)
+      if samples <= entry.sampleCount
+        totalTime += samples * entry.sampleDelta
+        return {
+          sampleNumber: sampleNumber + samples
+          time: totalTime
+          seconds: totalTime / timescale
+        }
+      sampleNumber += samples
+      totalTime += samples * entry.sampleDelta
+      remainingTime -= entry.sampleDelta * entry.sampleCount
+    # EOF
+    return null
+
   # Returns a decoding time for the given sample number.
   # The sample number starts at 1.
   getDecodingTime: (sampleNumber) ->
@@ -1246,12 +1513,17 @@ class SampleToChunkBox extends Box
 
     @entryCount = bits.read_uint32()
     @entries = []
+    sampleNumber = 1
     for i in [0...@entryCount]
       firstChunk = bits.read_uint32()
       samplesPerChunk = bits.read_uint32()
       sampleDescriptionIndex = bits.read_uint32()
+      if i > 0
+        lastEntry = @entries[@entries.length - 1]
+        sampleNumber += (firstChunk - lastEntry.firstChunk) * lastEntry.samplesPerChunk
       @entries.push
         firstChunk: firstChunk
+        firstSample: sampleNumber
         samplesPerChunk: samplesPerChunk
         sampleDescriptionIndex: sampleDescriptionIndex
 
@@ -1261,6 +1533,10 @@ class SampleToChunkBox extends Box
       if i is endIndex
         break
       @entries[i].numChunks = @entries[i+1].firstChunk - @entries[i].firstChunk
+
+    # XXX: We could determine the number of chunks in the last batch because
+    #      the total number of samples is known by stts box. However we don't
+    #      need it.
 
     return
 
@@ -1289,6 +1565,13 @@ class SampleToChunkBox extends Box
         return entry.firstChunk + Math.floor((sampleNumber-1) / entry.samplesPerChunk)
       sampleNumber -= entry.samplesPerChunk * entry.numChunks
     throw new Error "Chunk for sample number #{sampleNumber} is not found"
+
+  getFirstSampleNumberInChunk: (chunkNumber) ->
+    for i in [@entries.length-1..0]
+      if chunkNumber >= @entries[i].firstChunk
+        return @entries[i].firstSample +
+          (chunkNumber - @entries[i].firstChunk) * @entries[i].samplesPerChunk
+    return null
 
   getDetails: (detailLevel) ->
     if detailLevel >= 2
@@ -1321,6 +1604,8 @@ class SampleSizeBox extends Box
         @entrySizes.push bits.read_uint32()
     return
 
+  # Returns an array of sample sizes beginning at sampleNumber through
+  # the specified number of samples (len)
   getSampleSizes: (sampleNumber, len=1) ->
     sizes = []
     if @sampleSize isnt 0
@@ -1332,8 +1617,9 @@ class SampleSizeBox extends Box
         sampleNumber++
     return sizes
 
-  # Returns the sample size for the given sample number
-  getSampleSize: (sampleNumber, len=1) ->
+  # Returns the total bytes from sampleNumber through
+  # the specified number of samples (len)
+  getTotalSampleSize: (sampleNumber, len=1) ->
     if @sampleSize isnt 0  # all samples are the same size
       return @sampleSize * len
     else  # the samples have different sizes
@@ -1513,7 +1799,7 @@ class GenericDataBox extends Box
     @entryCount = bits.read_uint32()
     zeroBytes = bits.read_bytes_sum 4
     if zeroBytes isnt 0
-      console.log "warning: mp4: zeroBytes are not all zeros (got #{zeroBytes})"
+      logger.warn "[mp4] warning: zeroBytes are not all zeros (got #{zeroBytes})"
     @value = bits.read_bytes(@length - 16)
     nullPos = @value.indexOf 0x00
     if nullPos is 0
@@ -1820,8 +2106,7 @@ class CompositionOffsetBox extends Box
       sampleNumber -= entry.sampleCount
     throw new Error "mp4: ctts: composition time for sample number #{sampleNumber} not found"
 
-# '\xa9too' (actually '\xa9' expands to [0xc2, 0xa9])
-# (copyright sign) + 'too'
+# '\xa9too' (copyright sign + 'too')
 class CTOOBox extends GenericDataBox
 
 

@@ -10,6 +10,7 @@ dgram = require 'dgram'
 os = require 'os'
 crypto = require 'crypto'
 url = require 'url'
+Sequent = require 'sequent'
 
 rtp = require './rtp'
 sdp = require './sdp'
@@ -1296,6 +1297,9 @@ class RTSPServer
         sdpData.videoWidth              = stream.videoWidth
         sdpData.videoFrameRate          = stream.videoFrameRate.toFixed 1
 
+      if stream.isRecorded()
+        sdpData.durationSeconds = stream.durationSeconds
+
       try
         body = sdp.createSDP sdpData
       catch e
@@ -1516,6 +1520,11 @@ class RTSPServer
     # after the response, client will send one or two RTP packets to this server
 
   respondPlay: (socket, req, callback) ->
+    if req.headers.range? and (match = /npt=([\d.]+)-/.exec req.headers.range)?
+      startTime = parseFloat match[1]
+    else
+      startTime = null
+
     client = @clients[socket.clientID]
     if not socket.isAuthenticated
       @respondWithNotFound 'RTSP', callback
@@ -1526,6 +1535,30 @@ class RTSPServer
     if not stream?
       @respondWithNotFound 'RTSP', callback
       return
+
+    rangeStartTime = 0
+    seq = new Sequent
+    if stream.isRecorded()
+      if not startTime? and stream.isPaused()
+        startTime = stream.getCurrentPlayTime()
+        logger.info "[rtsp] resuming stream at #{stream.getCurrentPlayTime()}"
+      if startTime?
+        logger.info "[rtsp] seeking to #{startTime}"
+        stream.pause()
+        rangeStartTime = startTime
+        stream.seek startTime, (err, actualStartTime) ->
+          if err
+            logger.error "[rtsp] error: seek failed: #{err}"
+            return
+          logger.info "[rtsp] seeked stream to #{startTime}"
+          stream.sendVideoPacketsSinceLastKeyFrame startTime, ->
+            stream.resume()
+            seq.done()
+      else
+        seq.done()
+    else
+      seq.done()
+
 
 #    if (req.headers['user-agent']?.indexOf('QuickTime') > -1) and
 #    not client.getClient?.useTCPForVideo
@@ -1540,60 +1573,54 @@ class RTSPServer
     # rtptime: Indicates the RTP timestamp corresponding to the time value in
     #          the Range response header.
     # TODO: Send this response after the first packet for this stream arrives
-    baseUrl = req.uri.replace /\/$/, ''
-    rtpInfos = []
-    if stream.isAudioStarted
-      rtpInfos.push "url=#{baseUrl}/trackID=1;seq=#{@getNextAudioSequenceNumber stream};rtptime=#{@getNextAudioRTPTimestamp stream}"
-    if stream.isVideoStarted
-      rtpInfos.push "url=#{baseUrl}/trackID=2;seq=#{@getNextVideoSequenceNumber stream};rtptime=#{@getNextVideoRTPTimestamp stream}"
-    res = """
-    RTSP/1.0 200 OK
-    Range: npt=0.0-
-    Session: #{client.sessionID};timeout=60
-    CSeq: #{req.headers.cseq}
-    RTP-Info: #{rtpInfos.join ','}
-    Server: #{@serverName}
-    Cache-Control: no-cache
+    seq.wait 1, =>
+      baseUrl = req.uri.replace /\/$/, ''
+      rtpInfos = []
+      if stream.isAudioStarted
+        rtpInfos.push "url=#{baseUrl}/trackID=1;seq=#{@getNextAudioSequenceNumber stream};rtptime=#{@getNextAudioRTPTimestamp stream}"
+      if stream.isVideoStarted
+        rtpInfos.push "url=#{baseUrl}/trackID=2;seq=#{@getNextVideoSequenceNumber stream};rtptime=#{@getNextVideoRTPTimestamp stream}"
+      res = """
+      RTSP/1.0 200 OK
+      Range: npt=#{rangeStartTime}-
+      Session: #{client.sessionID};timeout=60
+      CSeq: #{req.headers.cseq}
+      RTP-Info: #{rtpInfos.join ','}
+      Server: #{@serverName}
+      Cache-Control: no-cache
 
 
-    """.replace /\n/g, "\r\n"
-    if not preventFromPlaying
-      stream.rtspNumClients++
-      if client.useHTTP
-        logger.info "[#{TAG}] start streaming to #{client.getClient.id} over HTTP GET"
-        if ENABLE_START_PLAYING_FROM_KEYFRAME and stream.isVideoStarted
-          client.getClient.isWaitingForKeyFrame = true
+      """.replace /\n/g, "\r\n"
+      if not preventFromPlaying
+        stream.rtspNumClients++
+        client.enablePlaying()
+        if client.useHTTP
+          logger.info "[#{TAG}] start streaming to #{client.getClient.id} over HTTP GET"
+          stream.rtspClients[client.getClient.id] = client.getClient
+          client.clientType = 'http-post'
+          client.getClient.clientType = 'http-get'
+          @dumpClients()
+        else if client.useTCPForVideo  # or client.useTCPForAudio?
+          logger.info "[#{TAG}] start streaming to #{client.id} over TCP"
+          stream.rtspClients[client.id] = client
+          client.clientType = 'tcp'
+          @dumpClients()
         else
-          client.getClient.isPlaying = true
-        stream.rtspClients[client.getClient.id] = client.getClient
-        client.clientType = 'http-post'
-        client.getClient.clientType = 'http-get'
-        @dumpClients()
-      else if client.useTCPForVideo  # or client.useTCPForAudio?
-        logger.info "[#{TAG}] start streaming to #{client.id} over TCP"
-        if ENABLE_START_PLAYING_FROM_KEYFRAME and stream.isVideoStarted
-          client.isWaitingForKeyFrame = true
+          logger.info "[#{TAG}] start streaming to #{client.id} over UDP"
+          if ENABLE_START_PLAYING_FROM_KEYFRAME and stream.isVideoStarted
+            client.isWaitingForKeyFrame = true
+          else
+            client.isPlaying = true
+          stream.rtspClients[client.id] = client
+          client.clientType = 'udp'
+          @dumpClients()
+        if client.useHTTP
+          @startSendingRTCP stream, client.getClient
         else
-          client.isPlaying = true
-        stream.rtspClients[client.id] = client
-        client.clientType = 'tcp'
-        @dumpClients()
+          @startSendingRTCP stream, client
       else
-        logger.info "[#{TAG}] start streaming to #{client.id} over UDP"
-        if ENABLE_START_PLAYING_FROM_KEYFRAME and stream.isVideoStarted
-          client.isWaitingForKeyFrame = true
-        else
-          client.isPlaying = true
-        stream.rtspClients[client.id] = client
-        client.clientType = 'udp'
-        @dumpClients()
-      if client.useHTTP
-        @startSendingRTCP stream, client.getClient
-      else
-        @startSendingRTCP stream, client
-    else
-      logger.info "[#{TAG}] not playing"
-    callback null, res
+        logger.info "[#{TAG}] not playing"
+      callback null, res
 
   respondPause: (socket, req, callback) ->
     client = @clients[socket.clientID]
@@ -1601,12 +1628,9 @@ class RTSPServer
       @respondWithNotFound 'RTSP', callback
       return
     @stopSendingRTCP client
-    if client.useHTTP
-      client.getClient.isWaitingForKeyFrame = false
-      client.getClient.isPlaying = false
-    else
-      client.isWaitingForKeyFrame = false
-      client.isPlaying = false
+    client.disablePlaying()
+    if client.stream.isRecorded()
+      client.stream.pause()
     res = """
     RTSP/1.0 200 OK
     Session: #{client.sessionID};timeout=60
@@ -1629,12 +1653,7 @@ class RTSPServer
     if not socket.isAuthenticated
       @respondWithNotFound 'RTSP', callback
       return
-    if client.useHTTP
-      client.getClient.isWaitingForKeyFrame = false
-      client.getClient.isPlaying = false
-    else
-      client.isWaitingForKeyFrame = false
-      client.isPlaying = false
+    client.disablePlaying()
     if stream?.rtspClients[client.id]?
       delete stream.rtspClients[client.id]
       stream.rtspNumClients--
@@ -1857,6 +1876,26 @@ class RTSPClient
 
     for name, value of opts
       @[name] = value
+
+  disablePlaying: ->
+    if @useHTTP
+      @getClient.isWaitingForKeyFrame = false
+      @getClient.isPlaying = false
+    else
+      @isWaitingForKeyFrame = false
+      @isPlaying = false
+
+  enablePlaying: ->
+    if @useHTTP
+      if ENABLE_START_PLAYING_FROM_KEYFRAME and client.stream.isVideoStarted
+        @getClient.isWaitingForKeyFrame = true
+      else
+        @getClient.isPlaying = true
+    else
+      if ENABLE_START_PLAYING_FROM_KEYFRAME and stream.isVideoStarted
+        @isWaitingForKeyFrame = true
+      else
+        @isPlaying = true
 
   toString: ->
     if not @socket.remoteAddress?

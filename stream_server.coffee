@@ -107,21 +107,25 @@ class StreamServer
   attachMP4: (filename, streamName) ->
     logger.info "attachMP4: filename=#{filename} streamName=#{streamName}"
 
-    mp4File = null
-
+    context = this
     generator = new avstreams.AVStreamGenerator
       # Generate an AVStream upon request
-      generate: =>
-        mp4File = new mp4.MP4File filename
+      generate: ->
+        try
+          mp4File = new mp4.MP4File filename
+        catch err
+          logger.error "error opening #{filename}: #{err}"
+          return null
         mp4Stream = avstreams.create()
         mp4Stream.type = avstreams.STREAM_TYPE_RECORDED
         audioSpecificConfig = null
-        mp4File.on 'audio_data', (data, pts) =>
-          @onReceiveAudioAccessUnits mp4Stream, [ data ], pts, pts
-        mp4File.on 'video_data', (data, pts) =>
-          @onReceiveVideoNALUnits mp4Stream, [ data ], pts, pts
+        mp4File.on 'audio_data', (data, pts) ->
+          context.onReceiveAudioAccessUnits mp4Stream, [ data ], pts, pts
+        mp4File.on 'video_data', (data, pts, dts) ->
+          if not dts?
+            dts = pts
+          context.onReceiveVideoNALUnits mp4Stream, [ data ], pts, dts
         mp4File.on 'close', =>
-          logger.info "received EOF from mp4 file #{filename}"
           mp4Stream.emit 'end'
         mp4File.parse()
         mp4Stream.updateSPS mp4File.getSPS()
@@ -136,15 +140,39 @@ class StreamServer
           audioClockRate: 90000
           audioChannels: ascInfo.channelConfiguration
           audioObjectType: ascInfo.audioObjectType
-        mp4File.play()
-        @onReceiveAudioControlBuffer mp4Stream
-        @onReceiveVideoControlBuffer mp4Stream
+        mp4File.fillBuffer =>
+          context.onReceiveAudioControlBuffer mp4Stream
+          context.onReceiveVideoControlBuffer mp4Stream
+          mp4File.play()
+        mp4Stream.durationSeconds = mp4File.getDurationSeconds()
+        mp4Stream.lastTagTimestamp = mp4File.getLastTimestamp()
+        mp4Stream.mp4File = mp4File
         return mp4Stream
 
-      play: =>
+      play: ->
 
-      teardown: =>
-        mp4File.stop()
+      pause: ->
+        @mp4File.pause()
+
+      resume: ->
+        return @mp4File.resume()
+
+      seek: (seekSeconds, callback) ->
+        actualStartTime = @mp4File.seek seekSeconds
+        @mp4File.fillBuffer ->
+          callback null, actualStartTime
+
+      sendVideoPacketsSinceLastKeyFrame: (endSeconds, callback) ->
+        @mp4File.sendVideoPacketsSinceLastKeyFrame endSeconds, callback
+
+      teardown: ->
+        @mp4File.stop()
+
+      getCurrentPlayTime: ->
+        return @mp4File.currentPlayTime
+
+      isPaused: ->
+        return @mp4File.isPaused()
 
     avstreams.addGenerator streamName, generator
 
@@ -173,7 +201,6 @@ class StreamServer
 
   # buf argument can be null (not used)
   onReceiveVideoControlBuffer: (stream, buf) ->
-    logger.debug "video start"
     stream.resetFrameRate stream
     stream.isVideoStarted = true
     stream.timeAtVideoStart = Date.now()
@@ -182,7 +209,6 @@ class StreamServer
 
   # buf argument can be null (not used)
   onReceiveAudioControlBuffer: (stream, buf) ->
-    logger.debug "audio start"
     stream.isAudioStarted = true
     stream.timeAtAudioStart = Date.now()
     stream.timeAtVideoStart = stream.timeAtAudioStart
