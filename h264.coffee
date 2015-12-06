@@ -309,10 +309,8 @@ api =
     api.read_sei_payload(bits, payloadType, payloadSize)
 
   readSEI: (nalUnit) ->
-    nalUnitCopy = new Buffer nalUnit.length
-    nalUnit.copy nalUnitCopy
-    api.removeEmulationPreventionByte nalUnitCopy
-    bits = new Bits nalUnitCopy
+    nalUnit = api.removeEmulationPreventionByte nalUnit
+    bits = new Bits nalUnit
     api.read_nal_header bits
     loop
       api.read_sei_message bits
@@ -321,10 +319,8 @@ api =
     return
 
   readPPS: (nalUnit) ->
-    nalUnitCopy = new Buffer nalUnit.length
-    nalUnit.copy nalUnitCopy
-    api.removeEmulationPreventionByte nalUnitCopy
-    bits = new Bits nalUnitCopy
+    nalUnit = api.removeEmulationPreventionByte nalUnit
+    bits = new Bits nalUnit
     api.read_nal_header bits
     pic_parameter_set_id = bits.read_ue()
     seq_parameter_set_id = bits.read_ue()
@@ -411,10 +407,8 @@ api =
 
   readSPS: (nalUnit) ->
     sps = {}
-    nalUnitCopy = new Buffer nalUnit.length
-    nalUnit.copy nalUnitCopy
-    api.removeEmulationPreventionByte nalUnitCopy
-    bits = new Bits nalUnitCopy
+    nalUnit = api.removeEmulationPreventionByte nalUnit
+    bits = new Bits nalUnit
     api.read_nal_header bits
     sps.profile_idc = bits.read_byte()
     sps.constraint_set0_flag = bits.read_bit()
@@ -743,10 +737,8 @@ api =
 
   parseNALUnit: (nalUnit) ->
     data = {}
-    nalUnitCopy = new Buffer nalUnit.length
-    nalUnit.copy nalUnitCopy
-    api.removeEmulationPreventionByte nalUnitCopy
-    bits = new Bits nalUnitCopy
+    nalUnit = api.removeEmulationPreventionByte nalUnit
+    bits = new Bits nalUnit
     data.nalHeader = api.read_nal_header bits
     if data.nalHeader.nal_unit_type in [
       api.NAL_UNIT_TYPE_NON_IDR_PICTURE
@@ -755,16 +747,30 @@ api =
       api.read_slice_header bits, data
     return data
 
-  # Removes emulation prevention byte (0x000003)
+  # Removes all emulation prevention bytes (0x03 in 0x000003) from nalUnit and
+  # returns a new Buffer. If no emulation prevention bytes found in nalUnit,
+  # the returned value is the same Buffer instance as the given nalUnit.
   removeEmulationPreventionByte: (nalUnit) ->
     searchPos = 0
+    removeBytePositions = []
     loop
       emulPos = Bits.searchBytesInArray nalUnit, [0x00, 0x00, 0x03], searchPos
       if emulPos is -1
         break
-      nalUnit[emulPos+2..emulPos+2] = []  # Remove 0x03
-      searchPos = emulPos + 2
-    return
+      removeBytePositions.push emulPos + 2
+      searchPos = emulPos + 3
+    if removeBytePositions.length > 0
+      newBuf = new Buffer nalUnit.length - removeBytePositions.length
+      currentSrcPos = 0
+      for pos, i in removeBytePositions
+        # srcBuf.copy(destBuf, destStart, srcStart, srcEnd)
+        nalUnit.copy newBuf, currentSrcPos - i, currentSrcPos, pos
+        currentSrcPos = pos + 1
+      if currentSrcPos < nalUnit.length
+        nalUnit.copy newBuf, currentSrcPos - removeBytePositions.length,
+          currentSrcPos, nalUnit.length
+      nalUnit = newBuf
+    return nalUnit
 
   # opts:
   #   retrieveOnly (boolean): if true, videoBuf remains intact
