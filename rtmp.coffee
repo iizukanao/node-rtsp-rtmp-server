@@ -2265,6 +2265,7 @@ class RTMPSession
         @respondPause commandMessage, callback
       when 'pauseRaw'
         logger.debug "[rtmp] ignoring pauseRaw"
+        callback null
 #        @respondPauseRaw commandMessage, callback
       # Methods used for publishing from the client
       when 'seek'
