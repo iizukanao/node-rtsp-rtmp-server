@@ -95,7 +95,9 @@ class AVStream
   calcFrameRate: (pts) ->
     if @frameRateCalcBasePTS?
       diffMs = (pts - @frameRateCalcBasePTS) / 90
-      @frameRateCalcNumFrames++
+      if pts isnt @lastPTS
+        @frameRateCalcNumFrames++
+        @lastPTS = pts
       if (@frameRateCalcNumFrames >= 150) or (diffMs >= 5000)
         frameRate = @frameRateCalcNumFrames * 1000 / diffMs
         if frameRate isnt @videoFrameRate
@@ -104,9 +106,11 @@ class AVStream
           @emit 'update_frame_rate', frameRate
         @frameRateCalcBasePTS = pts
         @frameRateCalcNumFrames = 0
+        @lastPTS = null
     else
       @frameRateCalcBasePTS = pts
       @frameRateCalcNumFrames = 0
+      @lastPTS = null
 
   updateConfig: (obj) ->
     isConfigUpdated = false
