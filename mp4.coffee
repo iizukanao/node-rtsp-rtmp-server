@@ -1996,7 +1996,7 @@ class AVCConfigurationBox extends Box
     # AVCDecoderConfigurationRecord
     @configurationVersion = bits.read_byte()
     if @configurationVersion isnt 1
-      throw new "mp4: avcC: unknown configurationVersion: #{@configurationVersion}"
+      logger.warn "warning: mp4: avcC: unknown configurationVersion: #{@configurationVersion}"
     @AVCProfileIndication = bits.read_byte()
     @profileCompatibility = bits.read_byte()
     @AVCLevelIndication = bits.read_byte()
