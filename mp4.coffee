@@ -146,7 +146,7 @@ class MP4File
     # Get next sample number
     stblBox = @videoTrakBox.child('mdia').child('minf').child('stbl')
     sttsBox = stblBox.child('stts') # TimeToSampleBox
-    videoSample = sttsBox.getSampleAtSeconds endSeconds
+    videoSample = sttsBox.getSampleAfterSeconds endSeconds
     if videoSample?
       videoSampleNumber = videoSample.sampleNumber
     else
@@ -220,44 +220,56 @@ class MP4File
     seq.wait 2, callback
 
   seek: (seekSeconds=0) ->
+    logger.debug "[mp4:#{@filename}] seek: seconds=#{seekSeconds}"
     @clearBuffers()
 
-    # Find out starting play time by video sample
-    stblBox = @videoTrakBox.child('mdia').child('minf').child('stbl')
-    sttsBox = stblBox.child('stts') # TimeToSampleBox
-    videoSample = sttsBox.getSampleAtSeconds seekSeconds
-    if videoSample?
-      videoSampleSeconds = videoSample.seconds
-      @currentPlayTime = videoSampleSeconds
-      videoSampleNumber = videoSample.sampleNumber
-    else
-      # No video sample left
-      @isVideoEOF = true
-      @currentPlayTime = @getDurationSeconds()
-      videoSampleNumber = @numVideoSamples + 1
-      videoSampleSeconds = @currentPlayTime
-
-    # Look for the corresponding audio sample
-    stblBox = @audioTrakBox.child('mdia').child('minf').child('stbl')
-    sttsBox = stblBox.child('stts') # TimeToSampleBox
-    audioSample = sttsBox.getSampleAtSeconds seekSeconds
-    if audioSample?
-      audioSampleNumber = audioSample.sampleNumber
-
-      if videoSampleSeconds <= audioSample.seconds
-        minTime = videoSampleSeconds
+    if @videoTrakBox?
+      # Seek video sample
+      stblBox = @videoTrakBox.child('mdia').child('minf').child('stbl')
+      sttsBox = stblBox.child('stts') # TimeToSampleBox
+      videoSample = sttsBox.getSampleAfterSeconds seekSeconds
+      if videoSample?
+        videoSampleSeconds = videoSample.seconds
+        @currentPlayTime = videoSampleSeconds
+        videoSampleNumber = videoSample.sampleNumber
       else
-        minTime = audioSample.seconds
-      if @currentPlayTime isnt minTime
-        @currentPlayTime = minTime
+        # No video sample left
+        @isVideoEOF = true
+        @currentPlayTime = @getDurationSeconds()
+        videoSampleNumber = @numVideoSamples + 1
+        videoSampleSeconds = @currentPlayTime
     else
-      # No audio sample left
-      audioSampleNumber = @numAudioSamples + 1
-      @isAudioEOF = true
+      videoSampleNumber = null
+      videoSampleSeconds = null
 
-    @consumedAudioSamples = audioSampleNumber - 1
-    @consumedVideoSamples = videoSampleNumber - 1
+    if @audioTrakBox?
+      # Seek audio sample
+      stblBox = @audioTrakBox.child('mdia').child('minf').child('stbl')
+      sttsBox = stblBox.child('stts') # TimeToSampleBox
+      audioSample = sttsBox.getSampleAfterSeconds seekSeconds
+      if audioSample?
+        audioSampleNumber = audioSample.sampleNumber
 
+        if videoSampleSeconds? and (videoSampleSeconds <= audioSample.seconds)
+          minTime = videoSampleSeconds
+        else
+          minTime = audioSample.seconds
+        if @currentPlayTime isnt minTime
+          @currentPlayTime = minTime
+      else
+        # No audio sample left
+        audioSampleNumber = @numAudioSamples + 1
+        @isAudioEOF = true
+    else
+      audioSampleNumber = null
+
+    if audioSampleNumber?
+      @consumedAudioSamples = audioSampleNumber - 1
+
+    if videoSampleNumber?
+      @consumedVideoSamples = videoSampleNumber - 1
+
+    logger.debug "[mp4:#{@filename}] set current play time to #{@currentPlayTime}"
     return @currentPlayTime
 
   play: ->
@@ -1034,6 +1046,8 @@ class EditListBox extends Box
     #       elst <- self
     mvhdBox = @findParent('moov').find('mvhd')
 
+    # We cannot get mdhd box at this time, since it is not parsed yet
+
     entryCount = bits.read_uint32()
     @entries = []
     for i in [1..entryCount]
@@ -1048,17 +1062,47 @@ class EditListBox extends Box
       if mediaRateFraction isnt 0
         logger.warn "[mp4] warning: media_rate_fraction is not 0 in elst box: #{mediaRateFraction}"
       @entries.push
-        segmentDuration: segmentDuration
+        segmentDuration: segmentDuration  # in Movie Header Box (mvhd) timescale
         segmentDurationSeconds: segmentDuration / mvhdBox.timescale
-        mediaTime: mediaTime
+        mediaTime: mediaTime  # in media (mdhd) timescale
         mediaRate: mediaRateInteger + mediaRateFraction / 65536 # TODO: Is this correct?
 
     if bits.has_more_data()
       throw new Error "elst box has more data"
 
+  # Returns the starting offset for this track in mdhd timescale units
+  getEmptyDuration: ->
+    time = 0
+    for entry in @entries
+      if entry.mediaTime is -1  # empty edit
+        # moov
+        #   mvhd <- find target
+        #   iods
+        #   trak
+        #     tkhd
+        #     edts
+        #       elst <- self
+        mvhdBox = @findParent('moov').child('mvhd')
+
+        #   trak
+        #     tkhd
+        #     edts
+        #       elst <- self
+        #     mdia
+        #       mdhd <- find target
+        mdhdBox = @findParent('trak').child('mdia').child('mdhd')
+        if not mdhdBox?
+          throw new Error "cannot access mdhd box (not parsed yet?)"
+
+        # Convert segmentDuration from mvhd timescale to mdhd timescale
+        time += entry.segmentDuration * mdhdBox.timescale / mvhdBox.timescale
+      else
+        # mediaTime is already in mdhd timescale, so no conversion needed
+        return time + entry.mediaTime
+
   getDetails: (detailLevel) ->
-    @entries.map((entry) ->
-      "segmentDurationSeconds=#{entry.segmentDurationSeconds} mediaTime=#{entry.mediaTime} mediaRate=#{entry.mediaRate}"
+    @entries.map((entry, index) ->
+      "[#{index}]:segmentDuration=#{entry.segmentDuration},segmentDurationSeconds=#{entry.segmentDurationSeconds},mediaTime=#{entry.mediaTime},mediaRate=#{entry.mediaRate}"
     ).join(',')
 
   getTree: ->
@@ -1423,34 +1467,74 @@ class TimeToSampleBox extends Box
       time += entry.sampleDelta * entry.sampleCount
     return time / mdhdBox.timescale
 
-  getSampleAtSeconds: (sec) ->
+  # Returns a sample which comes exactly at or immediately after
+  # the specified time (in seconds). If isExclusive=true, it excludes
+  # a sample whose timestamp is equal to the specified time.
+  # If there is no matching sample, this method returns null.
+  getSampleAfterSeconds: (sec, isExclusive=false) ->
     timescale = @findParent('mdia').find('mdhd').timescale
-
     remainingTime = sec * timescale
     sampleNumber = 1
     totalTime = 0
     for entry in @entries
-      samples = Math.ceil(remainingTime / entry.sampleDelta)
-      if samples <= entry.sampleCount
-        totalTime += samples * entry.sampleDelta
+      numSamples = Math.ceil(remainingTime / entry.sampleDelta)
+      if numSamples <= entry.sampleCount
+        totalTime += numSamples * entry.sampleDelta
+        totalSeconds = totalTime / timescale
+        if isExclusive and (totalSeconds <= sec)
+          numSamples++
+          totalTime += entry.sampleDelta
+          totalSeconds = totalTime / timescale
         return {
-          sampleNumber: sampleNumber + samples
+          sampleNumber: sampleNumber + numSamples
+          time: totalTime
+          seconds: totalSeconds
+        }
+      sampleNumber += entry.sampleCount
+      entryDuration = entry.sampleDelta * entry.sampleCount
+      totalTime += entryDuration
+      remainingTime -= entryDuration
+
+    # EOF
+    return null
+
+  # Returns a sample which represents the data at the specified time
+  # (in seconds). If there is no sample at the specified time, this
+  # method returns null.
+  getSampleAtSeconds: (sec) ->
+    timescale = @findParent('mdia').find('mdhd').timescale
+    remainingTime = sec * timescale
+    sampleNumber = 1
+    totalTime = 0
+    for entry in @entries
+      sampleIndexInChunk = Math.floor(remainingTime / entry.sampleDelta)
+      if sampleIndexInChunk < entry.sampleCount
+        totalTime += sampleIndexInChunk * entry.sampleDelta
+        return {
+          sampleNumber: sampleNumber + sampleIndexInChunk
           time: totalTime
           seconds: totalTime / timescale
         }
-      sampleNumber += samples
-      totalTime += samples * entry.sampleDelta
-      remainingTime -= entry.sampleDelta * entry.sampleCount
+      sampleNumber += entry.sampleCount
+      entryDuration = entry.sampleDelta * entry.sampleCount
+      totalTime += entryDuration
+      remainingTime -= entryDuration
+
     # EOF
     return null
 
   # Returns a decoding time for the given sample number.
   # The sample number starts at 1.
   getDecodingTime: (sampleNumber) ->
-    mdhdBox = @findParent('mdia').find('mdhd')
+    trakBox = @findParent('trak')
+    elstBox = trakBox.child('edts')?.child('elst')
+    mdhdBox = trakBox.child('mdia').child('mdhd')
 
     sampleNumber--
-    time = 0
+    if elstBox?
+      time = elstBox.getEmptyDuration()
+    else
+      time = 0
     for entry in @entries
       if sampleNumber > entry.sampleCount
         time += entry.sampleDelta * entry.sampleCount
@@ -1466,8 +1550,8 @@ class TimeToSampleBox extends Box
   getDetails: (detailLevel) ->
     str = "entryCount=#{@entryCount}"
     if detailLevel >= 2
-      str += ' ' + @entries.map((entry) ->
-        "sampleCount=#{entry.sampleCount} sampleDelta=#{entry.sampleDelta}"
+      str += ' ' + @entries.map((entry, index) ->
+        "[#{index}]:sampleCount=#{entry.sampleCount},sampleDelta=#{entry.sampleDelta}"
       ).join(',')
     return str
 
