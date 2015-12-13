@@ -116,6 +116,12 @@ class MP4File
       process.stdout.write box.dump 0, 2
     return
 
+  hasVideo: ->
+    return @videoTrakBox?
+
+  hasAudio: ->
+    return @audioTrakBox?
+
   getSPS: ->
     avcCBox = @videoTrakBox.find 'avcC'
     return avcCBox.sequenceParameterSets[0]
@@ -143,6 +149,10 @@ class MP4File
       logger.debug "[mp4:#{@filename}] already paused"
 
   sendVideoPacketsSinceLastKeyFrame: (endSeconds, callback) ->
+    if not @videoTrakBox?  # video trak does not exist
+      callback? null
+      return
+
     # Get next sample number
     stblBox = @videoTrakBox.child('mdia').child('minf').child('stbl')
     sttsBox = stblBox.child('stts') # TimeToSampleBox
@@ -423,22 +433,34 @@ class MP4File
     callback?()
 
   getNumVideoSamples: ->
-    sttsBox = @videoTrakBox.find 'stts'
-    return sttsBox.getTotalSamples()
+    if @videoTrakBox?
+      sttsBox = @videoTrakBox.find 'stts'
+      return sttsBox.getTotalSamples()
+    else
+      return 0
 
   getNumAudioSamples: ->
-    sttsBox = @audioTrakBox.find 'stts'
-    return sttsBox.getTotalSamples()
+    if @audioTrakBox?
+      sttsBox = @audioTrakBox.find 'stts'
+      return sttsBox.getTotalSamples()
+    else
+      return 0
 
   # Returns the timestamp of the last sample in the file
   getLastTimestamp: ->
-    numVideoSamples = @getNumVideoSamples()
-    sttsBox = @videoTrakBox.find 'stts'
-    videoLastTimestamp = sttsBox.getDecodingTime(numVideoSamples).seconds
+    if @videoTrakBox?
+      numVideoSamples = @getNumVideoSamples()
+      sttsBox = @videoTrakBox.find 'stts'
+      videoLastTimestamp = sttsBox.getDecodingTime(numVideoSamples).seconds
+    else
+      videoLastTimestamp = 0
 
-    numAudioSamples = @getNumAudioSamples()
-    sttsBox = @audioTrakBox.find 'stts'
-    audioLastTimestamp = sttsBox.getDecodingTime(numAudioSamples).seconds
+    if @audioTrakBox?
+      numAudioSamples = @getNumAudioSamples()
+      sttsBox = @audioTrakBox.find 'stts'
+      audioLastTimestamp = sttsBox.getDecodingTime(numAudioSamples).seconds
+    else
+      audioLastTimestamp = 0
 
     if audioLastTimestamp > videoLastTimestamp
       return audioLastTimestamp
