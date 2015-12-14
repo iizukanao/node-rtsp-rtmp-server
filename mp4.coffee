@@ -1495,7 +1495,12 @@ class TimeToSampleBox extends Box
     timescale = @findParent('mdia').find('mdhd').timescale
     remainingTime = sec * timescale
     sampleNumber = 1
-    totalTime = 0
+    elstBox = @findParent('trak').child('edts')?.child('elst')
+    if elstBox?
+      totalTime = elstBox.getEmptyDuration()
+      remainingTime -= totalTime
+    else
+      totalTime = 0
     for entry in @entries
       numSamples = Math.ceil(remainingTime / entry.sampleDelta)
       if numSamples <= entry.sampleCount
@@ -1525,7 +1530,12 @@ class TimeToSampleBox extends Box
     timescale = @findParent('mdia').find('mdhd').timescale
     remainingTime = sec * timescale
     sampleNumber = 1
-    totalTime = 0
+    elstBox = @findParent('trak').child('edts')?.child('elst')
+    if elstBox?
+      totalTime = elstBox.getEmptyDuration()
+      remainingTime -= totalTime
+    else
+      totalTime = 0
     for entry in @entries
       sampleIndexInChunk = Math.floor(remainingTime / entry.sampleDelta)
       if sampleIndexInChunk < entry.sampleCount
