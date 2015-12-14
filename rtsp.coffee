@@ -274,7 +274,7 @@ class RTSPServer
   # @public
   sendAudioData: (stream, accessUnits, pts, dts) ->
     if not stream.audioSampleRate?
-      throw new Error "audio sample rate isn't detected"
+      throw new Error "audio sample rate has not been detected for stream #{stream.id}"
 
     # timestamp: RTP timestamp in audioClockRate
     # pts: PTS in 90 kHz clock
@@ -348,7 +348,7 @@ class RTSPServer
 
   sendEOS: (stream) ->
     for clientID, client of stream.rtspClients
-      logger.debug "[rtsp:#{stream.id}] sending goodbye to client #{clientID}"
+      logger.debug "[#{TAG}:client=#{clientID}] sending goodbye for stream #{stream.id}"
       buf = new Buffer rtp.createGoodbye
         ssrcs: [ client.videoSSRC ]
       if client.useTCPForVideo
@@ -403,7 +403,7 @@ class RTSPServer
       # New client is connected
       @highestClientID++
       id_str = 'c' + @highestClientID
-      logger.info "[#{TAG}] client #{id_str} connected"
+      logger.info "[#{TAG}:client=#{id_str}] connected"
       generateNewSessionID (err, sessionID) =>
         throw err if err
         client = @clients[id_str] = new RTSPClient
@@ -418,9 +418,8 @@ class RTSPServer
         c.requestCount = 0
         c.responseCount = 0
         c.on 'close', =>
-          logger.info "[#{TAG}] client #{id_str} is closed"
-
-          logger.debug "[client:#{id_str}] teardown: session=#{sessionID}"
+          logger.info "[#{TAG}:client=#{id_str}] disconnected"
+          logger.debug "[#{TAG}:client=#{id_str}] teardown: session=#{sessionID}"
           try
             c.end()
           catch e
@@ -528,16 +527,30 @@ class RTSPServer
         listener args...
     return
 
-  @getStreamIdFromUri: (uri) ->
+  # rtsp://localhost:80/live/a -> live/a
+  # This method returns null if no stream id is extracted from the uri
+  @getStreamIdFromUri: (uri, removeDepthFromEnd=0) ->
     try
       pathname = url.parse(uri).pathname
     catch e
       return null
-    if pathname.indexOf('/live/') is 0  # starts with /live/
-      pathname = pathname[6..]
-    slashPos = pathname.indexOf '/'
-    if slashPos isnt -1  # remove / and after
-      pathname = pathname[0...slashPos]
+
+    if pathname? and pathname.length > 0
+      # Remove leading slash
+      pathname = pathname[1..]
+
+      # Remove trailing slash
+      if pathname[pathname.length-1] is '/'
+        pathname = pathname[0..pathname.length-2]
+
+      # Go up directories if removeDepthFromEnd is specified
+      while removeDepthFromEnd > 0
+        slashPos = pathname.lastIndexOf '/'
+        if slashPos is -1
+          break
+        pathname = pathname[0...slashPos]
+        removeDepthFromEnd--
+
     return pathname
 
   getStreamByRTSPUDPAddress: (addr, port, channelType) ->
@@ -963,14 +976,13 @@ class RTSPServer
 
       for clientID, client of stream.rtspClients
         if client.isWaitingForKeyFrame and isKeyFrame
-          process.stdout.write "KeyFrame"
           client.isPlaying = true
           client.isWaitingForKeyFrame = false
 
         if client.isPlaying
           rtp.replaceSSRCInRTP rtpBuffer, client.videoSSRC
 
-          logger.tag 'rtsp:out', "[rtsp:stream:#{stream.id}] send video to #{client.id}: fragment n=#{fragmentNumber} timestamp=#{ts} bytes=#{rtpBuffer.length} marker=false" + (if isKeyFrame then " isKeyFrame=#{isKeyFrame}" else "")
+          logger.tag 'rtsp:out', "[rtsp:stream:#{stream.id}] send video to #{client.id}: fragment n=#{fragmentNumber} timestamp=#{ts} bytes=#{rtpBuffer.length} marker=false keyframe=#{isKeyFrame}"
 
           client.videoPacketCount++
           client.videoOctetCount += thisNalUnitLen
@@ -1009,7 +1021,6 @@ class RTSPServer
       rtp.RTP_HEADER_LEN + 2 + nalUnitLen
     for clientID, client of stream.rtspClients
       if client.isWaitingForKeyFrame and isKeyFrame
-        process.stdout.write "KeyFrame"
         client.isPlaying = true
         client.isWaitingForKeyFrame = false
 
@@ -1018,7 +1029,7 @@ class RTSPServer
 
         client.videoPacketCount++
         client.videoOctetCount += nalUnitLen
-        logger.tag 'rtsp:out', "[rtsp:stream:#{stream.id}] send video to #{client.id}: fragment-last n=#{fragmentNumber+1} timestamp=#{ts} bytes=#{rtpBuffer.length} marker=#{marker}" + (if isKeyFrame then " isKeyFrame=#{isKeyFrame}" else "")
+        logger.tag 'rtsp:out', "[rtsp:stream:#{stream.id}] send video to #{client.id}: fragment-last n=#{fragmentNumber+1} timestamp=#{ts} bytes=#{rtpBuffer.length} marker=#{marker} keyframe=#{isKeyFrame}"
         if client.useTCPForVideo
           if client.useHTTP
             if client.httpClientType is 'GET'
@@ -1064,7 +1075,6 @@ class RTSPServer
 
     for clientID, client of stream.rtspClients
       if client.isWaitingForKeyFrame and isKeyFrame
-        process.stdout.write "KeyFrame"
         client.isPlaying = true
         client.isWaitingForKeyFrame = false
 
@@ -1073,7 +1083,7 @@ class RTSPServer
 
         client.videoPacketCount++
         client.videoOctetCount += nalUnitLen
-        logger.tag 'rtsp:out', "[rtsp:stream:#{stream.id}] send video to #{client.id}: single timestamp=#{timestamp}"
+        logger.tag 'rtsp:out', "[rtsp:stream:#{stream.id}] send video to #{client.id}: single timestamp=#{timestamp} keyframe=#{isKeyFrame}"
         if client.useTCPForVideo
           if client.useHTTP
             if client.httpClientType is 'GET'
@@ -1189,6 +1199,8 @@ class RTSPServer
     # There's no response from the server
 
   respondGet: (socket, req, callback) ->
+    liveRegex = new RegExp("^/#{config.liveApplicationName}/(.*)$")
+    recordedRegex = new RegExp("^/#{config.recordedApplicationName}/(.*)$")
     client = @clients[socket.clientID]
     pathname = url.parse(req.uri).pathname
     if pathname is '/crossdomain.xml'
@@ -1196,7 +1208,40 @@ class RTSPServer
         callback err, output,
           close: req.headers.connection?.toLowerCase() isnt 'keep-alive'
       return
-    else if (match = /^\/live\/(.*)$/.exec req.uri)?
+    else if (match = liveRegex.exec req.uri)?
+      # Outgoing channel
+      @consumePathname req.uri, (err) =>
+        if err
+          logger.warn "Failed to consume pathname: #{err}"
+          @respondWithNotFound 'HTTP', callback
+          return
+        client.sessionCookie = req.headers['x-sessioncookie']
+        client.useHTTP = true
+        client.httpClientType = 'GET'
+        if @httpSessions[client.sessionCookie]?
+          postClient = @httpSessions[client.sessionCookie].post
+          if postClient?
+            postClient.getClient = client
+            client.postClient = postClient
+        else
+          @httpSessions[client.sessionCookie] = {}
+        @httpSessions[client.sessionCookie].get = client
+        socket.isAuthenticated = true
+        res = """
+        HTTP/1.0 200 OK
+        Server: #{@serverName}
+        Connection: close
+        Date: #{api.getDateHeader()}
+        Cache-Control: no-store
+        Pragma: no-cache
+        Content-Type: application/x-rtsp-tunnelled
+
+
+        """.replace /\n/g, "\r\n"
+
+        # Do not close the connection
+        callback null, res
+    else if (match = recordedRegex.exec req.uri)?
       # Outgoing channel
       @consumePathname req.uri, (err) =>
         if err
@@ -1244,10 +1289,15 @@ class RTSPServer
       socket.isAuthenticated = true
       client.bandwidth = req.headers.bandwidth
 
-      stream = @getStreamByUri req.uri
+      streamId = RTSPServer.getStreamIdFromUri req.uri
+      stream = null
+      if streamId?
+        stream = avstreams.get streamId
+
       client.stream = stream
 
       if not stream?
+        logger.info "[#{TAG}:client=#{client.id}] requested stream not found: #{streamId}"
         @respondWithNotFound 'RTSP', callback
         return
 
@@ -1270,7 +1320,7 @@ class RTSPServer
         ascInfo = stream.audioASCInfo
         # Check whether explicit hierarchical signaling of SBR is used
         if ascInfo?.explicitHierarchicalSBR and config.rtspDisableHierarchicalSBR
-          logger.debug "[rtsp] converting hierarchical signaling of SBR" +
+          logger.debug "[#{TAG}:client=#{client.id}] converting hierarchical signaling of SBR" +
             " (AudioSpecificConfig=0x#{stream.audioSpecificConfig.toString 'hex'})" +
             " to backward compatible signaling"
           sdpData.audioSpecificConfig = new Buffer aac.createAudioSpecificConfig ascInfo
@@ -1283,7 +1333,7 @@ class RTSPServer
             samplingFrequency: stream.audioSampleRate
             channels: stream.audioChannels
             frameLength: 1024  # TODO: How to detect 960?
-        logger.debug "[rtsp] sending AudioSpecificConfig: 0x#{sdpData.audioSpecificConfig.toString 'hex'}"
+        logger.debug "[#{TAG}:client=#{client.id}] sending AudioSpecificConfig: 0x#{sdpData.audioSpecificConfig.toString 'hex'}"
 
       if stream.isVideoStarted
         sdpData.hasVideo                = true
@@ -1362,12 +1412,13 @@ class RTSPServer
       else
         throw new Error "Unknown URI: #{req.uri}"
 
-      streamId = RTSPServer.getStreamIdFromUri req.uri
+      streamId = RTSPServer.getStreamIdFromUri req.uri, 1
       stream = avstreams.get streamId
       if not stream?
         logger.warn "warning: SETUP specified non-existent stream: #{streamId}"
         logger.warn "         Stream has to be created by ANNOUNCE method."
         stream = avstreams.create streamId
+        stream.type = avstreams.STREAM_TYPE_LIVE
       if not stream.rtspUploadingClient?
         stream.rtspUploadingClient = {}
       if not stream.rtspUploadingClient.uploadingChannels?
@@ -1422,7 +1473,7 @@ class RTSPServer
       """.replace /\n/g, "\r\n"
       callback null, res
     else  # PLAY mode
-      if /trackID=1/.test req.uri  # audio
+      if /trackID=1\/?$/.test req.uri  # audio
         track = 'audio'
         if client.useHTTP
           ssrc = client.getClient.audioSSRC
@@ -1536,23 +1587,25 @@ class RTSPServer
       @respondWithNotFound 'RTSP', callback
       return
 
+    doResumeLater = false
+
     rangeStartTime = 0
     seq = new Sequent
     if stream.isRecorded()
       if not startTime? and stream.isPaused()
         startTime = stream.getCurrentPlayTime()
-        logger.info "[rtsp] resuming stream at #{stream.getCurrentPlayTime()}"
+        logger.info "[#{TAG}:client=#{client.id}] resuming stream at #{stream.getCurrentPlayTime()}"
       if startTime?
-        logger.info "[rtsp] seeking to #{startTime}"
+        logger.info "[#{TAG}:client=#{client.id}] seek to #{startTime}"
         stream.pause()
         rangeStartTime = startTime
         stream.seek startTime, (err, actualStartTime) ->
           if err
-            logger.error "[rtsp] error: seek failed: #{err}"
+            logger.error "[#{TAG}:client=#{client.id}] error: seek failed: #{err}"
             return
-          logger.info "[rtsp] seeked stream to #{startTime}"
+          logger.debug "[#{TAG}:client=#{client.id}] finished seeking stream to #{startTime}"
           stream.sendVideoPacketsSinceLastKeyFrame startTime, ->
-            stream.resume()
+            doResumeLater = true
             seq.done()
       else
         seq.done()
@@ -1595,18 +1648,18 @@ class RTSPServer
         stream.rtspNumClients++
         client.enablePlaying()
         if client.useHTTP
-          logger.info "[#{TAG}] start streaming to #{client.getClient.id} over HTTP GET"
+          logger.info "[#{TAG}:client=#{client.getClient.id}] start streaming over HTTP GET"
           stream.rtspClients[client.getClient.id] = client.getClient
           client.clientType = 'http-post'
           client.getClient.clientType = 'http-get'
           @dumpClients()
         else if client.useTCPForVideo  # or client.useTCPForAudio?
-          logger.info "[#{TAG}] start streaming to #{client.id} over TCP"
+          logger.info "[#{TAG}:client=#{client.id}] start streaming over TCP"
           stream.rtspClients[client.id] = client
           client.clientType = 'tcp'
           @dumpClients()
         else
-          logger.info "[#{TAG}] start streaming to #{client.id} over UDP"
+          logger.info "[#{TAG}:client=#{client.id}] start streaming over UDP"
           if ENABLE_START_PLAYING_FROM_KEYFRAME and stream.isVideoStarted
             client.isWaitingForKeyFrame = true
           else
@@ -1619,8 +1672,11 @@ class RTSPServer
         else
           @startSendingRTCP stream, client
       else
-        logger.info "[#{TAG}] not playing"
+        logger.info "[#{TAG}:client=#{client.id}] not playing"
       callback null, res
+
+      if doResumeLater
+        stream.resume false
 
   respondPause: (socket, req, callback) ->
     client = @clients[socket.clientID]
@@ -1643,13 +1699,13 @@ class RTSPServer
 
   respondTeardown: (socket, req, callback) ->
     client = @clients[socket.clientID]
-    stream = client.stream
-    if stream.type is avstreams.STREAM_TYPE_RECORDED
-      stream.teardown?()
+    stream = client.uploadingStream ? client.stream
     if client is stream?.rtspUploadingClient
-      logger.info "[rtsp] client #{client.id} finished uploading stream #{stream.id}"
+      logger.info "[#{TAG}:client=#{client.id}] finished uploading stream #{stream.id}"
       stream.rtspUploadingClient = null
       stream.emit 'end'
+    if stream?.type is avstreams.STREAM_TYPE_RECORDED
+      stream.teardown?()
     if not socket.isAuthenticated
       @respondWithNotFound 'RTSP', callback
       return
@@ -1677,6 +1733,7 @@ class RTSPServer
       @rtpParser.clearUnorderedPacketBuffer stream.id
     else
       stream = avstreams.create streamId
+      stream.type = avstreams.STREAM_TYPE_LIVE
 
     sdpInfo = sdp.parse req.body
 
@@ -1709,7 +1766,7 @@ class RTSPServer
           logger.error "Error: rtpmap attribute in SDP must have audio channels; assuming 2"
           media.audioChannels = 2
 
-        logger.debug "[rtsp] audio fmtp: #{JSON.stringify media.fmtpParams}"
+        logger.debug "[#{TAG}:client=#{client.id}] audio fmtp: #{JSON.stringify media.fmtpParams}"
 
         if not media.fmtpParams?
           logger.error "Error: fmtp attribute does not exist in SDP"
@@ -1768,7 +1825,7 @@ class RTSPServer
   respondRecord: (socket, req, callback) ->
     client = @clients[socket.clientID]
     streamId = RTSPServer.getStreamIdFromUri req.uri
-    logger.info "[rtsp] client #{client.id} started uploading stream #{streamId}"
+    logger.info "[#{TAG}:client=#{client.id}] started uploading stream #{streamId}"
     stream = avstreams.getOrCreate streamId
     if client.announceSDPInfo.video?  # has video
       @emit 'video_start', stream

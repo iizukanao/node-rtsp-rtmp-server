@@ -74,6 +74,7 @@ class CustomReceiver
       stream.reset()
     else
       stream = avstreams.create streamId
+      stream.type = avstreams.STREAM_TYPE_LIVE
     @internalStream = stream
 
   start: ->

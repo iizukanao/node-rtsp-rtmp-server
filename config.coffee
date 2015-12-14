@@ -51,6 +51,14 @@ module.exports =
 
   # RTMP stream name
   rtmpApplicationName: 'live'
+  liveApplicationName: 'live'
+
+  # MP4 files in recordedDir will be accessible at
+  # rtsp://{host}/{recordedApplicationName}/{filename} or
+  # rtmp://{host}/{recordedApplicationName}/mp4:{filename}
+  # To disable this feature, comment out the following two lines.
+  recordedApplicationName: 'file'
+  recordedDir: 'file'
 
   # If true, the server waits for the first keyframe
   # before starting to send video/audio over RTMP.

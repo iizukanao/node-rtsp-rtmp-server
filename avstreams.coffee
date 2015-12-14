@@ -1,6 +1,11 @@
 crypto = require 'crypto'
+fs = require 'fs'
+path = require 'path'
 
 h264 = require './h264'
+aac = require './aac'
+mp4 = require './mp4'
+Bits = require './bits'
 EventEmitterModule = require './event_emitter'
 logger = require './logger'
 
@@ -39,7 +44,7 @@ class AVStreamGenerator
 
   generate: ->
 
-  teardown: (stream) ->
+  teardown: ->
 
 class AVStream
   constructor: (id) ->
@@ -68,6 +73,12 @@ class AVStream
     @ppsNALUnit          = null  # buffer
     @spropParameterSets  = ''    # string
     @type                = null  # string ('live' or 'recorded')
+
+  destroy: ->
+    logger.debug "[stream:#{@id}] destroy"
+    @spsNALUnit = null
+    @ppsNALUnit = null
+    @emit 'destroy'
 
   isRecorded: ->
     return @type is api.STREAM_TYPE_RECORDED
@@ -189,16 +200,92 @@ class AVStream
 
 EventEmitterModule.mixin AVStream
 
+class MP4Stream extends AVStream
+  @create: (filename) ->
+    try
+      mp4File = new mp4.MP4File filename
+    catch err
+      logger.error "error opening MP4 file #{filename}: #{err}"
+      return null
+    streamId = api.createNewStreamId()
+    mp4Stream = new MP4Stream streamId
+    logger.debug "created stream #{streamId} from file #{filename}"
+    api.emit 'new', mp4Stream
+    api.add mp4Stream
+
+    mp4Stream.type = api.STREAM_TYPE_RECORDED
+    mp4File.on 'audio_data', (data, pts) ->
+      mp4Stream.emit 'audio_data', data, pts
+    mp4File.on 'video_data', (nalUnits, pts, dts) ->
+      mp4Stream.emit 'video_data', nalUnits, pts, dts
+    mp4File.on 'eof', ->
+      mp4Stream.emit 'end'
+    mp4File.parse()
+    if mp4File.hasVideo()
+      mp4Stream.updateSPS mp4File.getSPS()
+      mp4Stream.updatePPS mp4File.getPPS()
+    if mp4File.hasAudio()
+      ascBuf = mp4File.getAudioSpecificConfig()
+      bits = new Bits ascBuf
+      ascInfo = aac.readAudioSpecificConfig bits
+      mp4Stream.updateConfig
+        audioSpecificConfig: ascBuf
+        audioASCInfo: ascInfo
+        audioSampleRate: ascInfo.samplingFrequency
+        audioClockRate: 90000
+        audioChannels: ascInfo.channelConfiguration
+        audioObjectType: ascInfo.audioObjectType
+    mp4Stream.durationSeconds = mp4File.getDurationSeconds()
+    mp4Stream.lastTagTimestamp = mp4File.getLastTimestamp()
+    mp4Stream.mp4File = mp4File
+    mp4File.fillBuffer ->
+      if mp4File.hasAudio()
+        mp4Stream.emit 'audio_start'
+        mp4Stream.isAudioStarted = true
+      if mp4File.hasVideo()
+        mp4Stream.emit 'video_start'
+        mp4Stream.isVideoStarted = true
+    return mp4Stream
+
+  play: ->
+    @mp4File.play()
+
+  pause: ->
+    @mp4File.pause()
+
+  resume: ->
+    return @mp4File.resume()
+
+  seek: (seekSeconds, callback) ->
+    actualStartTime = @mp4File.seek seekSeconds
+    callback null, actualStartTime
+
+  sendVideoPacketsSinceLastKeyFrame: (endSeconds, callback) ->
+    @mp4File.sendVideoPacketsSinceLastKeyFrame endSeconds, callback
+
+  teardown: ->
+    logger.debug "[mp4stream:#{@id}] teardown"
+    @mp4File.close()
+    @destroy()
+
+  getCurrentPlayTime: ->
+    return @mp4File.currentPlayTime
+
+  isPaused: ->
+    return @mp4File.isPaused()
+
 
 eventListeners = {}
 streams = {}
 streamGenerators = {}
+recordedAppToDir = {}
 
 api =
   STREAM_TYPE_LIVE: 'live'
   STREAM_TYPE_RECORDED: 'recorded'
 
   AVStream: AVStream
+  MP4Stream: MP4Stream
   AVStreamGenerator: AVStreamGenerator
 
   emit: (name, data...) ->
@@ -227,7 +314,9 @@ api =
     return streams[streamId]?
 
   get: (streamId) ->
-    if streamGenerators[streamId]?
+    if streams[streamId]? # existing stream
+      return streams[streamId]
+    else if streamGenerators[streamId]? # generator
       stream = streamGenerators[streamId].generate()
       if stream?
         stream.teardown = streamGenerators[streamId].teardown
@@ -244,8 +333,45 @@ api =
         stream.isPaused = streamGenerators[streamId].isPaused
         logger.debug "created stream #{stream.id}"
       return stream
-    else
-      return streams[streamId]
+    else # recorded dir
+      for app, dir of recordedAppToDir
+        if streamId[0..app.length] is app + '/'
+          filename = streamId[app.length+1..]
+
+          # Strip "filetype:" from "filetype:filename"
+          if (match = /^(\w*?):(.*)$/.exec filename)?
+            filetype = match[1]
+            filename = match[2]
+          else
+            filetype = 'mp4'  # default extension
+
+          filename = path.normalize filename
+
+          # Check that filename is legitimate
+          if (filename is '.') or
+          new RegExp("(^|#{path.sep})..(#{path.sep}|$)").test filename
+            logger.warn "rejected request to stream: #{streamId}"
+            break
+
+          try
+            fs.accessSync "#{dir}/#{filename}", fs.R_OK
+          catch e
+            # Add extension to the end and try again
+            try
+              fs.accessSync "#{dir}/#{filename}.#{filetype}", fs.R_OK
+              filename = "#{filename}.#{filetype}"
+            catch e
+              logger.error "error: failed to read #{dir}/#{filename} or #{dir}/#{filename}.#{filetype}: #{e}"
+              return null
+          stream = MP4Stream.create "#{dir}/#{filename}"
+          logger.info "created stream #{stream.id} from #{dir}/#{filename}"
+          return stream
+      return null
+
+  attachRecordedDirToApp: (dir, appName) ->
+    if recordedAppToDir[appName]?
+      logger.warn "warning: avstreams.attachRecordedDirToApp: overwriting existing app: #{appName}"
+    recordedAppToDir[appName] = dir
 
   addGenerator: (streamId, generator) ->
     if streamGenerators[streamId]?
@@ -265,7 +391,7 @@ api =
         return id
       retryCount++
       if retryCount >= 100
-        throw new Error "avstreams.createNewStreamId: Too many retries"
+        throw new Error "avstreams.createNewStreamId: Failed to create new stream id"
 
   # Creates a new stream.
   # If streamId is not given, a unique id will be generated.
@@ -273,6 +399,7 @@ api =
     if not streamId?
       streamId = api.createNewStreamId()
     stream = new AVStream streamId
+    logger.debug "created stream #{streamId}"
     api.emit 'new', stream
     api.add stream
     return stream
@@ -291,6 +418,8 @@ api =
     stream._onAnyListener = ((stream) ->
       (eventName, data...) ->
         api.emit eventName, stream, data...
+        if eventName is 'destroy'
+          api.remove stream.id
     )(stream)
     stream.onAny stream._onAnyListener
 

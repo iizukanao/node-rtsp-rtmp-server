@@ -1,5 +1,6 @@
 url = require 'url'
 
+config = require './config'
 StreamServer = require './stream_server'
 Bits = require './bits'
 logger = require './logger'
@@ -17,6 +18,9 @@ streamServer.setLivePathConsumer (uri, callback) ->
     callback null # Accept access
   else
     callback new Error 'Unauthorized access' # Deny access
+
+if config.recordedDir?
+  streamServer.attachRecordedDir config.recordedDir
 
 process.on 'SIGINT', =>
   console.log 'Got SIGINT'

@@ -100,12 +100,32 @@ class StreamServer
       @rtspServer.sendEOS stream
       @rtmpServer.sendEOS stream
 
+    # for mp4
+    avstreams.on 'audio_data', (stream, data, pts) =>
+      @onReceiveAudioAccessUnits stream, [ data ], pts, pts
+
+    avstreams.on 'video_data', (stream, nalUnits, pts, dts) =>
+      if not dts?
+        dts = pts
+      @onReceiveVideoNALUnits stream, nalUnits, pts, dts
+
+    avstreams.on 'audio_start', (stream) =>
+      @onReceiveAudioControlBuffer stream
+
+    avstreams.on 'video_start', (stream) =>
+      @onReceiveVideoControlBuffer stream
+
     ## TODO: Do we need to do something for remove_stream event?
     #avstreams.on 'remove_stream', (stream) ->
     #  logger.raw "received remove_stream event from stream #{stream.id}"
 
+  attachRecordedDir: (dir) ->
+    if config.recordedApplicationName?
+      logger.info "attachRecordedDir: dir=#{dir} app=#{config.recordedApplicationName}"
+      avstreams.attachRecordedDirToApp dir, config.recordedApplicationName
+
   attachMP4: (filename, streamName) ->
-    logger.info "attachMP4: filename=#{filename} streamName=#{streamName}"
+    logger.info "attachMP4: file=#{filename} stream=#{streamName}"
 
     context = this
     generator = new avstreams.AVStreamGenerator
@@ -114,18 +134,23 @@ class StreamServer
         try
           mp4File = new mp4.MP4File filename
         catch err
-          logger.error "error opening #{filename}: #{err}"
+          logger.error "error opening MP4 file #{filename}: #{err}"
           return null
-        mp4Stream = avstreams.create()
+        streamId = avstreams.createNewStreamId()
+        mp4Stream = new avstreams.MP4Stream streamId
+        logger.info "created stream #{streamId} from #{filename}"
+        avstreams.emit 'new', mp4Stream
+        avstreams.add mp4Stream
+
         mp4Stream.type = avstreams.STREAM_TYPE_RECORDED
         audioSpecificConfig = null
         mp4File.on 'audio_data', (data, pts) ->
           context.onReceiveAudioAccessUnits mp4Stream, [ data ], pts, pts
-        mp4File.on 'video_data', (data, pts, dts) ->
+        mp4File.on 'video_data', (nalUnits, pts, dts) ->
           if not dts?
             dts = pts
-          context.onReceiveVideoNALUnits mp4Stream, [ data ], pts, dts
-        mp4File.on 'close', =>
+          context.onReceiveVideoNALUnits mp4Stream, nalUnits, pts, dts
+        mp4File.on 'eof', =>
           mp4Stream.emit 'end'
         mp4File.parse()
         mp4Stream.updateSPS mp4File.getSPS()
@@ -140,16 +165,16 @@ class StreamServer
           audioClockRate: 90000
           audioChannels: ascInfo.channelConfiguration
           audioObjectType: ascInfo.audioObjectType
-        mp4File.fillBuffer =>
-          context.onReceiveAudioControlBuffer mp4Stream
-          context.onReceiveVideoControlBuffer mp4Stream
-          mp4File.play()
         mp4Stream.durationSeconds = mp4File.getDurationSeconds()
         mp4Stream.lastTagTimestamp = mp4File.getLastTimestamp()
         mp4Stream.mp4File = mp4File
+        mp4File.fillBuffer ->
+          context.onReceiveAudioControlBuffer mp4Stream
+          context.onReceiveVideoControlBuffer mp4Stream
         return mp4Stream
 
       play: ->
+        @mp4File.play()
 
       pause: ->
         @mp4File.pause()
@@ -159,14 +184,14 @@ class StreamServer
 
       seek: (seekSeconds, callback) ->
         actualStartTime = @mp4File.seek seekSeconds
-        @mp4File.fillBuffer ->
-          callback null, actualStartTime
+        callback null, actualStartTime
 
       sendVideoPacketsSinceLastKeyFrame: (endSeconds, callback) ->
         @mp4File.sendVideoPacketsSinceLastKeyFrame endSeconds, callback
 
       teardown: ->
-        @mp4File.stop()
+        @mp4File.close()
+        @destroy()
 
       getCurrentPlayTime: ->
         return @mp4File.currentPlayTime

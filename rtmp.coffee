@@ -212,7 +212,12 @@ parseAMF0CommandMessage = (buf) ->
   amf0Packets = []
   remainingLen = buf.length
   while remainingLen > 0
-    result = parseAMF0Data buf
+    try
+      result = parseAMF0Data buf
+    catch e
+      logger.error "[rtmp] error parsing AMF0 command (maybe a bug); buf:"
+      logger.error buf
+      throw e
     amf0Packets.push result
     remainingLen -= result.readLen
     buf = buf[result.readLen..]
@@ -256,7 +261,6 @@ parseAMF0Data = (buf) ->
     date = new Date(time)
     return { type: 'date', value: date, readLen: i + 10 }  # 8 (time) + 2 (time-zone)
   else
-    # TODO: sometimes fails to parse data sent by rtmpdump
     throw new Error "Unknown AMF0 data type: #{type}"
 
 createAMF0Data = (data) ->
@@ -372,22 +376,28 @@ flushRTMPMessages = (stream, params) ->
   rtmpMessagesToSend = queuedRTMPMessages[stream.id]
   queuedRTMPMessages[stream.id] = []
 
+  for rtmpMessage, i in rtmpMessagesToSend
+    rtmpMessage.index = i
+
+  # Move audio before video if the PTS are the same
+  rtmpMessagesToSend.sort (a, b) ->
+    cmp = a.originalTimestamp - b.originalTimestamp
+    if cmp is 0
+      if (not a.avType?) or (not b.avType?)
+        cmp = 0
+      else if a.avType is b.avType
+        cmp = 0
+      else if a.avType is 'audio'  # a=audio b=video
+        cmp = -1
+      else if b.avType is 'audio'  # a=video b=audio
+        cmp = 1
+    if cmp is 0
+      cmp = a.index - b.index  # keep the original order
+    return cmp
+
   if rtmpMessagesToSend.length is 0
     # nothing to send
     return
-
-#  mostRecentAVType = queuedRTMPMessages[stream.id][queuedRTMPMessages[stream.id].length-1].avType
-#  largestIndex = null
-#  for i in [queuedRTMPMessages[stream.id].length-2..0]
-#    rtmpMessage = queuedRTMPMessages[stream.id][i]
-#    if rtmpMessage.avType isnt mostRecentAVType
-#      largestIndex = i
-#      break
-#  if largestIndex is null
-#    return
-#
-#  rtmpMessagesToSend = queuedRTMPMessages[stream.id][0..largestIndex]
-#  queuedRTMPMessages[stream.id] = queuedRTMPMessages[stream.id][largestIndex+1..]
 
   allSessions = []
   for clientID, session of rtmptSessions
@@ -409,7 +419,7 @@ flushRTMPMessages = (stream, params) ->
           for rtmpMessage, i in rtmpMessagesToSend
             if (rtmpMessage.avType is 'video') and rtmpMessage.isKeyFrame
               logger.info "[rtmp:client=#{session.clientid}] started playing stream #{stream.id}"
-              session.isPlaying = true
+              session.startPlaying()
               session.playStartTimestamp = rtmpMessage.originalTimestamp
               session.playStartDateTime = Date.now()  # TODO: Should we use slower process.hrtime()?
               session.isWaitingForKeyFrame = false
@@ -417,14 +427,14 @@ flushRTMPMessages = (stream, params) ->
               break
         else  # audio only
           logger.info "[rtmp:client=#{session.clientid}] started playing stream #{stream.id}"
-          session.isPlaying = true
+          session.startPlaying()
           session.playStartTimestamp = rtmpMessagesToSend[0].originalTimestamp
           session.playStartDateTime = Date.now()
           session.isWaitingForKeyFrame = false
           msgs = rtmpMessagesToSend
       else  # Do not wait for a keyframe
         logger.info "[rtmp:client=#{session.clientid}] started playing stream #{stream.id}"
-        session.isPlaying = true
+        session.startPlaying()
         session.playStartTimestamp = rtmpMessagesToSend[0].originalTimestamp
         session.playStartDateTime = Date.now()
         session.isWaitingForKeyFrame = false
@@ -439,20 +449,39 @@ flushRTMPMessages = (stream, params) ->
       for rtmpMessage in msgs
         # get milliseconds elapsed since play start
         rtmpMessage.timestamp = session.getScaledTimestamp(rtmpMessage.originalTimestamp) % TIMESTAMP_ROUNDOFF
+      if session.isResuming
+        # Remove audio messages which are already sent until
+        # the first video message comes
+        filteredMsgs = []
+        for rtmpMessage, i in msgs
+          if not rtmpMessage.avType?
+            filteredMsgs.push rtmpMessage
+          else if rtmpMessage.avType is 'video'
+            filteredMsgs.push msgs[i..]...
+            session.isResuming = false
+            break
+          else if rtmpMessage.timestamp > session.lastSentTimestamp
+            filteredMsgs.push rtmpMessage
+          else
+            logger.debug "[rtmp:client=#{session.clientid}] skipped message (timestamp=#{rtmpMessage.timestamp} <= lastSentTimestamp=#{session.lastSentTimestamp})"
+      else
+        filteredMsgs = msgs
 
-      if (params?.hasControlMessage isnt true) and (msgs.length > 1)
-        buf = createRTMPAggregateMessage msgs, session.chunkSize
+      if (params?.hasControlMessage isnt true) and (filteredMsgs.length > 1)
+        buf = createRTMPAggregateMessage filteredMsgs, session.chunkSize
         if DEBUG_OUTGOING_RTMP_PACKETS
-          logger.info "send RTMP agg msg: #{buf.length} bytes; time=" + msgs.map((item) -> "#{item.avType?[0] ? 'other'}#{if item.avType is 'video' and item.isKeyFrame then '(key)' else ''}:#{item.timestamp}#{if item.avType is 'video' and item.compositionTime isnt 0 then "(cmp=#{item.timestamp+item.compositionTime})" else ''}").join(',')
+          logger.info "send RTMP agg msg: #{buf.length} bytes; time=" + filteredMsgs.map((item) -> "#{item.avType?[0] ? 'other'}#{if item.avType is 'video' and item.isKeyFrame then '(key)' else ''}:#{item.timestamp}#{if item.avType is 'video' and item.compositionTime isnt 0 then "(cmp=#{item.timestamp+item.compositionTime})" else ''}").join(',')
         session.sendData buf
       else
         bufs = []
-        for rtmpMessage in msgs
+        for rtmpMessage in filteredMsgs
           bufs.push createRTMPMessage rtmpMessage, session.chunkSize
         buf = Buffer.concat bufs
         if DEBUG_OUTGOING_RTMP_PACKETS
-          logger.info "send RTMP msg: #{buf.length} bytes; time=" + msgs.map((item) -> "#{item.avType?[0] ? 'other'}:#{item.timestamp}").join(',')
+          logger.info "send RTMP msg: #{buf.length} bytes; time=" + filteredMsgs.map((item) -> "#{item.avType?[0] ? 'other'}:#{item.timestamp}").join(',')
         session.sendData buf
+
+      session.lastSentTimestamp = filteredMsgs[filteredMsgs.length-1].timestamp
 
   return
 
@@ -694,9 +723,15 @@ class RTMPSession
     @receivedBytes = 0
     @stream = null # AVStream
     @seekedDuringPause = false
+    @lastSentTimestamp = null
+    @isResuming = false
 
   toString: ->
     return "#{@clientid}: addr=#{@socket.remoteAddress} port=#{@socket.remotePort}"
+
+  startPlaying: ->
+    @isPlaying = true
+    @isResuming = false
 
   parseVideoMessage: (buf) ->
     info = flv.parseVideo buf
@@ -815,11 +850,11 @@ class RTMPSession
     if @isTearedDown
       logger.debug "[rtmp] already teared down"
       return
-    if @stream?.type is avstreams.STREAM_TYPE_RECORDED
-      @stream.teardown?()
     @isTearedDown = true
     @clearTimeout()
     @stopPlaying()
+    if @stream?.type is avstreams.STREAM_TYPE_RECORDED
+      @stream.teardown?()
     if @cipherIn?
       @cipherIn.final()
       @cipherIn = null
@@ -946,9 +981,7 @@ class RTMPSession
         createAMF0Object({
           level: 'error'
           code: 'NetConnection.Connect.Rejected'
-          description: 'Connection failed.'
-          # TODO: wrong key?
-          description: '[ Server.Reject ] : (_defaultRoot_, ) : Invalid application name(/_definst_).'
+          description: "[ Server.Reject ] : (_defaultRoot_, ) : Invalid application name(/#{@app})."
         })
       ]
 
@@ -967,8 +1000,10 @@ class RTMPSession
   respondConnect: (commandMessage, callback) ->
     app = commandMessage.objects[0].value.app
     app = app.replace /\/$/, ''  # JW Player adds / at the end
-    if app isnt config.rtmpApplicationName
-      logger.warn "[rtmp] requested invalid app name: #{app}"
+    @app = app
+
+    if (app isnt config.liveApplicationName) and (app isnt config.recordedApplicationName)
+      logger.warn "[rtmp:client=#{@clientid}] requested invalid app name: #{app}"
       @rejectConnect commandMessage, callback
       return
 
@@ -1306,7 +1341,10 @@ class RTMPSession
   # releaseStream()
   respondReleaseStream: (requestCommand, callback) ->
     streamName = requestCommand.objects[1]?.value
-    logger.debug "[rtmp] releaseStream: #{streamName}"
+    logger.debug "[rtmp] releaseStream: #{@app}/#{streamName}"
+
+    # TODO: Destroy stream here?
+
     _result = createAMF0CommandMessage
       chunkStreamID: 3
       timestamp: 0
@@ -1368,7 +1406,7 @@ class RTMPSession
     @receiveTimestamp = null
     publishingName = requestCommand.objects[1]?.value
 
-    # Strip the query string from
+    # Strip query string part from a string like:
     # "livestream?videoKeyframeFrequency=5&totalDatarate=248"
     urlInfo = url.parse publishingName
     if urlInfo.query?
@@ -1381,13 +1419,14 @@ class RTMPSession
       # totalDatarate: Total kbps for video + audio
       logger.info JSON.stringify params
 
-    publishingName = urlInfo.pathname
+    publishingName = @app + '/' + urlInfo.pathname
     @streamId = publishingName
     stream = avstreams.get @streamId
     if stream?
       stream.reset()
     else
       stream = avstreams.create @streamId
+      stream.type = avstreams.STREAM_TYPE_LIVE
     @stream = stream
     # TODO: Check if streamId is already used
     publishingType = requestCommand.objects[2]?.value
@@ -1435,7 +1474,7 @@ class RTMPSession
           level: 'error'
           code: ''
           description: 'Request failed.'
-          details: config.rtmpApplicationName
+          details: @app
           clientid: @clientid
         })
       ]
@@ -1444,7 +1483,7 @@ class RTMPSession
   # FCPublish()
   respondFCPublish: (requestCommand, callback) ->
     streamName = requestCommand.objects[1]?.value
-    logger.debug "[rtmp] FCPublish: #{streamName}"
+    logger.debug "[rtmp] FCPublish: #{@app}/#{streamName}"
     _result = createAMF0CommandMessage
       chunkStreamID: 3
       timestamp: 0
@@ -1470,12 +1509,14 @@ class RTMPSession
       ]
     callback null, _result
 
-  respondPlay: (commandMessage, callback) ->
-    streamId = commandMessage.objects[1]?.value
+  respondPlay: (commandMessage, callback, streamId=null) ->
+    if not streamId?
+      streamId = @app + '/' + commandMessage.objects[1]?.value
     logger.info "[rtmp:client=#{@clientid}] requested stream #{streamId}"
     @chunkSize = config.rtmpPlayChunkSize
     @stream = avstreams.get streamId
     if not @stream?
+      logger.error "[rtmp:client=#{@clientid}] error: stream not found: #{streamId}"
       _error = createAMF0CommandMessage
         chunkStreamID: 3
         timestamp: 0
@@ -1488,7 +1529,7 @@ class RTMPSession
             level: 'error'
             code: 'NetStream.Play.StreamNotFound'
             description: ''
-            details: config.rtmpApplicationName  # TODO: Insert the stream name
+            details: streamId
             clientid: @clientid
           })
         ]
@@ -1558,8 +1599,8 @@ class RTMPSession
         createAMF0Object({
           level: 'status'
           code: 'NetStream.Play.Reset'
-          description: "Playing and resetting #{config.rtmpApplicationName}."
-          details: config.rtmpApplicationName
+          description: "Playing and resetting #{streamId}."
+          details: streamId
           clientid: @clientid
         })
       ]
@@ -1576,8 +1617,8 @@ class RTMPSession
         createAMF0Object({
           level: 'status'
           code: 'NetStream.Play.Start'
-          description: "Started playing #{config.rtmpApplicationName}."
-          details: config.rtmpApplicationName
+          description: "Started playing #{streamId}."
+          details: streamId
           clientid: @clientid
         })
       ]
@@ -1666,6 +1707,9 @@ class RTMPSession
     messages.push streamBegin1, playReset, playStart, rtmpSampleAccess, dataStart, onMetaData, codecConfigs
 
     callback null, @concatenate messages
+
+    if @stream.isRecorded()
+      @stream.play()
 
     # ready for playing
     @isWaitingForKeyFrame = true
@@ -1779,6 +1823,8 @@ class RTMPSession
     logger.info "[rtmp:client=#{@clientid}] seek to #{msec / 1000} sec"
     msec = Math.floor msec
 
+    @lastSentTimestamp = null
+
     if @stream.type is avstreams.STREAM_TYPE_RECORDED
       clearQueuedRTMPMessages @stream
       _isPlaying = @isPlaying
@@ -1869,8 +1915,8 @@ class RTMPSession
               createAMF0Object({
                 level: 'status'
                 code: 'NetStream.Seek.Notify'
-                description: "Seeking #{msec} (stream ID: 1)." # TODO: Insert the stream name
-                details: config.rtmpApplicationName  # TODO: Insert the stream name
+                description: "Seeking #{msec} (stream ID: 1)."
+                details: @stream.id
                 clientid: @clientid
               })
             ]
@@ -1887,8 +1933,8 @@ class RTMPSession
               createAMF0Object({
                 level: 'status'
                 code: 'NetStream.Play.Start'
-                description: "Started playing #{config.rtmpApplicationName}."
-                details: config.rtmpApplicationName
+                description: "Started playing #{@stream.id}."
+                details: @stream.id
                 clientid: @clientid
               })
             ]
@@ -2011,8 +2057,8 @@ class RTMPSession
             createAMF0Object({
               level: 'status'
               code: 'NetStream.Pause.Notify'
-              description: "Pausing #{config.rtmpApplicationName}."  # TODO: Insert the stream name
-              details: config.rtmpApplicationName  # TODO: Insert the stream name
+              description: "Pausing #{@stream.id}."
+              details: @stream.id
               clientid: @clientid
             })
           ]
@@ -2087,8 +2133,8 @@ class RTMPSession
               createAMF0Object({
                 level: 'status'
                 code: 'NetStream.Unpause.Notify'
-                description: "Unpausing #{config.rtmpApplicationName}." # TODO: Insert the stream name
-                details: config.rtmpApplicationName  # TODO: Insert the stream name
+                description: "Unpausing #{@stream.id}."
+                details: @stream.id
                 clientid: @clientid
               })
             ]
@@ -2105,8 +2151,8 @@ class RTMPSession
               createAMF0Object({
                 level: 'status'
                 code: 'NetStream.Play.Start'
-                description: "Started playing #{config.rtmpApplicationName}."
-                details: config.rtmpApplicationName
+                description: "Started playing #{@stream.id}."
+                details: @stream.id
                 clientid: @clientid
               })
             ]
@@ -2191,11 +2237,12 @@ class RTMPSession
           ]
 
           seq = new Sequent
-          @isPlaying = true
+          @startPlaying()
           if @seekedDuringPause
             @stream.sendVideoPacketsSinceLastKeyFrame seekMsec / 1000, =>
               seq.done()
           else
+            @isResuming = true
             seq.done()
 
           seq.wait 1, =>
@@ -2208,8 +2255,8 @@ class RTMPSession
               logger.info "[rtmp:client=#{@clientid}] resumed at #{msec / 1000} sec (client player time)"
 
       else # live
-        @isPlaying = true
-        @respondPlay requestCommand, callback
+        @startPlaying()
+        @respondPlay requestCommand, callback, @stream.id
 
   closeStream: (callback) ->
     @isPlaying = false
@@ -2619,7 +2666,10 @@ class RTMPServer
   # Packets must be come in DTS ascending order
   sendVideoPacket: (stream, nalUnits, pts, dts) ->
     if DEBUG_INCOMING_STREAM_DATA
-      logger.info "received video: stream=#{stream.id} #{nalUnits.length} NAL units (#{nalUnits.map((nalu) -> nalu[0] & 0x1f).join(',')}); pts=#{pts}"
+      totalBytes = 0
+      for nalUnit in nalUnits
+        totalBytes += nalUnit.length
+      logger.info "received video: stream=#{stream.id} #{totalBytes} bytes; #{nalUnits.length} NAL units (#{nalUnits.map((nalu) -> nalu[0] & 0x1f).join(',')}); pts=#{pts}"
     if dts > pts
       throw new Error "pts must be >= dts (pts=#{pts} dts=#{dts})"
     timestamp = convertPTSToMilliseconds dts
@@ -2737,10 +2787,10 @@ class RTMPServer
         createAMF0Object({
           level: 'status'
           code: 'NetStream.Play.Stop'
-          description: "Stopped playing #{config.rtmpApplicationName}."
+          description: "Stopped playing #{stream.id}."
           clientid: @clientid
           reason: ''
-          details: config.rtmpApplicationName
+          details: stream.id
         })
       ]
 

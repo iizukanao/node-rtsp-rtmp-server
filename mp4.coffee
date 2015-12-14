@@ -67,10 +67,16 @@ class MP4File
     @sessionId = 0
 
   close: ->
+    logger.debug "[mp4:#{@filename}] close"
     if not @isStopped
       @stop()
     @bits = null
-    @emit 'close'
+    @fileBuf = null
+    @boxes = null
+    @moovBox = null
+    @mdatBox = null
+    @audioTrakBox = null
+    @videoTrakBox = null
     return
 
   parse: ->
@@ -135,7 +141,6 @@ class MP4File
     return esdsBox.decoderConfigDescriptor.decoderSpecificInfo.specificInfo
 
   stop: ->
-    logger.debug "[mp4:#{@filename}] stop"
     @isStopped = true
 
   isPaused: ->
@@ -170,15 +175,15 @@ class MP4File
       if rawSample?
         nalUnits = @parseH264Sample rawSample.data
         for nalUnit in nalUnits
-          if not isFirstSample
-            samples.unshift
-              pts: rawSample.pts
-              dts: rawSample.dts
-              time: rawSample.time
-              data: nalUnit
           if (nalUnit[0] & 0x1f) is h264.NAL_UNIT_TYPE_IDR_PICTURE
             isKeyFrameFound = true
             break
+        if not isFirstSample
+          samples.unshift
+            pts: rawSample.pts
+            dts: rawSample.dts
+            time: rawSample.time
+            data: nalUnits
       if isFirstSample
         isFirstSample = false
       if isKeyFrameFound
@@ -192,21 +197,7 @@ class MP4File
     callback? null
 
   resume: ->
-    logger.debug "[mp4:#{@filename}] resumed at #{@currentPlayTime} (server mp4 head time)"
-    @seek @currentPlayTime
-    @fillBuffer =>
-      @isStopped = false
-      @playStartTime = getCurrentTime() - @currentPlayTime
-      if @isAudioEOFReached()
-        @isAudioEOF = true
-      if @isVideoEOFReached()
-        @isVideoEOF = true
-      if @checkEOF()
-        # EOF reached
-        return false
-      else
-        @queueBufferedSamples()
-        return true
+    @play()
 
   isAudioEOFReached: ->
     return (@bufferedAudioSamples.length is 0) and
@@ -239,6 +230,7 @@ class MP4File
       sttsBox = stblBox.child('stts') # TimeToSampleBox
       videoSample = sttsBox.getSampleAfterSeconds seekSeconds
       if videoSample?
+        logger.debug "video sample >= #{seekSeconds} is #{JSON.stringify videoSample}"
         videoSampleSeconds = videoSample.seconds
         @currentPlayTime = videoSampleSeconds
         videoSampleNumber = videoSample.sampleNumber
@@ -258,6 +250,7 @@ class MP4File
       sttsBox = stblBox.child('stts') # TimeToSampleBox
       audioSample = sttsBox.getSampleAfterSeconds seekSeconds
       if audioSample?
+        logger.debug "audio sample >= #{seekSeconds} is #{JSON.stringify audioSample}"
         audioSampleNumber = audioSample.sampleNumber
 
         if videoSampleSeconds? and (videoSampleSeconds <= audioSample.seconds)
@@ -283,8 +276,20 @@ class MP4File
     return @currentPlayTime
 
   play: ->
-    @playStartTime = getCurrentTime() - @currentPlayTime
-    @startStreaming()
+    logger.debug "[mp4:#{@filename}] start playing from #{@currentPlayTime} (server mp4 head time)"
+    @fillBuffer =>
+      @isStopped = false
+      @playStartTime = getCurrentTime() - @currentPlayTime
+      if @isAudioEOFReached()
+        @isAudioEOF = true
+      if @isVideoEOFReached()
+        @isVideoEOF = true
+      if @checkEOF()
+        # EOF reached
+        return false
+      else
+        @queueBufferedSamples()
+        return true
 
   checkAudioBuffer: ->
     timeDiff = @bufferedAudioTime - @currentPlayTime
@@ -354,6 +359,8 @@ class MP4File
       @queueBufferedSamples()
 
   queueBufferedVideoSamples: ->
+    if @isStopped
+      return
     videoSample = @bufferedVideoSamples[@queuedVideoSampleIndex]
     if not videoSample?  # @bufferedVideoSamples is empty
       return
@@ -362,7 +369,10 @@ class MP4File
       @bufferedVideoSamples.shift()
       @queuedVideoSampleIndex--
       if DEBUG_OUTGOING_MP4_DATA
-        logger.info "emit video_data pts=#{videoSample.pts} dts=#{videoSample.dts}"
+        totalBytes = 0
+        for nalUnit in videoSample.data
+          totalBytes += nalUnit.length
+        logger.info "emit video_data pts=#{videoSample.pts} dts=#{videoSample.dts} bytes=#{totalBytes}"
       @emit 'video_data', videoSample.data, videoSample.pts, videoSample.dts
       @updateCurrentPlayTime()
       if (@queuedVideoSampleIndex is 0) and (@consumedVideoSamples is @numVideoSamples)
@@ -370,23 +380,25 @@ class MP4File
         @isVideoEOF = true
         @checkEOF()
     else
-      if not @isStopped
-        sessionId = @sessionId
-        setTimeout =>
-          if (not @isStopped) and (@sessionId is sessionId)
-            @bufferedVideoSamples.shift()
-            @queuedVideoSampleIndex--
-            if DEBUG_OUTGOING_MP4_DATA
-              logger.info "emit timed video_data pts=#{videoSample.pts} dts=#{videoSample.dts}"
-            @emit 'video_data', videoSample.data, videoSample.pts, videoSample.dts
-            @updateCurrentPlayTime()
-            if (@queuedVideoSampleIndex is 0) and (@consumedVideoSamples is @numVideoSamples)
-              # No video sample left
-              @isVideoEOF = true
-              @checkEOF()
-            else
-              @checkVideoBuffer()
-        , timeDiff * 1000
+      sessionId = @sessionId
+      setTimeout =>
+        if (not @isStopped) and (@sessionId is sessionId)
+          @bufferedVideoSamples.shift()
+          @queuedVideoSampleIndex--
+          if DEBUG_OUTGOING_MP4_DATA
+            totalBytes = 0
+            for nalUnit in videoSample.data
+              totalBytes += nalUnit.length
+            logger.info "emit timed video_data pts=#{videoSample.pts} dts=#{videoSample.dts} bytes=#{totalBytes}"
+          @emit 'video_data', videoSample.data, videoSample.pts, videoSample.dts
+          @updateCurrentPlayTime()
+          if (@queuedVideoSampleIndex is 0) and (@consumedVideoSamples is @numVideoSamples)
+            # No video sample left
+            @isVideoEOF = true
+            @checkEOF()
+          else
+            @checkVideoBuffer()
+      , timeDiff * 1000
     @queuedVideoSampleIndex++
     @queuedVideoTime = videoSample.time
     if @queuedVideoTime - @currentPlayTime < QUEUE_BUFFER_TIME
@@ -412,7 +424,8 @@ class MP4File
 
   checkEOF: ->
     if @isAudioEOF and @isVideoEOF
-      @close()
+      @stop()
+      @emit 'eof'
       return true
     return false
 
@@ -590,28 +603,13 @@ class MP4File
       samples = @readChunk @consumedVideoChunks + 1, @consumedVideoSamples + 1, @videoTrakBox
       @consumedVideoChunks++
 
+    for sample in samples
+      nalUnits = @parseH264Sample sample.data
+      sample.data = nalUnits
+
     numSamples = samples.length
-    index = 0
-    # The size of samples array may be altered in-place
-    while index < samples.length
-      nalUnits = @parseH264Sample samples[index].data
-      if nalUnits.length >= 1
-        pts = samples[index].pts
-        dts = samples[index].dts
-        time = samples[index].time
-
-        samples[index].data = nalUnits[0]
-        for nalUnit in nalUnits[1..]
-          index++
-          samples[index...index] =
-            pts: pts
-            dts: dts
-            time: time
-            data: nalUnit
-      index++
-
     @consumedVideoSamples += numSamples
-    @bufferedVideoTime = samples[samples.length-1].time
+    @bufferedVideoTime = samples[numSamples - 1].time
     @bufferedVideoSamples = @bufferedVideoSamples.concat samples
 
     return true
@@ -1769,7 +1767,7 @@ class ChunkOffsetBox extends Box
   # Returns a position of the chunk relative to the beginning of the file
   getChunkOffset: (chunkNumber) ->
     if (chunkNumber <= 0) or (chunkNumber > @chunkOffsets.length)
-      throw new Error "Chunk number of out of range: #{chunkNumber}"
+      throw new Error "Chunk number out of range: #{chunkNumber} (len=#{@chunkOffsets.length})"
     return @chunkOffsets[chunkNumber - 1]
 
   getDetails: (detailLevel) ->
