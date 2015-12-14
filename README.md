@@ -33,7 +33,7 @@ MP4 files in `file` directory will be accessible at either:
 - rtsp://localhost:80/file/FILENAME
 - rtmp://localhost/file/mp4:FILENAME
 
-For example, file/video.mp4 can be viewed by rtmp://localhost/file/mp4:video.mp4
+For example, file/video.mp4 is available at rtmp://localhost/file/mp4:video.mp4
 
 ### Publishing live streams
 
