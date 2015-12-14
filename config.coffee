@@ -49,11 +49,14 @@ module.exports =
   videoRTPServerPort : 7044  # even
   videoRTCPServerPort: 7045  # odd and contiguous
 
+  # Application name for live streams. Live streams will be accessible at
+  # rtsp://{host}:{serverPort}/{liveApplicationName}/{streamName} or
+  # rtmp://{host}:{rtmpServerPort}/{liveApplicationName}/{streamName}
   liveApplicationName: 'live'
 
   # MP4 files in recordedDir will be accessible at
-  # rtsp://{host}/{recordedApplicationName}/{filename} or
-  # rtmp://{host}/{recordedApplicationName}/mp4:{filename}
+  # rtsp://{host}:{serverPort}/{recordedApplicationName}/{filename} or
+  # rtmp://{host}:{rtmpServerPort}/{recordedApplicationName}/mp4:{filename}
   # To disable this feature, comment out the following two lines.
   recordedApplicationName: 'file'
   recordedDir: 'file'
