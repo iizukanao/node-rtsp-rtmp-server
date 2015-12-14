@@ -1,6 +1,13 @@
 Change Log
 ==========
 
+Version 0.4.0 *(2015-12-15)*
+-----------------------------
+
+- The server can now serves MP4 files as recorded streams.
+- Fixed many bugs.
+
+
 Version 0.3.1 *(2015-04-28)*
 -----------------------------
 
