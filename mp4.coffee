@@ -236,6 +236,7 @@ class MP4File
         videoSampleNumber = videoSample.sampleNumber
       else
         # No video sample left
+        logger.debug "video sample >= #{seekSeconds} does not exist"
         @isVideoEOF = true
         @currentPlayTime = @getDurationSeconds()
         videoSampleNumber = @numVideoSamples + 1
@@ -261,6 +262,7 @@ class MP4File
           @currentPlayTime = minTime
       else
         # No audio sample left
+        logger.debug "audio sample >= #{seekSeconds} does not exist"
         audioSampleNumber = @numAudioSamples + 1
         @isAudioEOF = true
     else
@@ -1503,6 +1505,8 @@ class TimeToSampleBox extends Box
       totalTime = 0
     for entry in @entries
       numSamples = Math.ceil(remainingTime / entry.sampleDelta)
+      if numSamples < 0
+        numSamples = 0
       if numSamples <= entry.sampleCount
         totalTime += numSamples * entry.sampleDelta
         totalSeconds = totalTime / timescale
@@ -1538,6 +1542,8 @@ class TimeToSampleBox extends Box
       totalTime = 0
     for entry in @entries
       sampleIndexInChunk = Math.floor(remainingTime / entry.sampleDelta)
+      if sampleIndexInChunk < 0
+        sampleIndexInChunk = 0
       if sampleIndexInChunk < entry.sampleCount
         totalTime += sampleIndexInChunk * entry.sampleDelta
         return {
