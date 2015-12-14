@@ -49,8 +49,6 @@ module.exports =
   videoRTPServerPort : 7044  # even
   videoRTCPServerPort: 7045  # odd and contiguous
 
-  # RTMP stream name
-  rtmpApplicationName: 'live'
   liveApplicationName: 'live'
 
   # MP4 files in recordedDir will be accessible at
