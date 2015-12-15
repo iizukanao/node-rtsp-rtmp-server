@@ -348,8 +348,11 @@ api =
           filename = path.normalize filename
 
           # Check that filename is legitimate
+          pathSep = path.sep
+          if pathSep is '\\'  # Windows
+            pathSep = '\\' + pathSep  # Escape '\' for regex
           if (filename is '.') or
-          new RegExp("(^|#{path.sep})..(#{path.sep}|$)").test filename
+          new RegExp("(^|#{pathSep})..(#{pathSep}|$)").test filename
             logger.warn "rejected request to stream: #{streamId}"
             break
 
