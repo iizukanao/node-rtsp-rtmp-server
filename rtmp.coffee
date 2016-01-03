@@ -2569,7 +2569,10 @@ class RTMPSession
               logger.error "----- BUG -----"
               logger.error "[rtmp:receive] received unknown (not implemented) message type ID: #{rtmpMessage.messageTypeID}"
               logger.error rtmpMessage
-              logger.error "Please report this bug on GitHub. Thanks."
+              packageJson = require './package.json'
+              logger.error "server version: #{packageJson.version}"
+              logger.error "Please report this bug along with the video file or relevant part of"
+              logger.error "pcap file, and the full (uncut) output of node-rtsp-rtsp-server. Thanks."
               logger.error "https://github.com/iizukanao/node-rtsp-rtmp-server/issues"
               logger.error "---------------"
               seq.done()
