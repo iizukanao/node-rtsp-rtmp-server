@@ -92,7 +92,6 @@ generateNewSessionID = (callback) ->
 # Return value is intended to be used as an SSRC identifier.
 generateRandom32 = ->
   str = "#{new Date().getTime()}#{process.pid}#{os.hostname()}" + \
-        "#{process.getuid()}#{process.getgid()}" + \
         (1 + Math.random() * 1000000000)
 
   md5sum = crypto.createHash 'md5'
