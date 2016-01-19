@@ -63,6 +63,8 @@ class Bits
     if buffer?
       @set_data buffer
 
+  @DISABLE_BUFFER_INDEXOF: false
+
   @set_warning_fatal: (is_fatal) ->
     Bits.is_warning_fatal = is_fatal
 
@@ -359,7 +361,7 @@ class Bits
 
   # Returns a null-terminated string
   get_string: (encoding='utf8') ->
-    nullPos = @buf.indexOf 0x00, @byte_index
+    nullPos = Bits.searchByteInBuffer @buf, 0x00, @byte_index
     if nullPos is -1
       throw new Error "bits.get_string: the string is not null-terminated"
     str = @buf[@byte_index...nullPos].toString encoding
@@ -372,6 +374,19 @@ class Bits
     for i in [numBytes..1]
       arr.push (num * Math.pow(2, -(i-1)*8)) & 0xff
     return new Buffer(arr).toString encoding
+
+  # Returns the first index at which a given value (byte) can be
+  # found in the Buffer (buf), or -1 if it is not found.
+  @searchByteInBuffer: (buf, byte, from_pos=0) ->
+    if (not Bits.DISABLE_BUFFER_INDEXOF) and (typeof(buf.indexOf) is 'function')
+      return buf.indexOf byte, from_pos
+    else
+      if from_pos < 0
+        from_pos = buf.length + from_pos
+      for i in [from_pos...buf.length]
+        if buf[i] is byte
+          return i
+      return -1
 
   @searchBytesInArray: (haystack, needle, from_pos=0) ->
     if buffertools?  # buffertools is available

@@ -1921,7 +1921,7 @@ class GenericDataBox extends Box
     if zeroBytes isnt 0
       logger.warn "[mp4] warning: zeroBytes are not all zeros (got #{zeroBytes})"
     @value = bits.read_bytes(@length - 16)
-    nullPos = @value.indexOf 0x00
+    nullPos = Bits.searchByteInBuffer @value, 0x00
     if nullPos is 0
       @valueStr = null
     else if nullPos isnt -1
