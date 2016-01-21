@@ -1825,7 +1825,7 @@ class RTMPSession
 
     @lastSentTimestamp = null
 
-    if @stream.type is avstreams.STREAM_TYPE_RECORDED
+    if @stream?.type is avstreams.STREAM_TYPE_RECORDED
       clearQueuedRTMPMessages @stream
       _isPlaying = @isPlaying
       @isPlaying = false
@@ -2030,7 +2030,7 @@ class RTMPSession
     if doPause # playing -> pause
       @isPlaying = false
       @isWaitingForKeyFrame = false
-      if @stream.type is avstreams.STREAM_TYPE_RECORDED
+      if @stream?.type is avstreams.STREAM_TYPE_RECORDED
         @stream.pause?()
         logger.info "[rtmp:client=#{@clientid}] stream #{@stream.id} paused at #{msec / 1000} sec (client player time)"
 
@@ -2068,7 +2068,7 @@ class RTMPSession
       else # live stream
         callback null
     else # pausing -> resume
-      if @stream.type is avstreams.STREAM_TYPE_RECORDED
+      if @stream?.type is avstreams.STREAM_TYPE_RECORDED
         clearQueuedRTMPMessages @stream
         # RTMP 1.0 spec says that the server only sends messages with timestamps
         # greater than the specified msec, but it appears that Flash Player expects
@@ -2256,7 +2256,7 @@ class RTMPSession
 
       else # live
         @startPlaying()
-        @respondPlay requestCommand, callback, @stream.id
+        @respondPlay requestCommand, callback, @stream?.id
 
   closeStream: (callback) ->
     @isPlaying = false
