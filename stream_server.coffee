@@ -36,57 +36,70 @@ class StreamServer
   constructor: (opts) ->
     @serverName = opts?.serverName ? serverName
 
-    # Create RTMP server
-    @rtmpServer = new rtmp.RTMPServer
-    @rtmpServer.on 'video_start', (streamId) =>
-      stream = avstreams.getOrCreate streamId
-      @onReceiveVideoControlBuffer stream
-    @rtmpServer.on 'video_data', (streamId, pts, dts, nalUnits) =>
-      stream = avstreams.get streamId
-      if stream?
-        @onReceiveVideoPacket stream, nalUnits, pts, dts
+    if config.enableRTMP or config.enableRTMPT
+      # Create RTMP server
+      @rtmpServer = new rtmp.RTMPServer
+      @rtmpServer.on 'video_start', (streamId) =>
+        stream = avstreams.getOrCreate streamId
+        @onReceiveVideoControlBuffer stream
+      @rtmpServer.on 'video_data', (streamId, pts, dts, nalUnits) =>
+        stream = avstreams.get streamId
+        if stream?
+          @onReceiveVideoPacket stream, nalUnits, pts, dts
+        else
+          logger.warn "warn: Received invalid streamId from rtmp: #{streamId}"
+      @rtmpServer.on 'audio_start', (streamId) =>
+        stream = avstreams.getOrCreate streamId
+        @onReceiveAudioControlBuffer stream
+      @rtmpServer.on 'audio_data', (streamId, pts, dts, adtsFrame) =>
+        stream = avstreams.get streamId
+        if stream?
+          @onReceiveAudioPacket stream, adtsFrame, pts, dts
+        else
+          logger.warn "warn: Received invalid streamId from rtmp: #{streamId}"
+
+    if config.enableCustomReceiver
+      # Setup data receivers for custom protocol
+      @customReceiver = new CustomReceiver config.receiverType,
+        videoControl: =>
+          @onReceiveVideoControlBuffer arguments...
+        audioControl: =>
+          @onReceiveAudioControlBuffer arguments...
+        videoData: =>
+          @onReceiveVideoDataBuffer arguments...
+        audioData: =>
+          @onReceiveAudioDataBuffer arguments...
+
+      # Delete old sockets
+      @customReceiver.deleteReceiverSocketsSync()
+
+    if config.enableHTTP
+      @httpHandler = new http.HTTPHandler
+        serverName: @serverName
+        documentRoot: opts?.documentRoot
+
+    if config.enableRTSP or config.enableHTTP or config.enableRTMPT
+      if config.enableRTMPT
+        rtmptCallback = =>
+          @rtmpServer.handleRTMPTRequest arguments...
       else
-        logger.warn "warn: Received invalid streamId from rtmp: #{streamId}"
-    @rtmpServer.on 'audio_start', (streamId) =>
-      stream = avstreams.getOrCreate streamId
-      @onReceiveAudioControlBuffer stream
-    @rtmpServer.on 'audio_data', (streamId, pts, dts, adtsFrame) =>
-      stream = avstreams.get streamId
-      if stream?
-        @onReceiveAudioPacket stream, adtsFrame, pts, dts
+        rtmptCallback = null
+      if config.enableHTTP
+        httpHandler = @httpHandler
       else
-        logger.warn "warn: Received invalid streamId from rtmp: #{streamId}"
-
-    # Setup data receivers for custom protocol
-    @customReceiver = new CustomReceiver config.receiverType,
-      videoControl: =>
-        @onReceiveVideoControlBuffer arguments...
-      audioControl: =>
-        @onReceiveAudioControlBuffer arguments...
-      videoData: =>
-        @onReceiveVideoDataBuffer arguments...
-      audioData: =>
-        @onReceiveAudioDataBuffer arguments...
-
-    # Delete old sockets
-    @customReceiver.deleteReceiverSocketsSync()
-
-    @httpHandler = new http.HTTPHandler
-      serverName: @serverName
-      documentRoot: opts?.documentRoot
-
-    @rtspServer = new rtsp.RTSPServer
-      serverName : @serverName
-      httpHandler: @httpHandler
-      rtmpServer : @rtmpServer
-    @rtspServer.on 'video_start', (stream) =>
-      @onReceiveVideoControlBuffer stream
-    @rtspServer.on 'audio_start', (stream) =>
-      @onReceiveAudioControlBuffer stream
-    @rtspServer.on 'video', (stream, nalUnits, pts, dts) =>
-      @onReceiveVideoNALUnits stream, nalUnits, pts, dts
-    @rtspServer.on 'audio', (stream, accessUnits, pts, dts) =>
-      @onReceiveAudioAccessUnits stream, accessUnits, pts, dts
+        httpHandler = null
+      @rtspServer = new rtsp.RTSPServer
+        serverName : @serverName
+        httpHandler: httpHandler
+        rtmptCallback: rtmptCallback
+      @rtspServer.on 'video_start', (stream) =>
+        @onReceiveVideoControlBuffer stream
+      @rtspServer.on 'audio_start', (stream) =>
+        @onReceiveAudioControlBuffer stream
+      @rtspServer.on 'video', (stream, nalUnits, pts, dts) =>
+        @onReceiveVideoNALUnits stream, nalUnits, pts, dts
+      @rtspServer.on 'audio', (stream, accessUnits, pts, dts) =>
+        @onReceiveAudioAccessUnits stream, accessUnits, pts, dts
 
     avstreams.on 'new', (stream) ->
       if DEBUG_INCOMING_PACKET_HASH
@@ -97,8 +110,10 @@ class StreamServer
         stream.lastSentVideoTimestamp = 0
 
     avstreams.on 'end', (stream) =>
-      @rtspServer.sendEOS stream
-      @rtmpServer.sendEOS stream
+      if config.enableRTSP
+        @rtspServer.sendEOS stream
+      if config.enableRTMP or config.enableRTMPT
+        @rtmpServer.sendEOS stream
 
     # for mp4
     avstreams.on 'audio_data', (stream, data, pts) =>
@@ -202,27 +217,35 @@ class StreamServer
     avstreams.addGenerator streamName, generator
 
   stop: (callback) ->
-    @customReceiver.deleteReceiverSocketsSync()
+    if config.enableCustomReceiver
+      @customReceiver.deleteReceiverSocketsSync()
     callback?()
 
   start: (callback) ->
     seq = new Sequent
+    waitCount = 0
 
-    @rtmpServer.start { port: config.rtmpServerPort }, ->
-      seq.done()
-      # RTMP server is ready
+    if config.enableRTMP
+      waitCount++
+      @rtmpServer.start { port: config.rtmpServerPort }, ->
+        seq.done()
+        # RTMP server is ready
 
-    # Start data receivers for custom protocol
-    @customReceiver.start()
+    if config.enableCustomReceiver
+      # Start data receivers for custom protocol
+      @customReceiver.start()
 
-    @rtspServer.start { port: config.serverPort }, ->
-      seq.done()
+    if config.enableRTSP or config.enableHTTP or config.enableRTMPT
+      waitCount++
+      @rtspServer.start { port: config.serverPort }, ->
+        seq.done()
 
-    seq.wait 2, ->
+    seq.wait waitCount, ->
       callback?()
 
   setLivePathConsumer: (func) ->
-    @rtspServer.setLivePathConsumer func
+    if config.enableRTSP
+      @rtspServer.setLivePathConsumer func
 
   # buf argument can be null (not used)
   onReceiveVideoControlBuffer: (stream, buf) ->
@@ -268,20 +291,25 @@ class StreamServer
     if DEBUG_INCOMING_PACKET_DATA
       logger.info "receive video: num_nal_units=#{nalUnits.length} pts=#{pts}"
 
-    # rtspServer will parse nalUnits and updates SPS/PPS for the stream,
-    # so we don't need to parse them here.
-    # TODO: Should SPS/PPS be parsed here?
-    @rtspServer.sendVideoData stream, nalUnits, pts, dts
+    if config.enableRTSP
+      # rtspServer will parse nalUnits and updates SPS/PPS for the stream,
+      # so we don't need to parse them here.
+      # TODO: Should SPS/PPS be parsed here?
+      @rtspServer.sendVideoData stream, nalUnits, pts, dts
 
-    @rtmpServer.sendVideoPacket stream, nalUnits, pts, dts
+    if config.enableRTMP or config.enableRTMPT
+      @rtmpServer.sendVideoPacket stream, nalUnits, pts, dts
 
     hasVideoFrame = false
     for nalUnit in nalUnits
       nalUnitType = h264.getNALUnitType nalUnit
-      if (nalUnitType is h264.NAL_UNIT_TYPE_IDR_PICTURE) or (nalUnitType is h264.NAL_UNIT_TYPE_NON_IDR_PICTURE)  # 5 (key frame) or 1 (inter frame)
+      if nalUnitType is h264.NAL_UNIT_TYPE_SPS  # 7
+        stream.updateSPS nalUnit
+      else if nalUnitType is h264.NAL_UNIT_TYPE_PPS  # 8
+        stream.updatePPS nalUnit
+      else if (nalUnitType is h264.NAL_UNIT_TYPE_IDR_PICTURE) or
+      (nalUnitType is h264.NAL_UNIT_TYPE_NON_IDR_PICTURE)  # 5 (key frame) or 1 (inter frame)
         hasVideoFrame = true
-        if not DEBUG_INCOMING_PACKET_HASH
-          break
       if DEBUG_INCOMING_PACKET_HASH
         md5 = crypto.createHash 'md5'
         md5.update nalUnit
@@ -308,7 +336,8 @@ class StreamServer
 
   # pts, dts: in 90KHz clock rate
   onReceiveAudioAccessUnits: (stream, accessUnits, pts, dts) ->
-    @rtspServer.sendAudioData stream, accessUnits, pts, dts
+    if config.enableRTSP
+      @rtspServer.sendAudioData stream, accessUnits, pts, dts
 
     if DEBUG_INCOMING_PACKET_DATA
       logger.info "receive audio: num_access_units=#{accessUnits.length} pts=#{pts}"
@@ -320,9 +349,12 @@ class StreamServer
         md5 = crypto.createHash 'md5'
         md5.update accessUnit
         logger.info "audio: pts=#{pts} md5=#{md5.digest('hex')[0..6]} bytes=#{accessUnit.length}"
-      @rtmpServer.sendAudioPacket stream, accessUnit,
-        Math.round(pts + ptsPerFrame * i),
-        Math.round(dts + ptsPerFrame * i)
+      if config.enableRTMP or config.enableRTMPT
+        @rtmpServer.sendAudioPacket stream, accessUnit,
+          Math.round(pts + ptsPerFrame * i),
+          Math.round(dts + ptsPerFrame * i)
+
+    return
 
   # pts, dts: in 90KHz clock rate
   onReceiveAudioPacket: (stream, adtsFrameGlob, pts, dts) ->

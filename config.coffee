@@ -1,7 +1,9 @@
+os = require 'os'
+
 module.exports =
-  #######################
-  ## Basic configurations
-  #######################
+  ############################
+  ### Basic configurations ###
+  ############################
 
   # Server listen port
   serverPort: 80
@@ -23,8 +25,28 @@ module.exports =
   # Audio bitrate in Kbps (informative)
   audioBitrateKbps: 40
 
-  # What transport is used for feeding audio/video data
-  receiverType: 'unix'  # 'unix' or 'tcp' or 'udp'
+  ### Enable/disable each functions ###
+
+  # Enable RTSP server
+  enableRTSP: true
+
+  # Enable RTMP/RTMPE server (not including RTMPT)
+  enableRTMP: true
+
+  # Enable RTMPT/RTMPTE server
+  enableRTMPT: true
+
+  # Enable HTTP server
+  enableHTTP: true
+
+  # Enable custom protocol receiver
+  enableCustomReceiver: true
+
+  ### Custom protocol receiver configurations ###
+
+  # Transport for custom protocol receiver
+  # 'unix' or 'tcp' or 'udp'
+  receiverType: if os.platform() is 'win32' then 'tcp' else 'unix'
 
   # For receiverType == 'unix'
   # UNIX domain socket used for receiving audio/video data
@@ -43,11 +65,15 @@ module.exports =
   # For receiverType == 'tcp'
   receiverTCPBacklog: 511
 
+  ### RTSP configurations ###
+
   # Server ports for RTP and RTCP
   audioRTPServerPort : 7042  # even
   audioRTCPServerPort: 7043  # odd and contiguous
   videoRTPServerPort : 7044  # even
   videoRTCPServerPort: 7045  # odd and contiguous
+
+  ### RTSP/RTMP configurations ###
 
   # Application name for live streams. Live streams will be accessible at
   # rtsp://{host}:{serverPort}/{liveApplicationName}/{streamName} or
@@ -61,12 +87,11 @@ module.exports =
   recordedApplicationName: 'file'
   recordedDir: 'file'
 
-  # If true, the server waits for the first keyframe
-  # before starting to send video/audio over RTMP.
-  rtmpWaitForKeyFrame: false
+  ### RTMP configurations ###
 
-  # Enable RTMPT and RTMPTE
-  enableRTMPT: true
+  # If true, the server waits for the first keyframe
+  # before starting to send video/audio frames over RTMP.
+  rtmpWaitForKeyFrame: false
 
   flv:
     # Has video?
@@ -79,9 +104,9 @@ module.exports =
     audiocodecid: 10 # AAC
 
 
-  ##########################
-  ## Advanced configurations
-  ##########################
+  ###############################
+  ### Advanced configurations ###
+  ###############################
 
   # Period size of each audio frame. Use 1024 for picam.
   audioPeriodSize: 1024

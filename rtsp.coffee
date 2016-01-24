@@ -22,7 +22,14 @@ Bits = require './bits'
 logger = require './logger'
 config = require './config'
 
-TAG = 'rtsp/http'
+enabledFeatures = []
+if config.enableRTSP
+  enabledFeatures.push 'rtsp'
+if config.enableHTTP
+  enabledFeatures.push 'http'
+if config.enableRTMPT
+  enabledFeatures.push 'rtmpt'
+TAG = enabledFeatures.join '/'
 
 # Default server name for RTSP and HTTP responses
 DEFAULT_SERVER_NAME = 'node-rtsp-rtmp-server'
@@ -122,6 +129,7 @@ class RTSPServer
   constructor: (opts) ->
     @httpHandler = opts.httpHandler
     @rtmpServer = opts.rtmpServer
+    @rtmptCallback = opts.rtmptCallback
 
     @numClients = 0
 
@@ -233,10 +241,8 @@ class RTSPServer
         continue
       if nalUnitType is h264.NAL_UNIT_TYPE_SPS  # 7
         isSPSSent = true
-        stream.updateSPS nalUnit
       else if nalUnitType is h264.NAL_UNIT_TYPE_PPS  # 8
         isPPSSent = true
-        stream.updatePPS nalUnit
 
       # If this is keyframe but SPS and PPS do not exist in the
       # same timestamp, we insert them before the keyframe.
@@ -659,7 +665,7 @@ class RTSPServer
       api.INTERLEAVED_HEADER_LEN + rtpBuffer.length
 
   # Process incoming RTSP data that is tunneled in HTTP POST
-  handlePOSTData: (client, data='', callback) ->
+  handleTunneledPOSTData: (client, data='', callback) ->
     # Concatenate outstanding base64 string
     if client.postBase64Buf?
       base64Buf = client.postBase64Buf + data
@@ -695,13 +701,13 @@ class RTSPServer
     # Will be called before return
     processRemainingBuffer = =>
       if client.postBase64Buf? or client.postBuf?
-        @handlePOSTData client, '', callback
+        @handleTunneledPOSTData client, '', callback
       else
         callback? null
       return
 
     # TODO: Do we have to interpret interleaved data here?
-    if postData[0] is api.INTERLEAVED_SIGN  # interleaved data
+    if config.enableRTSP and (postData[0] is api.INTERLEAVED_SIGN)  # interleaved data
       interleavedData = api.getInterleavedData postData
       if not interleavedData?
         # not enough buffer for an interleaved data
@@ -755,11 +761,15 @@ class RTSPServer
           logger.error "[respond] Error: #{err}"
           callback? err
           return
-        if DEBUG_HTTP_TUNNEL
-          logger.info "===response (HTTP tunneled)==="
-          process.stdout.write output
-          logger.info "============="
-        client.getClient.socket.write output
+        if output?
+          if DEBUG_HTTP_TUNNEL
+            logger.info "===response (HTTP tunneled)==="
+            process.stdout.write output
+            logger.info "============="
+          client.getClient.socket.write output
+        else
+          if DEBUG_HTTP_TUNNEL
+            logger.info "===empty response (HTTP tunneled)==="
         processRemainingBuffer()
 
 #  cancelTimeout: (socket) ->
@@ -808,7 +818,7 @@ class RTSPServer
 
     client = @clients[id_str]
     if client.isSendingPOST
-      @handlePOSTData client, data.toString 'utf8'
+      @handleTunneledPOSTData client, data.toString 'utf8'
       return
     if c.buf?
       c.buf = Buffer.concat [c.buf, data], c.buf.length + data.length
@@ -897,28 +907,32 @@ class RTSPServer
       if err
         logger.error "[respond] Error: #{err}"
         return
-      # Write the response
-      if DEBUG_RTSP
-        logger.info "===RTSP/HTTP response to #{id_str}==="
-      if output instanceof Array
-        for out, i in output
+      if output?
+        # Write the response
+        if DEBUG_RTSP
+          logger.info "===RTSP/HTTP response to #{id_str}==="
+        if output instanceof Array
+          for out, i in output
+            if DEBUG_RTSP
+              logger.info out
+            c.write out
+        else
           if DEBUG_RTSP
-            logger.info out
-          c.write out
+            if DEBUG_RTSP_HEADERS_ONLY
+              delimPos = Bits.searchBytesInArray output, [ 0x0d, 0x0a, 0x0d, 0x0a ]
+              if delimPos isnt -1
+                headerBytes = output[0..delimPos+1]
+              else
+                headerBytes = output
+              process.stdout.write headerBytes
+            else
+              process.stdout.write output
+          c.write output
+        if DEBUG_RTSP
+          logger.info "==================="
       else
         if DEBUG_RTSP
-          if DEBUG_RTSP_HEADERS_ONLY
-            delimPos = Bits.searchBytesInArray output, [ 0x0d, 0x0a, 0x0d, 0x0a ]
-            if delimPos isnt -1
-              headerBytes = output[0..delimPos+1]
-            else
-              headerBytes = output
-            process.stdout.write headerBytes
-          else
-            process.stdout.write output
-        c.write output
-      if DEBUG_RTSP
-        logger.info "==================="
+          logger.info "===RTSP/HTTP empty response to #{id_str}==="
       if resultOpts?.close
         # Half-close the socket
         c.end()
@@ -1142,20 +1156,24 @@ class RTSPServer
     """
     callback null, res.replace /\n/g, "\r\n"
 
-  respondWithNotFound: (protocol='RTSP', callback) ->
+  respondWithNotFound: (req, protocol, callback) ->
+    if not protocol?
+      protocol = 'RTSP'
     res = """
     #{protocol}/1.0 404 Not Found
+    Date: #{api.getDateHeader()}
     Content-Length: 9
     Content-Type: text/plain
 
     Not Found
     """.replace /\n/g, "\r\n"
-    callback null, res
+    callback null, res,
+      close: req.headers.connection?.toLowerCase() isnt 'keep-alive'
 
   respondOptions: (socket, req, callback) ->
     res = """
     RTSP/1.0 200 OK
-    CSeq: #{req.headers.cseq}
+    CSeq: #{req.headers.cseq ? 0}
     Public: DESCRIBE, SETUP, TEARDOWN, PLAY, PAUSE, ANNOUNCE, RECORD
 
 
@@ -1169,50 +1187,62 @@ class RTSPServer
       if not client.clientType?
         client.clientType = 'rtmpt'
         @dumpClients()
-      @rtmpServer.handleRTMPTRequest req, (err, output, resultOpts) =>
-        if err
-          logger.error "[rtmpt] Error: #{err}"
-          @respondWithNotFound 'HTTP', (err, response) ->
-            callback response, resultOpts
+      if @rtmptCallback?
+        @rtmptCallback req, (err, output) =>
+          if err
+            logger.error "[rtmpt] Error: #{err}"
+            @respondWithNotFound req, 'HTTP', callback
+          else
+            callback err, output
+      else
+        @respondWithNotFound req, 'HTTP', callback
+    else if config.enableRTSP
+      # TODO: POST/GET connections may be re-initialized
+      # Incoming channel
+      if not @httpSessions[req.headers['x-sessioncookie']]?
+        if @httpHandler?
+          @respondWithNotFound req, 'HTTP', callback
         else
-          callback err, output, resultOpts
-      return
-    # TODO: POST/GET connections may be re-initialized
-    # Incoming channel
-    if not @httpSessions[req.headers['x-sessioncookie']]?
-      @respondWithNotFound 'HTTP', callback
-      return
-    socket.isAuthenticated = true
-    client.sessionCookie = req.headers['x-sessioncookie']
-    @httpSessions[client.sessionCookie].post = client
-    getClient = @httpSessions[client.sessionCookie].get
-    # Make circular reference
-    getClient.postClient = client
-    client.getClient = getClient
-    client.useHTTP = true
-    client.httpClientType = 'POST'
-    client.isSendingPOST = true
+          # Request cannot be handled; close the connection
+          callback null, null,
+            close: true
+        return
+      socket.isAuthenticated = true
+      client.sessionCookie = req.headers['x-sessioncookie']
+      @httpSessions[client.sessionCookie].post = client
+      getClient = @httpSessions[client.sessionCookie].get
+      # Make circular reference
+      getClient.postClient = client
+      client.getClient = getClient
+      client.useHTTP = true
+      client.httpClientType = 'POST'
+      client.isSendingPOST = true
 
-    if req.body?
-      @handlePOSTData client, req.body
-    # There's no response from the server
+      if req.body?
+        @handleTunneledPOSTData client, req.body
+
+      # There's no response from the server
+    else if @httpHandler?
+      @httpHandler.handlePath pathname, req, (err, output) ->
+        callback err, output,
+          close: req.headers.connection?.toLowerCase() isnt 'keep-alive'
+    else
+      # Request cannot be handled; close the connection
+      callback null, null,
+        close: true
+    return
 
   respondGet: (socket, req, callback) ->
     liveRegex = new RegExp("^/#{config.liveApplicationName}/(.*)$")
     recordedRegex = new RegExp("^/#{config.recordedApplicationName}/(.*)$")
     client = @clients[socket.clientID]
     pathname = url.parse(req.uri).pathname
-    if pathname is '/crossdomain.xml'
-      @httpHandler.respondCrossDomainXML req, (err, output) ->
-        callback err, output,
-          close: req.headers.connection?.toLowerCase() isnt 'keep-alive'
-      return
-    else if (match = liveRegex.exec req.uri)?
+    if config.enableRTSP and (match = liveRegex.exec req.uri)?
       # Outgoing channel
       @consumePathname req.uri, (err) =>
         if err
           logger.warn "Failed to consume pathname: #{err}"
-          @respondWithNotFound 'HTTP', callback
+          @respondWithNotFound req, 'HTTP', callback
           return
         client.sessionCookie = req.headers['x-sessioncookie']
         client.useHTTP = true
@@ -1240,12 +1270,12 @@ class RTSPServer
 
         # Do not close the connection
         callback null, res
-    else if (match = recordedRegex.exec req.uri)?
+    else if config.enableRTSP and (match = recordedRegex.exec req.uri)?
       # Outgoing channel
       @consumePathname req.uri, (err) =>
         if err
           logger.warn "Failed to consume pathname: #{err}"
-          @respondWithNotFound 'HTTP', callback
+          @respondWithNotFound req, 'HTTP', callback
           return
         client.sessionCookie = req.headers['x-sessioncookie']
         client.useHTTP = true
@@ -1273,17 +1303,21 @@ class RTSPServer
 
         # Do not close the connection
         callback null, res
-    else
+    else if @httpHandler?
       @httpHandler.handlePath pathname, req, (err, output) ->
         callback err, output,
           close: req.headers.connection?.toLowerCase() isnt 'keep-alive'
-      return
+    else
+      # Request cannot be handled; close the connection
+      callback null, null,
+        close: true
+    return
 
   respondDescribe: (socket, req, callback) ->
     client = @clients[socket.clientID]
     @consumePathname req.uri, (err) =>
       if err
-        @respondWithNotFound 'RTSP', callback
+        @respondWithNotFound req, 'RTSP', callback
         return
       socket.isAuthenticated = true
       client.bandwidth = req.headers.bandwidth
@@ -1297,7 +1331,7 @@ class RTSPServer
 
       if not stream?
         logger.info "[#{TAG}:client=#{client.id}] requested stream not found: #{streamId}"
-        @respondWithNotFound 'RTSP', callback
+        @respondWithNotFound req, 'RTSP', callback
         return
 
       sdpData =
@@ -1381,7 +1415,7 @@ class RTSPServer
   respondSetup: (socket, req, callback) ->
     client = @clients[socket.clientID]
     if not socket.isAuthenticated
-      @respondWithNotFound 'RTSP', callback
+      @respondWithNotFound req, 'RTSP', callback
       return
     serverPort = null
     track = null
@@ -1577,13 +1611,13 @@ class RTSPServer
 
     client = @clients[socket.clientID]
     if not socket.isAuthenticated
-      @respondWithNotFound 'RTSP', callback
+      @respondWithNotFound req, 'RTSP', callback
       return
 
     preventFromPlaying = false
     stream = client.stream
     if not stream?
-      @respondWithNotFound 'RTSP', callback
+      @respondWithNotFound req, 'RTSP', callback
       return
 
     doResumeLater = false
@@ -1680,7 +1714,7 @@ class RTSPServer
   respondPause: (socket, req, callback) ->
     client = @clients[socket.clientID]
     if not socket.isAuthenticated
-      @respondWithNotFound 'RTSP', callback
+      @respondWithNotFound req, 'RTSP', callback
       return
     @stopSendingRTCP client
     client.disablePlaying()
@@ -1706,7 +1740,7 @@ class RTSPServer
     if stream?.type is avstreams.STREAM_TYPE_RECORDED
       stream.teardown?()
     if not socket.isAuthenticated
-      @respondWithNotFound 'RTSP', callback
+      @respondWithNotFound req, 'RTSP', callback
       return
     client.disablePlaying()
     if stream?.rtspClients[client.id]?
@@ -1842,29 +1876,33 @@ class RTSPServer
     callback null, res
 
   respond: (socket, req, callback) ->
-    if req.method is 'OPTIONS'
+    if (req.protocolName isnt 'RTSP') and (req.protocolName isnt 'HTTP')
+      # Request cannot be handled; close the connection
+      callback null, null,
+        close: true
+    if config.enableRTSP and (req.protocolName is 'RTSP') and (req.method is 'OPTIONS')
       @respondOptions socket, req, callback
-    else if (req.method is 'POST') and (req.protocol.indexOf('HTTP') isnt -1) # HTTP POST
+    else if (req.method is 'POST') and (req.protocolName is 'HTTP') # HTTP POST
       @respondPost socket, req, callback
-    else if (req.method is 'GET') and (req.protocol.indexOf('HTTP') isnt -1) # HTTP GET
+    else if (req.method is 'GET') and (req.protocolName is 'HTTP') # HTTP GET
       @respondGet socket, req, callback
-    else if req.method is 'DESCRIBE'  # DESCRIBE for RTSP, GET for HTTP
+    else if config.enableRTSP and (req.protocolName is 'RTSP') and (req.method is 'DESCRIBE')  # DESCRIBE for RTSP, GET for HTTP
       @respondDescribe socket, req, callback
-    else if req.method is 'SETUP'
+    else if config.enableRTSP and (req.protocolName is 'RTSP') and (req.method is 'SETUP')
       @respondSetup socket, req, callback
-    else if req.method is 'PLAY'
+    else if config.enableRTSP and (req.protocolName is 'RTSP') and (req.method is 'PLAY')
       @respondPlay socket, req, callback
-    else if req.method is 'PAUSE'
+    else if config.enableRTSP and (req.protocolName is 'RTSP') and (req.method is 'PAUSE')
       @respondPause socket, req, callback
-    else if req.method is 'TEARDOWN'
+    else if config.enableRTSP and (req.protocolName is 'RTSP') and (req.method is 'TEARDOWN')
       @respondTeardown socket, req, callback
-    else if req.method is 'ANNOUNCE'
+    else if config.enableRTSP and (req.protocolName is 'RTSP') and (req.method is 'ANNOUNCE')
       @respondAnnounce socket, req, callback
-    else if req.method is 'RECORD'
+    else if config.enableRTSP and (req.protocolName is 'RTSP') and (req.method is 'RECORD')
       @respondRecord socket, req, callback
     else
-      logger.warn "[#{TAG}] method not implemented: #{req.method}"
-      @respondWithNotFound 'RTSP', callback
+      logger.warn "[#{TAG}] method \"#{req.method}\" not implemented for protocol \"#{req.protocol}\""
+      @respondWithNotFound req, req.protocolName, callback
 
   # Called when received video data over RTSP
   onUploadVideoData: (stream, msg, rinfo) ->

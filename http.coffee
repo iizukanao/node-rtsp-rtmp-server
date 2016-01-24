@@ -47,7 +47,9 @@ class HTTPHandler
 
   handlePath: (filepath, req, callback) ->
     # Example implementation
-    if filepath is '/ping'
+    if filepath is '/crossdomain.xml'
+      @respondCrossDomainXML req, callback
+    else if filepath is '/ping'
       @respondText 'pong', req, callback
     else if filepath is '/list'
       opts =
@@ -388,6 +390,12 @@ api =
 
     lines = headerPart.split /\r\n/
     [method, uri, protocol] = lines[0].split /\s+/
+    if protocol?
+      # Split "HTTP/1.1" to "HTTP" and "1.1"
+      slashPos = protocol.indexOf '/'
+      if slashPos isnt -1
+        protocolName = protocol[0...slashPos]
+        protocolVersion = protocol[slashPos+1..]
     headers = {}
     for line, i in lines
       continue if i is 0
@@ -405,6 +413,8 @@ api =
       method: method
       uri: decodedURI
       protocol: protocol
+      protocolName: protocolName
+      protocolVersion: protocolVersion
       headers: headers
       body: body
       headerBytes: Buffer.byteLength headerPart, 'utf8'
