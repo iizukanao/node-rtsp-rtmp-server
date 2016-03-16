@@ -16,6 +16,7 @@ aac = require './aac'
 flv = require './flv'
 avstreams = require './avstreams'
 logger = require './logger'
+Bits = require './bits'
 
 # enum
 SESSION_STATE_NEW               = 1
@@ -173,26 +174,53 @@ parseAMF0StrictArray = (buf) ->
   arr = []
   len = (buf[0] << 24) + (buf[1] << 16) + (buf[2] << 8) + buf[3]
   readLen = 4
-  while len-- >= 0
+  while --len >= 0
     result = parseAMF0Data buf[readLen..]
     arr.push result.value
     readLen += result.readLen
   return { value: arr, readLen: readLen }
 
 parseAMF0ECMAArray = (buf) ->
+  # associative-count
+  count = (buf[0] << 24) + (buf[1] << 16) + (buf[2] << 8) + buf[3]
+  result = parseAMF0Object buf[4..], count
+  result.readLen += 4
+  return result
+
+parseAMF0Object = (buf, maxItems=null) ->
   obj = {}
   bufLen = buf.length
   readLen = 0
-  while readLen < bufLen
-    nameLen = (buf[readLen++] << 8) + buf[readLen++]
-    name = buf.toString 'utf8', readLen, readLen + nameLen
-    readLen += nameLen
-    result = parseAMF0Data buf[readLen..]
-    readLen += result.readLen
-    if result.type is 'object-end-marker'
-      break
-    obj[name] = result.value
+  items = 0
+  if (not maxItems?) or (maxItems > 0)
+    while readLen < bufLen
+      nameLen = (buf[readLen++] << 8) + buf[readLen++]
+      if nameLen > 0  # object-end-marker will follow
+        name = buf.toString 'utf8', readLen, readLen + nameLen
+        readLen += nameLen
+      else
+        name = null
+      result = parseAMF0Data buf[readLen..]
+      readLen += result.readLen
+      if result.type is 'object-end-marker'
+        break
+      else
+        items++
+        if maxItems? and (items > maxItems)
+          logger.warn "warn: illegal AMF0 data: force break because items (#{items}) > maxItems (#{maxItems})"
+          break
+      if name?
+        obj[name] = result.value
+      else
+        logger.warn "warn: illegal AMF0 data: object key for value #{result.value} is zero length"
   return { value: obj, readLen: readLen }
+
+# Do opposite of parseAMF0DataMessage()
+serializeAMF0DataMessage = (parsedObject) ->
+  bufs = []
+  for object in parsedObject.objects
+    bufs.push createAMF0Data object.value
+  return Buffer.concat bufs
 
 # Decode AMF0 data message buffer into AMF0 packets
 parseAMF0DataMessage = (buf) ->
@@ -241,18 +269,17 @@ parseAMF0Data = (buf) ->
     value = buf.toString 'utf8', i, i+strLen
     return { type: 'string', value: value, readLen: i + strLen }
   else if type is 0x03  # object-marker
-    result = parseAMF0ECMAArray buf[i..]
+    result = parseAMF0Object buf[i..]
     return { type: 'object', value: result.value, readLen: i + result.readLen }
   else if type is 0x05  # null-marker
     return { type: 'null', value: null, readLen: i }
   else if type is 0x06  # undefined-marker
     return { type: 'undefined', value: undefined, readLen: i }
   else if type is 0x08  # ecma-array-marker
-    # XXX: associative-count (4 bytes) may be safe to ignore
-    result = parseAMF0ECMAArray buf[i+4..]
-    return { type: 'array', value: result.value, readLen: i + 4 + result.readLen }
+    result = parseAMF0ECMAArray buf[i..]
+    return { type: 'array', value: result.value, readLen: i + result.readLen }
   else if type is 0x09  # object-end-marker
-    return { type: 'object-end-marker', readLen: 3 }
+    return { type: 'object-end-marker', readLen: i }
   else if type is 0x0a  # strict-array-marker
     result = parseAMF0StrictArray buf[i..]
     return { type: 'strict-array', value: result.value, readLen: i + result.readLen }
@@ -297,17 +324,7 @@ createAMF0Data = (data) ->
     buf = new Buffer [ 0x0a ]  # strict-array-marker
     buf = createAMF0StrictArray data, buf
   else if type is 'object'
-    count = Object.keys(data).length
-    buf = new Buffer [
-      # ecma-array-marker
-      0x08,
-      # array-count
-      (count >>> 24) & 0xff,
-      (count >>> 16) & 0xff,
-      (count >>> 8) & 0xff,
-      count & 0xff
-    ]
-    buf = createAMF0ECMAArray data, buf
+    buf = createAMF0Object data
   else
     throw new Error "Unknown data type \"#{type}\" for data #{data}"
   buf
@@ -337,9 +354,22 @@ createAMF0StrictArray = (arr, buf=null) ->
 
 createAMF0Object = (obj) ->
   buf = new Buffer [ 0x03 ]  # object-marker
-  return createAMF0ECMAArray obj, buf
+  return createAMF0PropertyList obj, buf
 
-createAMF0ECMAArray = (obj, buf=null) ->
+createAMF0ECMAArray = (obj) ->
+  count = Object.keys(obj).length
+  buf = new Buffer [
+    # ecma-array-marker
+    0x08,
+    # array-count
+    (count >>> 24) & 0xff,
+    (count >>> 16) & 0xff,
+    (count >>> 8) & 0xff,
+    count & 0xff
+  ]
+  return createAMF0PropertyList obj, buf
+
+createAMF0PropertyList = (obj, buf=null) ->
   bufs = []
   totalLength = 0
   if buf?
@@ -2427,7 +2457,7 @@ class RTMPSession
 
         seq.wait parseResult.rtmpMessages.length, (err, output) ->
           if err?
-            logger.error "[rtmp:receive] packet error: #{err}"
+            logger.error "[rtmp:receive] ignoring invalid packet (#{err})"
           if output?
             outputs.push output
           consumeNextRTMPMessage()
@@ -2513,16 +2543,23 @@ class RTMPSession
                 stream.emit 'end'
               seq.done()
             when 15  # AMF3 data message
-              dataMessage = parseAMF0DataMessage rtmpMessage.body[1..]
-              if DEBUG_INCOMING_RTMP_PACKETS
-                logger.info "[rtmp:receive] AMF3 data:"
-                logger.info dataMessage
-              @handleAMFDataMessage dataMessage, (err, output) ->
-                if err?
-                  logger.error "[rtmp:receive] packet error: #{err}"
-                if output?
-                  outputs.push output
-                seq.done()
+              try
+                dataMessage = parseAMF0DataMessage rtmpMessage.body[1..]
+              catch e
+                logger.error "[rtmp] error: failed to parse AMF0 data message: #{e.stack}"
+                logger.error "messageTypeID=#{rtmpMessage.messageTypeID} body:"
+                Bits.hexdump rtmpMessage.body
+                seq.done e
+              if dataMessage?
+                if DEBUG_INCOMING_RTMP_PACKETS
+                  logger.info "[rtmp:receive] AMF3 data:"
+                  logger.info dataMessage
+                @handleAMFDataMessage dataMessage, (err, output) ->
+                  if err?
+                    logger.error "[rtmp:receive] packet error: #{err}"
+                  if output?
+                    outputs.push output
+                  seq.done()
             when 17  # AMF3 command (0x11)
               # Does the first byte == 0x00 mean AMF0?
               commandMessage = parseAMF0CommandMessage rtmpMessage.body[1..]
@@ -2545,16 +2582,23 @@ class RTMPSession
                   outputs.push output
                 seq.done()
             when 18  # AMF0 data message
-              dataMessage = parseAMF0DataMessage rtmpMessage.body
-              if DEBUG_INCOMING_RTMP_PACKETS
-                logger.info "[rtmp:receive] AMF0 data:"
-                logger.info dataMessage
-              @handleAMFDataMessage dataMessage, (err, output) ->
-                if err?
-                  logger.error "[rtmp:receive] packet error: #{err}"
-                if output?
-                  outputs.push output
-                seq.done()
+              try
+                dataMessage = parseAMF0DataMessage rtmpMessage.body
+              catch e
+                logger.error "[rtmp] error: failed to parse AMF0 data message: #{e.stack}"
+                logger.error "messageTypeID=#{rtmpMessage.messageTypeID} body:"
+                Bits.hexdump rtmpMessage.body
+                seq.done e
+              if dataMessage?
+                if DEBUG_INCOMING_RTMP_PACKETS
+                  logger.info "[rtmp:receive] AMF0 data:"
+                  logger.info dataMessage
+                @handleAMFDataMessage dataMessage, (err, output) ->
+                  if err?
+                    logger.error "[rtmp:receive] packet error: #{err}"
+                  if output?
+                    outputs.push output
+                  seq.done()
             when 20  # AMF0 command
               commandMessage = parseAMF0CommandMessage rtmpMessage.body
               if DEBUG_INCOMING_RTMP_PACKETS
