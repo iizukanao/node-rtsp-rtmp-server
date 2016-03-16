@@ -158,9 +158,9 @@ api =
     if info.codecID is 7
       info.avcPacketType = bits.read_byte()
       info.compositionTime = bits.read_bits 24
-      if (info.avcPacketType isnt 1) and (info.compositionTime isnt 0)
-        # TODO: Handle this situation
-        logger.error "flv:readVideoDataTag(): AVCPacketType isn't 1 but CompositionTime isn't 0 (feature not implemented); AVCPacketType=#{info.avcPacketType} CompositionTime=#{info.compositionTime}"
+#      if (info.avcPacketType isnt 1) and (info.compositionTime isnt 0)
+#        # TODO: Does this situation require special handling?
+#        logger.error "flv:readVideoDataTag(): AVCPacketType isn't 1 but CompositionTime isn't 0 (feature not implemented); AVCPacketType=#{info.avcPacketType} CompositionTime=#{info.compositionTime}"
     return info
 
   # E.4.2.1 AUDIODATA
