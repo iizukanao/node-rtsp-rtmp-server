@@ -1136,18 +1136,18 @@ class RTMPSession
         @useEncryption = true
         logger.info "[rtmp:client=#{@clientid}] enabled encryption"
 
-      @clientPublicKey  = keys.clientPublicKey
-      @dh = keys.dh
-      @sharedSecret = @dh.computeSecret @clientPublicKey
-      @keyOut = codec_utils.calcHmac(@dh.getPublicKey(), @sharedSecret)[0..15]
-      @keyIn = codec_utils.calcHmac(@clientPublicKey, @sharedSecret)[0..15]
+        @clientPublicKey  = keys.clientPublicKey
+        @dh = keys.dh
+        @sharedSecret = @dh.computeSecret @clientPublicKey
+        @keyOut = codec_utils.calcHmac(@dh.getPublicKey(), @sharedSecret)[0..15]
+        @keyIn = codec_utils.calcHmac(@clientPublicKey, @sharedSecret)[0..15]
 
-      @cipherOut = crypto.createCipheriv 'rc4', @keyOut, ''
-      @cipherIn  = crypto.createCipheriv 'rc4', @keyIn, ''
-      zeroBytes = new Buffer 1536
-      zeroBytes.fill 0
-      @encrypt zeroBytes
-      @decrypt zeroBytes
+        @cipherOut = crypto.createCipheriv 'rc4', @keyOut, ''
+        @cipherIn  = crypto.createCipheriv 'rc4', @keyIn, ''
+        zeroBytes = new Buffer 1536
+        zeroBytes.fill 0
+        @encrypt zeroBytes
+        @decrypt zeroBytes
 
       callback null, s0s1s2
 
