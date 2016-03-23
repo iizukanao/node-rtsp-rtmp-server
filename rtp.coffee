@@ -681,13 +681,17 @@ api =
       throw new Error "createGoodbye: too many ssrcs: #{ssrcs.length} (must be <= 31)"
 
     # Reason for leaving
-    reason = [(new Buffer "End of stream", 'utf8')...]
+    reason = [(new Buffer 'End of stream', 'utf8')...]  # Convert Buffer to array
+    reasonLen = reason.length
+    # Number of bytes until the next 32-bit boundary
+    padLen = 4 - (1 + reasonLen) % 4
+
     if reason.length > 0xff
       throw new Error "createGoodbye: reason is too long: #{reason.length} (must be <= 255)"
 
     # Length of this RTCP packet in 32-bit words minus one
     # including the header and any padding
-    length = (4 + ssrcs.length * 4 + 1 + reason.length) / 4 - 1
+    length = (4 + ssrcs.length * 4 + 1 + reasonLen + padLen) / 4 - 1
 
     data = [
       # See section 6.6 for details
@@ -710,6 +714,8 @@ api =
 
     data.push reason.length
     data = data.concat reason
+    while padLen-- > 0
+      data.push 0x00
 
     return data
 
