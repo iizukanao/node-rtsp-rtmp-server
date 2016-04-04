@@ -474,7 +474,7 @@ class Bits
     if col isnt 0
       console.log()
 
-  @hexdump: (buffer) ->
+  @getHexdump: (buffer) ->
     col = 0
     strline = ''
     dump = ''
@@ -504,7 +504,10 @@ class Bits
     if col isnt 0
       endline()
 
-    process.stdout.write dump
+    return dump
+
+  @hexdump: (buffer) ->
+    process.stdout.write Bits.getHexdump buffer
 
   @zeropad: (width, num) ->
     num += ''
