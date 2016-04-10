@@ -653,16 +653,16 @@ api =
           info.field_id = bits.read_bits 2
           info.intra_slice_refresh = bits.read_bit()
           info.frequency_truncation = bits.read_bits 2
-        else if trick_mode_control is TRICK_MODE_CONTROL_SLOW_MOTION
+        else if info.trick_mode_control is TRICK_MODE_CONTROL_SLOW_MOTION
           info.rep_cntrl = bits.read_bits 5
-        else if trick_mode_control is TRICK_MODE_CONTROL_FREEZE_FRAME
+        else if info.trick_mode_control is TRICK_MODE_CONTROL_FREEZE_FRAME
           info.field_id = bits.read_bits 2
           reserved = bits.read_bits 3
-        else if trick_mode_control is TRICK_MODE_CONTROL_FAST_REVERSE
+        else if info.trick_mode_control is TRICK_MODE_CONTROL_FAST_REVERSE
           info.field_id = bits.read_bits 2
           info.intra_slice_refresh = bits.read_bit()
           info.frequency_truncation = bits.read_bits 2
-        else if trick_mode_control is TRICK_MODE_CONTROL_SLOW_REVERSE
+        else if info.trick_mode_control is TRICK_MODE_CONTROL_SLOW_REVERSE
           info.rep_cntrl = bits.read_bits 5
         else
           reserved = bits.read_bits 5
