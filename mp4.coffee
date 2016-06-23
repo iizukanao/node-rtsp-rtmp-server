@@ -727,7 +727,7 @@ class Box
       destObj.size = bits.read_bits 64  # TODO: might lose some precision
       headerLen += 8
     if destObj.typeStr is 'uuid'
-      usertype = bits.read_bytes 16
+      destObj.usertype = bits.read_bytes 16
       headerLen += 16
 
     if destObj.size > 0
@@ -735,9 +735,6 @@ class Box
     else
       destObj.data = bits.remaining_buffer()
       destObj.size = headerLen + destObj.data.length
-
-    if destObj.typeStr is 'uuid'
-      box.usertype = usertype
 
     return
 
