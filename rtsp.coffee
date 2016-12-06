@@ -1408,9 +1408,9 @@ class RTSPServer
       Cache-Control: no-cache
 
 
-      """.replace /\n/g, "\r\n"
+      """
 
-      callback null, res + body
+      callback null, res.replace /\n/g, "\r\n" + body
 
   respondSetup: (socket, req, callback) ->
     client = @clients[socket.clientID]
