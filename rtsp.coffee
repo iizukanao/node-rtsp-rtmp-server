@@ -1410,7 +1410,7 @@ class RTSPServer
 
       """
 
-      callback null, res.replace /\n/g, "\r\n" + body
+      callback null, res.replace(/\n/g, "\r\n") + body
 
   respondSetup: (socket, req, callback) ->
     client = @clients[socket.clientID]
