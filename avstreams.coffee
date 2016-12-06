@@ -136,8 +136,8 @@ class AVStream
         else
           logger.debug "[stream:#{@id}] update #{name}: #{value}"
         if name is 'audioASCInfo'
-          if value.sbrPresentFlag is 1
-            if value.psPresentFlag is 1
+          if value?.sbrPresentFlag is 1
+            if value?.psPresentFlag is 1
               logger.debug "[stream:#{@id}] audio: HE-AAC v2"
             else
               logger.debug "[stream:#{@id}] audio: HE-AAC v1"
