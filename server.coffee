@@ -10,7 +10,7 @@ logger.setLevel logger.LEVEL_INFO
 
 streamServer = new StreamServer
 streamServer.setLivePathConsumer (uri, callback) ->
-  pathname = url.parse(uri).pathname[1..]
+  pathname = url.parse(uri).pathname?[1..]
 
   isAuthorized = true
 
