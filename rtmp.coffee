@@ -748,13 +748,16 @@ class RTMPSession
     @clientid = generateNewClientID()
     @useEncryption = false
     @receiveTimestamp = null
-    @windowAckSize = null
     @lastSentAckBytes = 0
     @receivedBytes = 0
     @stream = null # AVStream
     @seekedDuringPause = false
     @lastSentTimestamp = null
     @isResuming = false
+
+    # Some broadcaster software like Wirecast does not send Window Acknowledgement Size,
+    # so it seems we have to set a default value.
+    @windowAckSize = 2500000
 
   toString: ->
     return "#{@clientid}: addr=#{@socket.remoteAddress} port=#{@socket.remotePort}"
