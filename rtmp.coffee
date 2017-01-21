@@ -1436,6 +1436,26 @@ class RTMPSession
     @receiveTimestamp = null
     publishingName = requestCommand.objects[1]?.value
 
+    if typeof publishingName isnt 'string'
+      publishStart = createAMF0CommandMessage
+        chunkStreamID: 4
+        timestamp: 0
+        messageStreamID: 1
+        command: 'onStatus'
+        transactionID: requestCommand.transactionID
+        objects: [
+          createAMF0Data(null),
+          createAMF0Object({
+            level: 'error'
+            code: 'NetStream.Publish.Start'
+            description: 'Publishing Name parameter is invalid.'
+            details: @app
+            clientid: @clientid
+          })
+        ]
+      , @chunkSize
+      return callback null, publishStart
+
     # Strip query string part from a string like:
     # "livestream?videoKeyframeFrequency=5&totalDatarate=248"
     urlInfo = url.parse publishingName
