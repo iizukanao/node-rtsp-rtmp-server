@@ -3,7 +3,7 @@
 - Supports RTSP, RTMP/RTMPE/RTMPT/RTMPTE, and HTTP.
 - Supports only H.264 video and AAC audio (AAC-LC, HE-AAC v1/v2).
 
-### Installation
+### Installation without Docker
 
     $ git clone https://github.com/iizukanao/node-rtsp-rtmp-server.git
     $ cd node-rtsp-rtmp-server
@@ -25,6 +25,15 @@ or use Node.js directly:
     $ sudo node server.js
 
 If both `serverPort` and `rtmpServerPort` are above 1023 in config.coffee, you can omit `sudo`.
+
+### Docker Deploy Method
+
+If you would prefer building and executing this code in a docker container, you can do so by first building the container and then running it.
+
+    $  make build
+    $  make console
+
+You may also want to use just `make run` to run the container as a daemon.  If you fiddle with the ports, you'll need to update the values in the Makefile as well to expose the desired ports to your system.
 
 ### Serving MP4 files as recorded streams
 
