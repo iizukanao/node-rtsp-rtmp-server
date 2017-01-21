@@ -2362,6 +2362,8 @@ class RTMPSession
         callback null  # ignore
 
   createAck: ->
+    if DEBUG_OUTGOING_RTMP_PACKETS
+      logger.info "createAck"
     return createRTMPMessage
       chunkStreamID: 2
       timestamp: 0  # TODO: Is zero OK?
