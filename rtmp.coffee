@@ -1480,8 +1480,9 @@ class RTMPSession
     @stream = stream
     # TODO: Check if streamId is already used
     publishingType = requestCommand.objects[2]?.value
-    if publishingType isnt 'live'
-      logger.warn "[rtmp] warn: publishing type other than 'live' is not supported: #{publishingType}; using 'live'"
+    # publishingType should be lowercase ('live') but Wirecast uses uppercase ('LIVE')
+    if publishingType.toLowerCase() isnt 'live'
+      logger.warn "[rtmp] warn: publishing type other than 'live' is not supported (got #{publishingType}); assuming 'live'"
     logger.info "[rtmp] publish: stream=#{publishingName} publishingType=#{publishingType}"
     # strip query string from publishingName
     if (match = /^(.*?)\?/.exec publishingName)?
