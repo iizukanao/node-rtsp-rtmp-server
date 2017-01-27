@@ -1427,11 +1427,11 @@ class RTSPServer
       @respondWithUnsupportedTransport callback, {CSeq: req.headers.cseq}
       return
 
-    mode = 'play'
+    client.mode = 'PLAY'
     if (match = /;mode=([^;]*)/.exec req.headers.transport)?
-      mode = match[1].toUpperCase()  # PLAY or RECORD
+      client.mode = match[1].toUpperCase()  # PLAY or RECORD
 
-    if mode is 'RECORD'
+    if client.mode is 'RECORD'
       sdpInfo = client.announceSDPInfo
       if (match = /\/([^/]+)$/.exec req.uri)?
         setupStreamId = match[1]  # e.g. "streamid=0"
@@ -1857,6 +1857,16 @@ class RTSPServer
 
   respondRecord: (socket, req, callback) ->
     client = @clients[socket.clientID]
+    if client.mode isnt 'RECORD'
+      logger.debug "client mode is not RECORD (got #{client.mode})"
+      res = """
+      RTSP/1.0 405 Method Not Allowed
+      CSeq: #{req.headers.cseq}
+
+
+      """.replace /\n/g, "\r\n"
+      return callback null, res
+
     streamId = RTSPServer.getStreamIdFromUri req.uri
     logger.info "[#{TAG}:client=#{client.id}] started uploading stream #{streamId}"
     stream = avstreams.getOrCreate streamId
