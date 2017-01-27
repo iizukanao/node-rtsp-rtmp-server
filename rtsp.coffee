@@ -559,7 +559,7 @@ class RTSPServer
     return pathname
 
   getStreamByRTSPUDPAddress: (addr, port, channelType) ->
-    client = @rtspUploadingClients[addr + ':' + port]
+    client = @rtspUploadingClients[addr]
     if client?
       return client.uploadingStream
     return null
@@ -1477,15 +1477,13 @@ class RTSPServer
           if (match = /;client_port=(\d+)-(\d+)/.exec req.headers.transport)?
             logger.debug "registering video rtspUploadingClient #{client.ip}:#{parseInt(match[1])}"
             logger.debug "registering video rtspUploadingClient #{client.ip}:#{parseInt(match[2])}"
-            @rtspUploadingClients[client.ip + ':' + parseInt(match[1])] = client
-            @rtspUploadingClients[client.ip + ':' + parseInt(match[2])] = client
+            @rtspUploadingClients[client.ip] = client
         else  # audio
           [dataPort, controlPort] = [config.rtspAudioDataUDPListenPort, config.rtspAudioControlUDPListenPort]
           if (match = /;client_port=(\d+)-(\d+)/.exec req.headers.transport)?
             logger.debug "registering audio rtspUploadingClient #{client.ip}:#{parseInt(match[1])}"
             logger.debug "registering audio rtspUploadingClient #{client.ip}:#{parseInt(match[2])}"
-            @rtspUploadingClients[client.ip + ':' + parseInt(match[1])] = client
-            @rtspUploadingClients[client.ip + ':' + parseInt(match[2])] = client
+            @rtspUploadingClients[client.ip] = client
 
         # client will send packets to "source" address which is specified here
         transportHeader = req.headers.transport.replace(/mode=[^;]*/, '') +
