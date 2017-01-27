@@ -1431,7 +1431,7 @@ class RTSPServer
     if (match = /;mode=([^;]*)/.exec req.headers.transport)?
       client.mode = match[1].toUpperCase()  # PLAY or RECORD
 
-    if client.mode is 'RECORD'
+    if client.mode in ['RECORD', 'RECEIVE']
       sdpInfo = client.announceSDPInfo
       if (match = /\/([^/]+)$/.exec req.uri)?
         setupStreamId = match[1]  # e.g. "streamid=0"
