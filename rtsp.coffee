@@ -1121,7 +1121,7 @@ class RTSPServer
     if @livePathConsumer?
       @livePathConsumer uri, callback
     else
-      pathname = url.parse(uri).pathname[1..]
+      pathname = url.parse(uri).pathname?[1..]
 
       # TODO: Implement authentication yourself
       authSuccess = true
