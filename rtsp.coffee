@@ -1855,8 +1855,8 @@ class RTSPServer
 
   respondRecord: (socket, req, callback) ->
     client = @clients[socket.clientID]
-    if client.mode isnt 'RECORD'
-      logger.debug "client mode is not RECORD (got #{client.mode})"
+    if client.mode not in ['RECORD', 'RECEIVE']
+      logger.debug "client mode is not RECORD or RECEIVE (got #{client.mode})"
       res = """
       RTSP/1.0 405 Method Not Allowed
       CSeq: #{req.headers.cseq}
