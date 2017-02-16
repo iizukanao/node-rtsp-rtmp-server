@@ -283,30 +283,25 @@ api =
       chunk.ssrc_csrc = bits.read_bits 32
       chunk.sdesItems = []
       chunk.sdes = {}
-      moreSDESItems = true
-      while moreSDESItems
+      loop
         sdesItem = {}
         sdesItem.type = bits.read_byte()
+        if sdesItem.type is 0  # terminate the list
+          # skip until the next 32-bit boundary
+          bytesPastBoundary = (bits.current_position().byte - startBytePos) % 4
+          if bytesPastBoundary > 0
+            while bytesPastBoundary < 4
+              nullOctet = bits.read_byte()
+              if nullOctet isnt 0x00
+                throw new Error "padding octet must be 0x00: #{nullOctet}"
+              bytesPastBoundary++
+          break
 
-        # RFC 3550, 6.5: "No length octet follows the null item type octet"
-        if sdesItem.type isnt 0
-          sdesItem.octetCount = bits.read_byte()
-          if sdesItem.octetCount > 255
-            throw new Error "octet count too large: #{sdesItem.octetCount} <= 255"
-          sdesItem.text = bits.read_bytes(sdesItem.octetCount).toString 'utf8'
-
+        sdesItem.octetCount = bits.read_byte()
+        if sdesItem.octetCount > 255
+          throw new Error "octet count too large: #{sdesItem.octetCount} <= 255"
+        sdesItem.text = bits.read_bytes(sdesItem.octetCount).toString 'utf8'
         switch sdesItem.type
-          when 0  # terminate the list
-            # skip until the next 32-bit boundary
-            bytesPastBoundary = (bits.current_position().byte - startBytePos) % 4
-            if bytesPastBoundary > 0
-              while bytesPastBoundary < 4
-                nullOctet = bits.read_byte()
-                if nullOctet isnt 0x00
-                  throw new Error "padding octet must be 0x00: #{nullOctet}"
-                bytesPastBoundary++
-
-            moreSDESItems = false  # end the loop
           when 1  # Canonical End-Point Identifier
             chunk.sdes.cname = sdesItem.text
           when 2  # User Name
