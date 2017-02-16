@@ -287,10 +287,14 @@ api =
       while moreSDESItems
         sdesItem = {}
         sdesItem.type = bits.read_byte()
-        sdesItem.octetCount = bits.read_byte()
-        if sdesItem.octetCount > 255
-          throw new Error "octet count too large: #{sdesItem.octetCount} <= 255"
-        sdesItem.text = bits.read_bytes(sdesItem.octetCount).toString 'utf8'
+
+        # RFC 3550, 6.5: "No length octet follows the null item type octet"
+        if sdesItem.type isnt 0
+          sdesItem.octetCount = bits.read_byte()
+          if sdesItem.octetCount > 255
+            throw new Error "octet count too large: #{sdesItem.octetCount} <= 255"
+          sdesItem.text = bits.read_bytes(sdesItem.octetCount).toString 'utf8'
+
         switch sdesItem.type
           when 0  # terminate the list
             # skip until the next 32-bit boundary
