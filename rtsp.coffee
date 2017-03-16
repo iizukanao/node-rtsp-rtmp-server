@@ -1199,7 +1199,7 @@ class RTSPServer
     Not Found
     """.replace /\n/g, "\r\n"
     callback null, res,
-      close: req.headers.connection?.toLowerCase() isnt 'keep-alive'
+      close: (protocol is 'HTTP') and (req.headers.connection?.toLowerCase() isnt 'keep-alive')
 
   respondWithUnauthorized: (req, protocol, callback) ->
     if not protocol?
