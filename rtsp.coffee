@@ -391,6 +391,9 @@ class RTSPServer
   setLivePathConsumer: (func) ->
     @livePathConsumer = func
 
+  setAuthenticator: (func) ->
+    @authenticator = func
+
   start: (opts, callback) ->
     serverPort = opts?.port ? @port
 
@@ -1117,6 +1120,20 @@ class RTSPServer
           "#{pad 4, d.getUTCMilliseconds()}Z"
     str
 
+  # @return callback(err, isAuthenticated)
+  authenticate: (req, callback) ->
+    if not @authenticator?
+      return callback null, true
+
+    if (match = /^Basic (\S+)/.exec req.headers.authorization)?
+      token = match[1]
+      decodedToken = Buffer.from(token, 'base64').toString('utf8')
+      if (match = /^(.*?):(.*)/.exec decodedToken)?
+        username = match[1]
+        password = match[2]
+        return @authenticator username, password, callback
+    callback null, false
+
   consumePathname: (uri, callback) ->
     if @livePathConsumer?
       @livePathConsumer uri, callback
@@ -1156,6 +1173,20 @@ class RTSPServer
     """
     callback null, res.replace /\n/g, "\r\n"
 
+  respondWithServerError: (req, protocol, callback) ->
+    if not protocol?
+      protocol = 'RTSP'
+    res = """
+    #{protocol}/1.0 500 Internal Server Error
+    Date: #{api.getDateHeader()}
+    Content-Length: 21
+    Content-Type: text/plain
+
+    Internal Server Error
+    """.replace /\n/g, "\r\n"
+    callback null, res,
+      close: (protocol is 'HTTP') and (req.headers.connection?.toLowerCase() isnt 'keep-alive')
+
   respondWithNotFound: (req, protocol, callback) ->
     if not protocol?
       protocol = 'RTSP'
@@ -1169,6 +1200,21 @@ class RTSPServer
     """.replace /\n/g, "\r\n"
     callback null, res,
       close: req.headers.connection?.toLowerCase() isnt 'keep-alive'
+
+  respondWithUnauthorized: (req, protocol, callback) ->
+    if not protocol?
+      protocol = 'RTSP'
+    res = """
+    #{protocol}/1.0 401 Unauthorized
+    Date: #{api.getDateHeader()}
+    Content-Length: 12
+    Content-Type: text/plain
+    WWW-Authenticate: Basic realm="Restricted"
+
+    Unauthorized
+    """.replace /\n/g, "\r\n"
+    callback null, res,
+      close: (protocol is 'HTTP') and (req.headers.connection?.toLowerCase() isnt 'keep-alive')
 
   respondOptions: (socket, req, callback) ->
     res = """
@@ -1244,32 +1290,41 @@ class RTSPServer
           logger.warn "Failed to consume pathname: #{err}"
           @respondWithNotFound req, 'HTTP', callback
           return
-        client.sessionCookie = req.headers['x-sessioncookie']
-        client.useHTTP = true
-        client.httpClientType = 'GET'
-        if @httpSessions[client.sessionCookie]?
-          postClient = @httpSessions[client.sessionCookie].post
-          if postClient?
-            postClient.getClient = client
-            client.postClient = postClient
-        else
-          @httpSessions[client.sessionCookie] = {}
-        @httpSessions[client.sessionCookie].get = client
-        socket.isAuthenticated = true
-        res = """
-        HTTP/1.0 200 OK
-        Server: #{@serverName}
-        Connection: close
-        Date: #{api.getDateHeader()}
-        Cache-Control: no-store
-        Pragma: no-cache
-        Content-Type: application/x-rtsp-tunnelled
+        @authenticate req, (err, ok) =>
+          if err
+            logger.error "[#{TAG}:client=#{socket.clientID}] authenticate() error: #{err.message}"
+            @respondWithServerError req, req.protocolName, callback
+            return
+          if not ok
+            logger.debug "[#{TAG}:client=#{socket.clientID}] authentication failed"
+            @respondWithUnauthorized req, req.protocolName, callback
+            return
+          client.sessionCookie = req.headers['x-sessioncookie']
+          client.useHTTP = true
+          client.httpClientType = 'GET'
+          if @httpSessions[client.sessionCookie]?
+            postClient = @httpSessions[client.sessionCookie].post
+            if postClient?
+              postClient.getClient = client
+              client.postClient = postClient
+          else
+            @httpSessions[client.sessionCookie] = {}
+          @httpSessions[client.sessionCookie].get = client
+          socket.isAuthenticated = true
+          res = """
+          HTTP/1.0 200 OK
+          Server: #{@serverName}
+          Connection: close
+          Date: #{api.getDateHeader()}
+          Cache-Control: no-store
+          Pragma: no-cache
+          Content-Type: application/x-rtsp-tunnelled
 
 
-        """.replace /\n/g, "\r\n"
+          """.replace /\n/g, "\r\n"
 
-        # Do not close the connection
-        callback null, res
+          # Do not close the connection
+          callback null, res
     else if config.enableRTSP and (match = recordedRegex.exec req.uri)?
       # Outgoing channel
       @consumePathname req.uri, (err) =>
@@ -1277,32 +1332,41 @@ class RTSPServer
           logger.warn "Failed to consume pathname: #{err}"
           @respondWithNotFound req, 'HTTP', callback
           return
-        client.sessionCookie = req.headers['x-sessioncookie']
-        client.useHTTP = true
-        client.httpClientType = 'GET'
-        if @httpSessions[client.sessionCookie]?
-          postClient = @httpSessions[client.sessionCookie].post
-          if postClient?
-            postClient.getClient = client
-            client.postClient = postClient
-        else
-          @httpSessions[client.sessionCookie] = {}
-        @httpSessions[client.sessionCookie].get = client
-        socket.isAuthenticated = true
-        res = """
-        HTTP/1.0 200 OK
-        Server: #{@serverName}
-        Connection: close
-        Date: #{api.getDateHeader()}
-        Cache-Control: no-store
-        Pragma: no-cache
-        Content-Type: application/x-rtsp-tunnelled
+        @authenticate req, (err, ok) =>
+          if err
+            logger.error "[#{TAG}:client=#{socket.clientID}] authenticate() error: #{err.message}"
+            @respondWithServerError req, req.protocolName, callback
+            return
+          if not ok
+            logger.debug "[#{TAG}:client=#{socket.clientID}] authentication failed"
+            @respondWithUnauthorized req, req.protocolName, callback
+            return
+          client.sessionCookie = req.headers['x-sessioncookie']
+          client.useHTTP = true
+          client.httpClientType = 'GET'
+          if @httpSessions[client.sessionCookie]?
+            postClient = @httpSessions[client.sessionCookie].post
+            if postClient?
+              postClient.getClient = client
+              client.postClient = postClient
+          else
+            @httpSessions[client.sessionCookie] = {}
+          @httpSessions[client.sessionCookie].get = client
+          socket.isAuthenticated = true
+          res = """
+          HTTP/1.0 200 OK
+          Server: #{@serverName}
+          Connection: close
+          Date: #{api.getDateHeader()}
+          Cache-Control: no-store
+          Pragma: no-cache
+          Content-Type: application/x-rtsp-tunnelled
 
 
-        """.replace /\n/g, "\r\n"
+          """.replace /\n/g, "\r\n"
 
-        # Do not close the connection
-        callback null, res
+          # Do not close the connection
+          callback null, res
     else if @httpHandler?
       @httpHandler.handlePath pathname, req, (err, output) ->
         callback err, output,
@@ -1319,98 +1383,107 @@ class RTSPServer
       if err
         @respondWithNotFound req, 'RTSP', callback
         return
-      socket.isAuthenticated = true
-      client.bandwidth = req.headers.bandwidth
+      @authenticate req, (err, ok) =>
+        if err
+          logger.error "[#{TAG}:client=#{socket.clientID}] authenticate() error: #{err.message}"
+          @respondWithServerError req, req.protocolName, callback
+          return
+        if not ok
+          logger.debug "[#{TAG}:client=#{socket.clientID}] authentication failed"
+          @respondWithUnauthorized req, req.protocolName, callback
+          return
+        socket.isAuthenticated = true
+        client.bandwidth = req.headers.bandwidth
 
-      streamId = RTSPServer.getStreamIdFromUri req.uri
-      stream = null
-      if streamId?
-        stream = avstreams.get streamId
+        streamId = RTSPServer.getStreamIdFromUri req.uri
+        stream = null
+        if streamId?
+          stream = avstreams.get streamId
 
-      client.stream = stream
+        client.stream = stream
 
-      if not stream?
-        logger.info "[#{TAG}:client=#{client.id}] requested stream not found: #{streamId}"
-        @respondWithNotFound req, 'RTSP', callback
-        return
+        if not stream?
+          logger.info "[#{TAG}:client=#{client.id}] requested stream not found: #{streamId}"
+          @respondWithNotFound req, 'RTSP', callback
+          return
 
-      sdpData =
-        username      : '-'
-        sessionID     : client.sessionID
-        sessionVersion: client.sessionID
-        addressType   : 'IP4'
-        unicastAddress: api.getMeaningfulIPTo socket
+        sdpData =
+          username      : '-'
+          sessionID     : client.sessionID
+          sessionVersion: client.sessionID
+          addressType   : 'IP4'
+          unicastAddress: api.getMeaningfulIPTo socket
 
-      if stream.isAudioStarted
-        sdpData.hasAudio          = true
-        sdpData.audioPayloadType  = 96
-        sdpData.audioEncodingName = 'mpeg4-generic'
-        sdpData.audioClockRate    = stream.audioClockRate
-        sdpData.audioChannels     = stream.audioChannels
-        sdpData.audioSampleRate   = stream.audioSampleRate
-        sdpData.audioObjectType   = stream.audioObjectType
+        if stream.isAudioStarted
+          sdpData.hasAudio          = true
+          sdpData.audioPayloadType  = 96
+          sdpData.audioEncodingName = 'mpeg4-generic'
+          sdpData.audioClockRate    = stream.audioClockRate
+          sdpData.audioChannels     = stream.audioChannels
+          sdpData.audioSampleRate   = stream.audioSampleRate
+          sdpData.audioObjectType   = stream.audioObjectType
 
-        ascInfo = stream.audioASCInfo
-        # Check whether explicit hierarchical signaling of SBR is used
-        if ascInfo?.explicitHierarchicalSBR and config.rtspDisableHierarchicalSBR
-          logger.debug "[#{TAG}:client=#{client.id}] converting hierarchical signaling of SBR" +
-            " (AudioSpecificConfig=0x#{stream.audioSpecificConfig.toString 'hex'})" +
-            " to backward compatible signaling"
-          sdpData.audioSpecificConfig = new Buffer aac.createAudioSpecificConfig ascInfo
-        else if stream.audioSpecificConfig?
-          sdpData.audioSpecificConfig = stream.audioSpecificConfig
+          ascInfo = stream.audioASCInfo
+          # Check whether explicit hierarchical signaling of SBR is used
+          if ascInfo?.explicitHierarchicalSBR and config.rtspDisableHierarchicalSBR
+            logger.debug "[#{TAG}:client=#{client.id}] converting hierarchical signaling of SBR" +
+              " (AudioSpecificConfig=0x#{stream.audioSpecificConfig.toString 'hex'})" +
+              " to backward compatible signaling"
+            sdpData.audioSpecificConfig = new Buffer aac.createAudioSpecificConfig ascInfo
+          else if stream.audioSpecificConfig?
+            sdpData.audioSpecificConfig = stream.audioSpecificConfig
+          else
+            # no AudioSpecificConfig available
+            sdpData.audioSpecificConfig = new Buffer aac.createAudioSpecificConfig
+              audioObjectType: stream.audioObjectType
+              samplingFrequency: stream.audioSampleRate
+              channels: stream.audioChannels
+              frameLength: 1024  # TODO: How to detect 960?
+          logger.debug "[#{TAG}:client=#{client.id}] sending AudioSpecificConfig: 0x#{sdpData.audioSpecificConfig.toString 'hex'}"
+
+        if stream.isVideoStarted
+          sdpData.hasVideo                = true
+          sdpData.videoPayloadType        = 97
+          sdpData.videoEncodingName       = 'H264'  # must be H264
+          sdpData.videoClockRate          = 90000  # must be 90000
+          sdpData.videoProfileLevelId     = stream.videoProfileLevelId
+          if stream.spropParameterSets isnt ''
+            sdpData.videoSpropParameterSets = stream.spropParameterSets
+          sdpData.videoHeight             = stream.videoHeight
+          sdpData.videoWidth              = stream.videoWidth
+          sdpData.videoFrameRate          = stream.videoFrameRate.toFixed 1
+
+        if stream.isRecorded()
+          sdpData.durationSeconds = stream.durationSeconds
+
+        try
+          body = sdp.createSDP sdpData
+        catch e
+          logger.error "error: Unable to create SDP: #{e}"
+          callback new Error 'Unable to create SDP'
+          return
+
+        if /^HTTP\//.test req.protocol
+          res = 'HTTP/1.0 200 OK\n'
         else
-          # no AudioSpecificConfig available
-          sdpData.audioSpecificConfig = new Buffer aac.createAudioSpecificConfig
-            audioObjectType: stream.audioObjectType
-            samplingFrequency: stream.audioSampleRate
-            channels: stream.audioChannels
-            frameLength: 1024  # TODO: How to detect 960?
-        logger.debug "[#{TAG}:client=#{client.id}] sending AudioSpecificConfig: 0x#{sdpData.audioSpecificConfig.toString 'hex'}"
-
-      if stream.isVideoStarted
-        sdpData.hasVideo                = true
-        sdpData.videoPayloadType        = 97
-        sdpData.videoEncodingName       = 'H264'  # must be H264
-        sdpData.videoClockRate          = 90000  # must be 90000
-        sdpData.videoProfileLevelId     = stream.videoProfileLevelId
-        if stream.spropParameterSets isnt ''
-          sdpData.videoSpropParameterSets = stream.spropParameterSets
-        sdpData.videoHeight             = stream.videoHeight
-        sdpData.videoWidth              = stream.videoWidth
-        sdpData.videoFrameRate          = stream.videoFrameRate.toFixed 1
-
-      if stream.isRecorded()
-        sdpData.durationSeconds = stream.durationSeconds
-
-      try
-        body = sdp.createSDP sdpData
-      catch e
-        logger.error "error: Unable to create SDP: #{e}"
-        callback new Error 'Unable to create SDP'
-        return
-
-      if /^HTTP\//.test req.protocol
-        res = 'HTTP/1.0 200 OK\n'
-      else
-        res = 'RTSP/1.0 200 OK\n'
-      if req.headers.cseq?
-        res += "CSeq: #{req.headers.cseq}\n"
-      dateHeader = api.getDateHeader()
-      res += """
-      Content-Base: #{req.uri}/
-      Content-Length: #{body.length}
-      Content-Type: application/sdp
-      Date: #{dateHeader}
-      Expires: #{dateHeader}
-      Session: #{client.sessionID};timeout=60
-      Server: #{@serverName}
-      Cache-Control: no-cache
+          res = 'RTSP/1.0 200 OK\n'
+        if req.headers.cseq?
+          res += "CSeq: #{req.headers.cseq}\n"
+        dateHeader = api.getDateHeader()
+        res += """
+        Content-Base: #{req.uri}/
+        Content-Length: #{body.length}
+        Content-Type: application/sdp
+        Date: #{dateHeader}
+        Expires: #{dateHeader}
+        Session: #{client.sessionID};timeout=60
+        Server: #{@serverName}
+        Cache-Control: no-cache
 
 
-      """
+        """
 
-      callback null, res.replace(/\n/g, "\r\n") + body
+        callback null, res.replace(/\n/g, "\r\n") + body
 
   respondSetup: (socket, req, callback) ->
     client = @clients[socket.clientID]

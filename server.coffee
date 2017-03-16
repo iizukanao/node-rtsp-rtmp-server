@@ -9,6 +9,18 @@ Bits.set_warning_fatal true
 logger.setLevel logger.LEVEL_INFO
 
 streamServer = new StreamServer
+
+# Uncomment this block if you use Basic auth for RTSP
+#streamServer.setAuthenticator (username, password, callback) ->
+#  # If isAuthenticated is true, access is allowed
+#  isAuthenticated = false
+#
+#  # Replace here
+#  if (username is 'user1') and (password is 'password1')
+#    isAuthenticated = true
+#
+#  callback null, isAuthenticated
+
 streamServer.setLivePathConsumer (uri, callback) ->
   pathname = url.parse(uri).pathname?[1..]
 

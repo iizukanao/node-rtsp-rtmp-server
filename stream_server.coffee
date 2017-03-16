@@ -247,6 +247,10 @@ class StreamServer
     if config.enableRTSP
       @rtspServer.setLivePathConsumer func
 
+  setAuthenticator: (func) ->
+    if config.enableRTSP
+      @rtspServer.setAuthenticator func
+
   # buf argument can be null (not used)
   onReceiveVideoControlBuffer: (stream, buf) ->
     stream.resetFrameRate stream
