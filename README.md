@@ -93,6 +93,12 @@ For an MP4 file with H.264 video and AAC audio:
 
 Replace `input.mp4` with live audio/video sources.
 
+For an RTSP source (at rtsp://192.168.1.1:5000/video1  in this example):
+
+    $ gst-launch-0.10 rtspsrc location=rtsp://192.168.1.1:5000/video1 ! decodebin ! \
+        x264enc bitrate=256 tune=zerolatency  ! h264parse ! flvmux name=mux streamable=true ! \
+        queue ! rtmpsink location='rtmp://localhost/live/STREAM_NAME' 
+
 ### Accessing the live stream
 
 #### Via RTSP
