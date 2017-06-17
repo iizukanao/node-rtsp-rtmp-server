@@ -27,6 +27,10 @@ AVC_PACKET_TYPE_SEQUENCE_HEADER = 0
 AVC_PACKET_TYPE_NALU            = 1
 AVC_PACKET_TYPE_END_OF_SEQUENCE = 2
 
+EXTENDED_TIMESTAMP_TYPE_NOT_USED = 'not-used'
+EXTENDED_TIMESTAMP_TYPE_ABSOLUTE = 'absolute'
+EXTENDED_TIMESTAMP_TYPE_DELTA    = 'delta'
+
 TIMESTAMP_ROUNDOFF = 4294967296  # 32 bits
 
 DEBUG_INCOMING_STREAM_DATA = false
@@ -1256,6 +1260,12 @@ class RTMPSession
           break
         message.timestamp = (chunkMessageHeader[0] << 16) +
           (chunkMessageHeader[1] << 8) + chunkMessageHeader[2]
+
+        if message.timestamp is 0xffffff
+          message.extendedTimestampType = EXTENDED_TIMESTAMP_TYPE_ABSOLUTE
+        else
+          message.extendedTimestampType = EXTENDED_TIMESTAMP_TYPE_NOT_USED
+
         message.timestampDelta = 0
         message.messageLength = (chunkMessageHeader[3] << 16) +
           (chunkMessageHeader[4] << 8) + chunkMessageHeader[5]
@@ -1268,6 +1278,12 @@ class RTMPSession
           break
         message.timestampDelta = (chunkMessageHeader[0] << 16) +
           (chunkMessageHeader[1] << 8) + chunkMessageHeader[2]
+
+        if message.timestampDelta is 0xffffff
+          message.extendedTimestampType = EXTENDED_TIMESTAMP_TYPE_DELTA
+        else
+          message.extendedTimestampType = EXTENDED_TIMESTAMP_TYPE_NOT_USED
+
         message.messageLength = (chunkMessageHeader[3] << 16) +
           (chunkMessageHeader[4] << 8) + chunkMessageHeader[5]
         message.messageTypeID = chunkMessageHeader[6]
@@ -1284,6 +1300,12 @@ class RTMPSession
           break
         message.timestampDelta = (chunkMessageHeader[0] << 16) +
         (chunkMessageHeader[1] << 8) + chunkMessageHeader[2]
+
+        if message.timestampDelta is 0xffffff
+          message.extendedTimestampType = EXTENDED_TIMESTAMP_TYPE_DELTA
+        else
+          message.extendedTimestampType = EXTENDED_TIMESTAMP_TYPE_NOT_USED
+
         previousChunk = @previousChunkMessage[message.chunkStreamID]
         if previousChunk?
           message.timestamp = previousChunk.timestamp
@@ -1301,6 +1323,7 @@ class RTMPSession
           message.messageStreamID = previousChunk.messageStreamID
           message.messageLength = previousChunk.messageLength
           message.timestampDelta = previousChunk.timestampDelta
+          message.extendedTimestampType = previousChunk.extendedTimestampType
           message.messageTypeID = previousChunk.messageTypeID
         else
           throw new Error "#{@clientid}: Chunk reference error for type 3: previous chunk for id #{message.chunkStreamID} is not found (possibly a bug)"
@@ -1309,15 +1332,14 @@ class RTMPSession
         throw new Error "Unknown format type: #{formatType}"
 
       # 5.3.1.3. Extended Timestamp
-      if message.formatType is 0
-        if message.timestamp is 0xffffff
-          if chunkBody.length < 4  # buffer is incomplete
-            break
-          message.timestamp = (chunkBody[0] * Math.pow(256, 3)) +
-            (chunkBody[1] << 16) + (chunkBody[2] << 8) + chunkBody[3]
-          chunkBody = chunkBody[4..]
-          headerLen += 4
-      else if message.timestampDelta is 0xffffff
+      if message.extendedTimestampType is EXTENDED_TIMESTAMP_TYPE_ABSOLUTE
+        if chunkBody.length < 4  # buffer is incomplete
+          break
+        message.timestamp = (chunkBody[0] * Math.pow(256, 3)) +
+          (chunkBody[1] << 16) + (chunkBody[2] << 8) + chunkBody[3]
+        chunkBody = chunkBody[4..]
+        headerLen += 4
+      else if message.extendedTimestampType is EXTENDED_TIMESTAMP_TYPE_DELTA
         if chunkBody.length < 4  # buffer is incomplete
           break
         message.timestampDelta = (chunkBody[0] * Math.pow(256, 3)) +
