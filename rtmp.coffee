@@ -1260,7 +1260,7 @@ class RTMPSession
         message.messageLength = (chunkMessageHeader[3] << 16) +
           (chunkMessageHeader[4] << 8) + chunkMessageHeader[5]
         message.messageTypeID = chunkMessageHeader[6]
-        message.messageStreamID = chunkMessageHeader.readInt32LE 7  # TODO: signed or unsigned?
+        message.messageStreamID = chunkMessageHeader.readUInt32LE 7  # TODO: signed or unsigned?
         chunkBody = chunkMessageHeader[11..]
         headerLen += 11
       else if message.formatType is 1  # Type 1 (7 bytes)
