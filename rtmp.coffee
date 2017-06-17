@@ -1375,6 +1375,10 @@ class RTMPSession
             throw new Error "timestamp delta is given, but base timestamp is not known"
           message.timestamp += message.timestampDelta
 
+          # Handle timestamp overflow
+          if message.timestamp > TIMESTAMP_ROUNDOFF
+            message.timestamp %= TIMESTAMP_ROUNDOFF
+
       if message.body.length >= message.messageLength # message is completed
         # TODO: Is this check redundant?
         if message.body.length isnt message.messageLength
