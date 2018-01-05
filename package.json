@@ -3,6 +3,7 @@
   "version": "0.4.0",
   "description": "RTSP/RTMP/HTTP hybrid server",
   "author": "Nao Iizuka <iizuka@kyu-mu.net>",
+  "repository": "git@github.com:iizukanao/node-rtsp-rtmp-server.git",
   "license": "MIT",
   "main": "stream_server.js",
   "scripts": {
