@@ -61,14 +61,14 @@ class StreamServer
     if config.enableCustomReceiver
       # Setup data receivers for custom protocol
       @customReceiver = new CustomReceiver config.receiverType,
-        videoControl: =>
-          @onReceiveVideoControlBuffer arguments...
-        audioControl: =>
-          @onReceiveAudioControlBuffer arguments...
-        videoData: =>
-          @onReceiveVideoDataBuffer arguments...
-        audioData: =>
-          @onReceiveAudioDataBuffer arguments...
+        videoControl: (args...) =>
+          @onReceiveVideoControlBuffer args...
+        audioControl: (args...) =>
+          @onReceiveAudioControlBuffer args...
+        videoData: (args...) =>
+          @onReceiveVideoDataBuffer args...
+        audioData: (args...) =>
+          @onReceiveAudioDataBuffer args...
 
       # Delete old sockets
       @customReceiver.deleteReceiverSocketsSync()
@@ -80,8 +80,8 @@ class StreamServer
 
     if config.enableRTSP or config.enableHTTP or config.enableRTMPT
       if config.enableRTMPT
-        rtmptCallback = =>
-          @rtmpServer.handleRTMPTRequest arguments...
+        rtmptCallback = (args...) =>
+          @rtmpServer.handleRTMPTRequest args...
       else
         rtmptCallback = null
       if config.enableHTTP

@@ -264,6 +264,7 @@ exports.UDPClient = class UDPClient
 
 exports.UDPServer = class UDPServer extends events.EventEmitter
   constructor: ->
+    super()
     @socket = dgram.createSocket 'udp4'
 
     @socket.on 'error', (err) ->
