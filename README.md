@@ -21,7 +21,7 @@ Edit config.coffee.
 or use Node.js directly:
 
     $ cd node-rtsp-rtmp-server
-    $ coffee -c .
+    $ coffee -c *.coffee
     $ sudo node server.js
 
 If both `serverPort` and `rtmpServerPort` are above 1023 in config.coffee, you can omit `sudo`.
