@@ -25,8 +25,9 @@ getCurrentTime = ->
   time = process.hrtime()
   return time[0] + time[1] / 1e9
 
-class MP4File
+class MP4File extends EventEmitterModule
   constructor: (filename) ->
+    super()
     if filename?
       @open filename
     @isStopped = false
@@ -641,7 +642,6 @@ class MP4File
 
     return true
 
-EventEmitterModule.mixin MP4File
 
 class Box
   # time: seconds since midnight, Jan. 1, 1904 UTC
@@ -912,7 +912,7 @@ class FileTypeBox extends Box
     "brand=#{@majorBrandStr} version=#{@minorVersion}"
 
   getTree: ->
-    obj = super
+    obj = new Box
     obj.brand = @majorBrandStr
     obj.version = @minorVersion
     return obj
@@ -965,7 +965,7 @@ class MovieHeaderBox extends Box
     "created=#{formatDate @creationDate} modified=#{formatDate @modificationDate} timescale=#{@timescale} durationSeconds=#{@durationSeconds}"
 
   getTree: ->
-    obj = super
+    obj = new Box
     obj.creationDate = @creationDate
     obj.modificationDate = @modificationDate
     obj.timescale = @timescale
@@ -1041,7 +1041,7 @@ class TrackHeaderBox extends Box
     return str
 
   getTree: ->
-    obj = super
+    obj = new Box
     obj.creationDate = @creationDate
     obj.modificationDate = @modificationDate
     obj.isAudioTrack = @isAudioTrack
@@ -1125,7 +1125,7 @@ class EditListBox extends Box
     ).join(',')
 
   getTree: ->
-    obj = super
+    obj = new Box
     obj.entries = @entries
     return obj
 
@@ -1164,7 +1164,7 @@ class MediaHeaderBox extends Box
     "created=#{formatDate @creationDate} modified=#{formatDate @modificationDate} timescale=#{@timescale} durationSeconds=#{@durationSeconds} lang=#{@language}"
 
   getTree: ->
-    obj = super
+    obj = new Box
     obj.creationDate = @creationDate
     obj.modificationDate = @modificationDate
     obj.timescale = @timescale
@@ -1197,7 +1197,7 @@ class HandlerBox extends Box
     "handlerType=#{@handlerType} name=#{@name}"
 
   getTree: ->
-    obj = super
+    obj = new Box
     obj.handlerType = @handlerType
     obj.name = @name
     return obj
@@ -1251,7 +1251,7 @@ class DataEntryUrlBox extends Box
       "empty location value"
 
   getTree: ->
-    obj = super
+    obj = new Box
     obj.location = @location
     return obj
 
@@ -1292,7 +1292,7 @@ class SampleDescriptionBox extends Box
     #         vmhd
     #         dinf
     #           dref
-    #             url 
+    #             url
     #         stbl
     #           stsd <- self
     #             stts
@@ -1369,7 +1369,7 @@ class AudioSampleEntry extends Box
     #         vmhd
     #         dinf
     #           dref
-    #             url 
+    #             url
     #         stbl
     #           stsd <- self
     #             stts
@@ -1589,7 +1589,7 @@ class TimeToSampleBox extends Box
     return str
 
   getTree: ->
-    obj = super
+    obj = new Box
     obj.entries = @entries
     return obj
 
@@ -1618,7 +1618,7 @@ class SyncSampleBox extends Box
       "entryCount=#{@entryCount}"
 
   getTree: ->
-    obj = super
+    obj = new Box
     obj.sampleNumbers = @sampleNumbers
     return obj
 
@@ -1699,7 +1699,7 @@ class SampleToChunkBox extends Box
       "entryCount=#{@entryCount}"
 
   getTree: ->
-    obj = super
+    obj = new Box
     obj.entries = @entries
     return obj
 
@@ -1758,7 +1758,7 @@ class SampleSizeBox extends Box
     return str
 
   getTree: ->
-    obj = super
+    obj = new Box
     obj.sampleSize = @sampleSize
     obj.sampleCount = @sampleCount
     if @entrySizes?
@@ -1790,7 +1790,7 @@ class ChunkOffsetBox extends Box
       "entryCount=#{@entryCount}"
 
   getTree: ->
-    obj = super
+    obj = new Box
     obj.chunkOffsets = @chunkOffsets
     return obj
 
@@ -1931,7 +1931,7 @@ class GenericDataBox extends Box
     return "#{@name}=#{@valueStr}"
 
   getTree: ->
-    obj = super
+    obj = new Box
     obj.data = @valueStr
     return obj
 
@@ -1986,7 +1986,7 @@ class MPEG4BitRateBox extends Box
     "bufferSizeDB=#{@bufferSizeDB} maxBitrate=#{@maxBitrate} avgBitrate=#{@avgBitrate}"
 
   getTree: ->
-    obj = super
+    obj = new Box
     obj.bufferSizeDB = @bufferSizeDB
     obj.maxBitrate = @maxBitrate
     obj.avgBitrate = @avgBitrate
@@ -2043,7 +2043,7 @@ class AVCConfigurationBox extends Box
     ).join(',')
 
   getTree: ->
-    obj = super
+    obj = new Box
     obj.sps = @sequenceParameterSets.map((sps) -> [sps...])
     obj.pps = @pictureParameterSets.map((pps) -> [pps...])
     return obj
@@ -2178,7 +2178,7 @@ class ESDBox extends Box
     "audioSpecificConfig=0x#{@decoderConfigDescriptor.decoderSpecificInfo.specificInfo.toString 'hex'} maxBitrate=#{@decoderConfigDescriptor.maxBitrate} avgBitrate=#{@decoderConfigDescriptor.avgBitrate}"
 
   getTree: ->
-    obj = super
+    obj = new Box
     obj.audioSpecificConfig = [@decoderConfigDescriptor.decoderSpecificInfo.specificInfo...]
     obj.maxBitrate = @decoderConfigDescriptor.maxBitrate
     obj.avgBitrate = @decoderConfigDescriptor.avgBitrate

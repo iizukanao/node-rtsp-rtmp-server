@@ -6,10 +6,8 @@
 
     EventEmitterModule = require './event_emitter'
 
-    class MyClass
-
     # Apply EventEmitterModule to MyClass
-    EventEmitterModule.mixin MyClass
+    class MyClass extends EventEmitterModule
 
     obj = new MyClass
     obj.on 'testevent', (a, b, c) ->
@@ -21,38 +19,9 @@
     obj.emit 'testevent', 111, 222, 333
     obj.emit 'anotherevent', 'hello'
 
-Or EventEmitterModule can be injected dynamically into an object
-(with slightly worse performance):
-
-    class MyClass
-      constructor: ->
-        EventEmitterModule.inject this
-
-    obj = new MyClass
-    obj.on 'testevent', ->
-      console.log "received testevent"
-
-    obj.emit 'testevent'
 ###
 
 class EventEmitterModule
-  # Apply EventEmitterModule to the class
-  @mixin: (cls) ->
-    for own name, value of EventEmitterModule.prototype
-      try
-        cls::[name] = value
-      catch e
-        throw new Error "Call EventEmitterModule.mixin() after the class definition"
-    return
-
-  # Inject EventEmitterModule into the object
-  @inject: (obj) ->
-    for own name, value of EventEmitterModule.prototype
-      obj[name] = value
-    obj.eventListeners = {}
-    obj.catchAllEventListeners = []
-    return
-
   emit: (name, data...) ->
     if @eventListeners?[name]?
       for listener in @eventListeners[name]

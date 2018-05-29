@@ -46,8 +46,9 @@ class AVStreamGenerator
 
   teardown: ->
 
-class AVStream
+class AVStream extends EventEmitterModule
   constructor: (id) ->
+    super()
     @id = id  # string
     @initAVParams()
 
@@ -197,8 +198,6 @@ class AVStream
     else
       str += "; audio: (waiting for data)"
     return str
-
-EventEmitterModule.mixin AVStream
 
 class MP4Stream extends AVStream
   @create: (filename) ->
