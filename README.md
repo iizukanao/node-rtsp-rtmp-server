@@ -9,9 +9,11 @@
     $ cd node-rtsp-rtmp-server
     $ npm install -d
 
+Also, install [CoffeeScript](https://coffeescript.org/) 1.x or 2.x.
+
 ### Configuration
 
-Edit config.coffee.
+Edit `config.coffee`.
 
 ### Starting the server
 
@@ -24,7 +26,7 @@ or use Node.js directly:
     $ coffee -c *.coffee
     $ sudo node server.js
 
-If both `serverPort` and `rtmpServerPort` are above 1023 in config.coffee, you can omit `sudo`.
+If both `serverPort` and `rtmpServerPort` are >= 1024 in `config.coffee`, `sudo` is not needed.
 
 ### Docker Deploy Method
 
