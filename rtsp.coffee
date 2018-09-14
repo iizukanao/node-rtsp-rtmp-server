@@ -271,7 +271,7 @@ class RTSPServer
     return
 
   sendNALUnitOverRTSP: (stream, nalUnit, pts, dts, marker) ->
-    if nalUnit.length >= SINGLE_NAL_UNIT_MAX_SIZE
+    if nalUnit.length > SINGLE_NAL_UNIT_MAX_SIZE
       @sendVideoPacketWithFragment stream, nalUnit, pts, marker  # TODO what about dts?
     else
       @sendVideoPacketAsSingleNALUnit stream, nalUnit, pts, marker  # TODO what about dts?
@@ -963,13 +963,16 @@ class RTSPServer
     nalUnit = nalUnit.slice 1
 
     fragmentNumber = 0
-    while nalUnit.length > SINGLE_NAL_UNIT_MAX_SIZE
+    # We subtract 1 from SINGLE_NAL_UNIT_MAX_SIZE in order to
+    # prevent nalUnit from not being fragmented when the length of
+    # original nalUnit is equal to SINGLE_NAL_UNIT_MAX_SIZE
+    while nalUnit.length > SINGLE_NAL_UNIT_MAX_SIZE - 1
       if ++stream.videoSequenceNumber > 65535
         stream.videoSequenceNumber -= 65535
 
       fragmentNumber++
-      thisNalUnit = nalUnit.slice 0, SINGLE_NAL_UNIT_MAX_SIZE
-      nalUnit = nalUnit.slice SINGLE_NAL_UNIT_MAX_SIZE
+      thisNalUnit = nalUnit.slice 0, SINGLE_NAL_UNIT_MAX_SIZE - 1
+      nalUnit = nalUnit.slice SINGLE_NAL_UNIT_MAX_SIZE - 1
 
       # TODO: sequence number should start at a random number
       rtpData = rtp.createRTPHeader
