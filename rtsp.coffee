@@ -327,11 +327,10 @@ class RTSPServer
 
       rtpData = rtpData.concat audioHeader
 
-      # Append the access unit (rawDataBlock)
-      rtpBuffer = Buffer.concat [new Buffer(rtpData), concatRawDataBlock],
-        rtp.RTP_HEADER_LEN + audioHeader.length + accessUnitLength
-
       for clientID, client of stream.rtspClients
+        # Append the access unit (rawDataBlock)
+        rtpBuffer = Buffer.concat [new Buffer(rtpData), concatRawDataBlock],
+          rtp.RTP_HEADER_LEN + audioHeader.length + accessUnitLength
         if client.isPlaying
           rtp.replaceSSRCInRTP rtpBuffer, client.audioSSRC
 
@@ -990,8 +989,6 @@ class RTSPServer
 
       # Append NAL unit
       thisNalUnitLen = thisNalUnit.length
-      rtpBuffer = Buffer.concat [new Buffer(rtpData), thisNalUnit],
-        rtp.RTP_HEADER_LEN + 2 + thisNalUnitLen
 
       for clientID, client of stream.rtspClients
         if client.isWaitingForKeyFrame and isKeyFrame
@@ -999,6 +996,8 @@ class RTSPServer
           client.isWaitingForKeyFrame = false
 
         if client.isPlaying
+          rtpBuffer = Buffer.concat [new Buffer(rtpData), thisNalUnit],
+            rtp.RTP_HEADER_LEN + 2 + thisNalUnitLen
           rtp.replaceSSRCInRTP rtpBuffer, client.videoSSRC
 
           logger.tag 'rtsp:out', "[rtsp:stream:#{stream.id}] send video to #{client.id}: fragment n=#{fragmentNumber} timestamp=#{ts} bytes=#{rtpBuffer.length} marker=false keyframe=#{isKeyFrame}"
@@ -1036,14 +1035,15 @@ class RTSPServer
       isEnd: true
 
     nalUnitLen = nalUnit.length
-    rtpBuffer = Buffer.concat [new Buffer(rtpData), nalUnit],
-      rtp.RTP_HEADER_LEN + 2 + nalUnitLen
+
     for clientID, client of stream.rtspClients
       if client.isWaitingForKeyFrame and isKeyFrame
         client.isPlaying = true
         client.isWaitingForKeyFrame = false
 
       if client.isPlaying
+        rtpBuffer = Buffer.concat [new Buffer(rtpData), nalUnit],
+          rtp.RTP_HEADER_LEN + 2 + nalUnitLen
         rtp.replaceSSRCInRTP rtpBuffer, client.videoSSRC
 
         client.videoPacketCount++
@@ -1089,8 +1089,6 @@ class RTSPServer
       ssrc: null
 
     nalUnitLen = nalUnit.length
-    rtpBuffer = Buffer.concat [new Buffer(rtpHeader), nalUnit],
-      rtp.RTP_HEADER_LEN + nalUnitLen
 
     for clientID, client of stream.rtspClients
       if client.isWaitingForKeyFrame and isKeyFrame
@@ -1098,6 +1096,8 @@ class RTSPServer
         client.isWaitingForKeyFrame = false
 
       if client.isPlaying
+        rtpBuffer = Buffer.concat [new Buffer(rtpHeader), nalUnit],
+          rtp.RTP_HEADER_LEN + nalUnitLen
         rtp.replaceSSRCInRTP rtpBuffer, client.videoSSRC
 
         client.videoPacketCount++
