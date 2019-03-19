@@ -641,6 +641,12 @@ createRTMPMessage = (params, chunkSize=128) ->
   if params.timestamp >= 0xffffff
     useExtendedTimestamp = true
     timestamp = [ 0xff, 0xff, 0xff ]
+    extendedTimestampBuf = new Buffer [
+      (params.timestamp >> 24) & 0xff,
+      (params.timestamp >> 16) & 0xff,
+      (params.timestamp >> 8) & 0xff,
+      params.timestamp & 0xff,
+    ]
   else
     timestamp = [
       (params.timestamp >> 16) & 0xff,
@@ -672,12 +678,7 @@ createRTMPMessage = (params, chunkSize=128) ->
   ]
   totalLength = 12
   if useExtendedTimestamp
-    bufs.push new Buffer [
-      (params.timestamp >> 24) & 0xff,
-      (params.timestamp >> 16) & 0xff,
-      (params.timestamp >> 8) & 0xff,
-      params.timestamp & 0xff,
-    ]
+    bufs.push extendedTimestampBuf
     totalLength += 4
   body = params.body
   if bodyLength > chunkSize
@@ -690,11 +691,16 @@ createRTMPMessage = (params, chunkSize=128) ->
     type3Header = new Buffer [
       (3 << 6) | params.chunkStreamID
     ]
+    if useExtendedTimestamp
+      type3Header = Buffer.concat [
+        type3Header,
+        extendedTimestampBuf
+      ]
     loop
       bodyChunk = body[0...chunkSize]
       bodyChunkLen = bodyChunk.length
       bufs.push type3Header, bodyChunk
-      totalLength += 1 + bodyChunkLen
+      totalLength += type3Header.length + bodyChunkLen
       body = body[bodyChunkLen..]
       bodyLength -= bodyChunkLen
       if bodyLength is 0
