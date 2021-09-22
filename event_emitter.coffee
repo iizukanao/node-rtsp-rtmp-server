@@ -106,7 +106,7 @@ class EventEmitterModule
     if @eventListeners?[name]?
       for _listener, i in @eventListeners[name]
         if _listener is listener
-          @eventListeners[i..i] = []  # remove element at index i
+          @eventListeners[name][i..i] = []  # remove element at index i
     return
 
   off: (name, listener) ->
